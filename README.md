@@ -29,3 +29,22 @@ This project is designed to help you learn the basics of web scraping with Pytho
 
 ## License
 MIT 
+
+## Git Learning Tasks
+
+Below are branching and version control exercises to help reinforce Git skills:
+
+- [ ] Create a new branch `feature/add-logging`, add logging to the scraper, and merge it back to `main`.
+- [ ] Create a branch `bugfix/fix-headers`, simulate a bug fix in HTTP headers, and open a pull request.
+- [ ] Create a branch `feature/html-parser`, refactor parsing logic using BeautifulSoup, and tag the version as `v0.2`.
+- [ ] Create a branch `experiment/alt-parser`, try an alternative parsing method, and discard the branch after review.
+- [ ] Simulate a merge conflict between two branches and resolve it locally.
+- [ ] Create a new branch `feature/title-format`, edit `main.py` to change the title print line (e.g., make it uppercase), commit and push changes, open a PR on GitHub, and merge it back into `main`. Finally, delete the feature branch.
+
+## 🤝 Collaboration Practice (Even Solo)
+
+- [ ] Open an Issue: Suggest an improvement like “Add CLI interface”
+- [ ] Self-assign it and reference it in a commit (e.g., `fixes #1`)
+- [ ] Use GitHub Projects or a simple Kanban board
+- [ ] Create a branch from the issue (`feature/cli-interface`)
+- [ ] Merge the completed feature branch into `main` with a PR
