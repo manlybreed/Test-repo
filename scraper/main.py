@@ -8,6 +8,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 def main():
     url = "http://olympus.realpython.org/profiles/aphrodite"
     logging.info(f"Sending request to {url}")
+    headers = {"User-Agent": "Mozilla/5.0"}
     response = requests.get(url)
     logging.info("Response received, parsing HTML")
     soup = BeautifulSoup(response.text, 'html.parser')
