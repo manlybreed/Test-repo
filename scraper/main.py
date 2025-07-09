@@ -12,7 +12,7 @@ def fetch_html(url):
     return response.text
 
 def parse_title(html):
-    logging.info("Parsing HTML content")
+    logging.info("Parsing HTML content with parser A")
     soup = BeautifulSoup(html, 'html.parser')
     title = soup.title.string if soup.title else "No title found"
     logging.info(f"Page title: {title}")
