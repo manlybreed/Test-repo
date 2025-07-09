@@ -36,7 +36,7 @@ Below are branching and version control exercises to help reinforce Git skills:
 
 - [x] Create a new branch `feature/add-logging`, add logging to the scraper, and merge it back to `main`.
 - [x] Create a branch `bugfix/fix-headers`, simulate a bug fix in HTTP headers, and open a pull request.
-- [ ] Create a branch `feature/html-parser`, refactor parsing logic using BeautifulSoup, and tag the version as `v0.2`.
+- [x] Create a branch `feature/html-parser`, refactor parsing logic using BeautifulSoup, and tag the version as `v0.2`.
 - [ ] Create a branch `experiment/alt-parser`, try an alternative parsing method, and discard the branch after review.
 - [ ] Simulate a merge conflict between two branches and resolve it locally.
 - [ ] Create a new branch `feature/title-format`, edit `main.py` to change the title print line (e.g., make it uppercase), commit and push changes, open a PR on GitHub, and merge it back into `main`. Finally, delete the feature branch.
