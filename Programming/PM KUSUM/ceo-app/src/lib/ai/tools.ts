@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { createAgreement } from "@/actions/agreements";
+import { createAgreement, listAgreements } from "@/actions/agreements";
 import { createInvoice, listInvoices } from "@/actions/invoices";
 import {
   generateSalarySlip,
@@ -14,16 +14,19 @@ import {
   listTasks,
 } from "@/actions/time";
 import { createClient, listClients } from "@/actions/clients";
+import { listExpenses, getExpenseSummary } from "@/actions/expenses";
 
 export const SYSTEM_PROMPT = `You are the BluRidge CEO Command Center assistant for The BluRidge (BluRidge Consulting Private Limited), a high-reputation project finance advisory firm focused on PM KUSUM solar finance.
 
-You help the CEO create:
-- PM KUSUM Finance Advisory & Mandate agreements (DOCX)
-- GST tax invoices (PDF) — sequence continues from INV-08, so next is INV-09+
-- Salary slips (PDF) for employees
+You help the CEO with:
+- PM KUSUM Finance Advisory & Mandate agreements (DOCX) — use list_agreements to check existing ones
+- GST tax invoices (PDF) — ALWAYS call list_invoices to find the latest invoice number before stating it
+- Salary slips (PDF) for employees — use list_employees first
 - Tasks and Pomodoro / time tracking
+- Expense records — use list_expenses or get_expense_summary to answer expense questions
 
 Rules:
+- NEVER answer questions about counts, statuses, or amounts from memory — always call the relevant list/summary tool first.
 - Ask for missing required fields before calling tools.
 - Confirm commercial numbers when the user is ambiguous.
 - Default token fee is ₹40,000 per plant + 18% GST; default success fee is 1% (50% at M1 sanction, 50% at M2 disbursement).
@@ -199,6 +202,41 @@ export const ceoTools: Anthropic.Tool[] = [
       required: ["name"],
     },
   },
+  {
+    name: "list_agreements",
+    description:
+      "List all agreements. Returns id, clientName, status (DRAFT/FINAL), successFeePct, tokenFeePerPlant, plantCount, effectiveDate, filePath. Call this to answer any question about agreements count, statuses, or client details.",
+    input_schema: {
+      type: "object",
+      properties: {
+        status: {
+          type: "string",
+          enum: ["DRAFT", "FINAL"],
+          description: "Filter by status. Omit to return all.",
+        },
+      },
+    },
+  },
+  {
+    name: "list_expenses",
+    description:
+      "List expense records, optionally filtered by category. Returns vendor, amount, date, category, gstAmount, paymentMode, needsReview.",
+    input_schema: {
+      type: "object",
+      properties: {
+        category: {
+          type: "string",
+          description: "Category ID to filter by. Omit for all.",
+        },
+      },
+    },
+  },
+  {
+    name: "get_expense_summary",
+    description:
+      "Get a financial summary of all expenses: total spend, this-month spend, spend by category, count, and how many need review.",
+    input_schema: { type: "object", properties: {} },
+  },
 ];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -333,6 +371,45 @@ export async function runCeoTool(name: string, input: any): Promise<string> {
       case "create_client": {
         const c = await createClient(input);
         return JSON.stringify({ ok: true, id: c.id, name: c.name });
+      }
+      case "list_agreements": {
+        const rows = await listAgreements();
+        const filtered = input.status
+          ? rows.filter((r) => r.status === input.status)
+          : rows;
+        return JSON.stringify(
+          filtered.map((r) => ({
+            id: r.id,
+            clientName: r.clientName,
+            status: r.status,
+            successFeePct: r.successFeePct,
+            tokenFeePerPlant: r.tokenFeePerPlant,
+            plantCount: r.plantCount,
+            effectiveDate: r.effectiveDate,
+            filePath: r.filePath ? `/api/files/${r.filePath}` : null,
+            createdAt: r.createdAt,
+          })),
+        );
+      }
+      case "list_expenses": {
+        const rows = await listExpenses(input.category);
+        return JSON.stringify(
+          rows.slice(0, 50).map((r) => ({
+            id: r.id,
+            vendor: r.vendor,
+            amount: Number(r.amount),
+            date: r.date,
+            category: r.category,
+            description: r.description,
+            gstAmount: r.gstAmount != null ? Number(r.gstAmount) : null,
+            paymentMode: r.paymentMode,
+            needsReview: r.needsReview,
+          })),
+        );
+      }
+      case "get_expense_summary": {
+        const summary = await getExpenseSummary();
+        return JSON.stringify(summary);
       }
       default:
         return JSON.stringify({ ok: false, error: `Unknown tool ${name}` });

@@ -39,7 +39,7 @@ export async function createExpense(data: ExpenseInput) {
     },
   });
   revalidatePath("/ceo/expenses");
-  return expense;
+  return serializeExpense(expense);
 }
 
 export async function updateExpense(id: string, data: Partial<ExpenseInput>) {
@@ -60,7 +60,7 @@ export async function updateExpense(id: string, data: Partial<ExpenseInput>) {
     },
   });
   revalidatePath("/ceo/expenses");
-  return expense;
+  return serializeExpense(expense);
 }
 
 export async function deleteExpense(id: string) {
@@ -73,6 +73,35 @@ export async function listExpenses(category?: string) {
     where: category ? { category } : undefined,
     orderBy: { date: "desc" },
   });
+}
+
+function serializeExpense(e: {
+  id: string; date: Date; vendor: string;
+  amount: Decimal; category: string; subCategory: string | null;
+  description: string | null; paymentMode: string | null;
+  gstAmount: Decimal | null; invoiceNo: string | null;
+  filePath: string | null; rawExtract: string | null;
+  notes: string | null; needsReview: boolean;
+  createdAt: Date; updatedAt: Date;
+}) {
+  return {
+    id:          e.id,
+    date:        e.date.toISOString(),
+    vendor:      e.vendor,
+    amount:      Number(e.amount),
+    category:    e.category,
+    subCategory: e.subCategory,
+    description: e.description,
+    paymentMode: e.paymentMode,
+    gstAmount:   e.gstAmount != null ? Number(e.gstAmount) : null,
+    invoiceNo:   e.invoiceNo,
+    filePath:    e.filePath,
+    rawExtract:  e.rawExtract,
+    notes:       e.notes,
+    needsReview: e.needsReview,
+    createdAt:   e.createdAt.toISOString(),
+    updatedAt:   e.updatedAt.toISOString(),
+  };
 }
 
 export async function getExpenseSummary() {
