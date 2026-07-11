@@ -1,16 +1,11 @@
 import Link from "next/link";
 import { listInvoices } from "@/actions/invoices";
 import { listClients } from "@/actions/clients";
+import { prisma } from "@/lib/prisma";
 import { InvoiceForm } from "@/components/invoice-form";
 import { ImportSection } from "./import-section";
+import { InvoiceStatusCell } from "@/components/invoice-status-cell";
 import { formatINR } from "@/lib/utils";
-
-const STATUS_STYLE: Record<string, { color: string; bg: string }> = {
-  PAID:     { color: "#34d399", bg: "rgba(16,185,129,0.1)" },
-  UNPAID:   { color: "#f87171", bg: "rgba(248,113,113,0.1)" },
-  PARTIAL:  { color: "#fb923c", bg: "rgba(251,146,60,0.1)" },
-  OVERDUE:  { color: "#fbbf24", bg: "rgba(251,191,36,0.1)" },
-};
 
 export default async function InvoicesPage({
   searchParams,
@@ -19,6 +14,38 @@ export default async function InvoicesPage({
 }) {
   const sp = await searchParams;
   const [invoices, clients] = await Promise.all([listInvoices(), listClients()]);
+
+  // Build buyer suggestions from clients + unique past invoice buyers
+  const pastBuyers = await prisma.invoice.findMany({
+    select: { buyerName: true, buyerGstin: true, buyerAddress: true, buyerState: true, buyerStateCode: true },
+    orderBy: { createdAt: "desc" },
+  });
+  const clientSuggestions = clients.map((c) => ({
+    name: c.name,
+    gstin: c.gstin ?? "",
+    address: [c.addressLine1, c.city, c.state].filter(Boolean).join(", "),
+    state: c.state ?? "",
+    stateCode: c.stateCode ?? "",
+  }));
+  const seen = new Set(clients.map((c) => c.name.toLowerCase()));
+  const buyerSuggestions = [...clientSuggestions];
+  for (const b of pastBuyers) {
+    if (!seen.has(b.buyerName.toLowerCase())) {
+      seen.add(b.buyerName.toLowerCase());
+      buyerSuggestions.push({
+        name: b.buyerName,
+        gstin: b.buyerGstin ?? "",
+        address: b.buyerAddress ?? "",
+        state: b.buyerState ?? "",
+        stateCode: b.buyerStateCode ?? "",
+      });
+    }
+  }
+
+  // Detect duplicate invoice numbers in DB (shouldn't happen but flag if so)
+  const numCount = new Map<string, number>();
+  for (const inv of invoices) numCount.set(inv.number, (numCount.get(inv.number) ?? 0) + 1);
+  const hasDupes = [...numCount.values()].some((v) => v > 1);
 
   const totalTaxable  = invoices.reduce((s, i) => s + i.taxableTotal, 0);
   const totalGrand    = invoices.reduce((s, i) => s + i.grandTotal, 0);
@@ -65,15 +92,34 @@ export default async function InvoicesPage({
           <span className="flex items-center gap-2" style={{ color: "#34d399" }}>
             <span>✓</span> Invoice {sp.created} created.
           </span>
-          <Link
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
-            style={{ background: "rgba(16,185,129,0.12)", border: "1px solid rgba(16,185,129,0.3)", color: "#34d399" }}
-            href={`/api/files/invoices/${sp.created}.pdf`}
-            target="_blank"
-          >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-            Download PDF
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+              style={{ background: "rgba(16,185,129,0.12)", border: "1px solid rgba(16,185,129,0.3)", color: "#34d399" }}
+              href={`/api/files/invoices/${sp.created}.pdf`}
+              target="_blank"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8zM12 9a3 3 0 110 6 3 3 0 010-6z"/></svg>
+              View
+            </Link>
+            <Link
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+              style={{ background: "rgba(16,185,129,0.12)", border: "1px solid rgba(16,185,129,0.3)", color: "#34d399" }}
+              href={`/api/files/invoices/${sp.created}.pdf`}
+              download={`${sp.created}.pdf`}
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+              Download
+            </Link>
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate warning */}
+      {hasDupes && (
+        <div className="px-4 py-3 rounded-xl mb-6 text-sm"
+          style={{ background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.25)", color: "#fbbf24" }}>
+          ⚠ Duplicate invoice numbers detected in the database. Please review the history table below.
         </div>
       )}
 
@@ -96,11 +142,11 @@ export default async function InvoicesPage({
             <div>
               <h2 className="text-base font-semibold">New Invoice</h2>
               <p className="text-xs mt-0.5" style={{ color: "var(--text-dim)" }}>
-                GST-compliant PDF with CGST/SGST or IGST based on buyer state
+                GST-compliant PDF with CGST/SGST or IGST based on buyer state. Buyer name autocompletes from past records.
               </p>
             </div>
           </div>
-          <InvoiceForm clients={clients} />
+          <InvoiceForm clients={clients} buyerSuggestions={buyerSuggestions} />
         </div>
       </section>
 
@@ -114,6 +160,9 @@ export default async function InvoicesPage({
               {invoices.length}
             </span>
           </div>
+          <p className="text-xs" style={{ color: "var(--text-dim)" }}>
+            Click a status badge to update payment status · TDS button toggles deduction
+          </p>
         </div>
 
         <div className="rounded-xl overflow-hidden" style={{ border: "1px solid var(--border)" }}>
@@ -123,94 +172,133 @@ export default async function InvoicesPage({
                 <th>Invoice No.</th>
                 <th>Buyer</th>
                 <th>Date</th>
-                <th>Status</th>
+                <th>Status / TDS</th>
                 <th>Taxable</th>
                 <th>Grand Total</th>
-                <th></th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {invoices.map((inv) => {
-                const st = (inv.paymentStatus as string | null) ?? (inv.isImported ? "UNPAID" : null);
-                const stStyle = st ? STATUS_STYLE[st] ?? STATUS_STYLE.UNPAID : null;
+                const isDupe = (numCount.get(inv.number) ?? 0) > 1;
+                const extInv = inv as typeof inv & {
+                  dueDate?: Date | null;
+                  serviceDesc?: string | null;
+                  sourceFilePath?: string | null;
+                  tdsDeducted: boolean;
+                  tdsAmount: number | null;
+                };
                 return (
-                <tr key={inv.id}>
-                  <td>
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-mono font-semibold text-sm" style={{ color: "#818cf8" }}>
-                        {inv.number}
-                      </span>
-                      {inv.isImported && (
-                        <span className="text-[0.55rem] px-1.5 py-0.5 rounded font-semibold"
-                          style={{ background: "rgba(99,102,241,0.12)", color: "#818cf8", border: "1px solid rgba(99,102,241,0.2)" }}>
-                          IMPORTED
+                  <tr key={inv.id} style={isDupe ? { background: "rgba(251,191,36,0.04)" } : undefined}>
+                    <td>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-mono font-semibold text-sm" style={{ color: isDupe ? "#fbbf24" : "#818cf8" }}>
+                          {inv.number}
                         </span>
-                      )}
-                    </div>
-                  </td>
-                  <td>
-                    <p className="font-medium text-sm">{inv.buyerName}</p>
-                    {(inv.remarks || (inv as { serviceDesc?: string | null }).serviceDesc) && (
-                      <p className="text-xs mt-0.5 truncate max-w-[200px]" style={{ color: "var(--text-dim)" }}>
-                        {inv.remarks || (inv as { serviceDesc?: string | null }).serviceDesc}
-                      </p>
-                    )}
-                  </td>
-                  <td style={{ color: "var(--text-muted)", fontSize: "0.82rem" }}>
-                    <div>{inv.invoiceDate.toLocaleDateString("en-IN")}</div>
-                    {(inv as { dueDate?: Date | null }).dueDate && (
-                      <div className="text-xs" style={{ color: "var(--text-dim)" }}>
-                        Due {(inv as { dueDate: Date }).dueDate.toLocaleDateString("en-IN")}
+                        {isDupe && (
+                          <span className="text-[0.55rem] px-1.5 py-0.5 rounded font-semibold"
+                            style={{ background: "rgba(251,191,36,0.12)", color: "#fbbf24", border: "1px solid rgba(251,191,36,0.3)" }}>
+                            DUPLICATE
+                          </span>
+                        )}
+                        {inv.isImported && (
+                          <span className="text-[0.55rem] px-1.5 py-0.5 rounded font-semibold"
+                            style={{ background: "rgba(99,102,241,0.12)", color: "#818cf8", border: "1px solid rgba(99,102,241,0.2)" }}>
+                            IMPORTED
+                          </span>
+                        )}
                       </div>
-                    )}
-                  </td>
-                  <td>
-                    {stStyle && st ? (
-                      <span className="text-xs px-2 py-0.5 rounded font-semibold"
-                        style={{ background: stStyle.bg, color: stStyle.color, border: `1px solid ${stStyle.color}33` }}>
-                        {st}
+                    </td>
+                    <td>
+                      <p className="font-medium text-sm">{inv.buyerName}</p>
+                      {(inv.remarks || extInv.serviceDesc) && (
+                        <p className="text-xs mt-0.5 truncate max-w-[200px]" style={{ color: "var(--text-dim)" }}>
+                          {inv.remarks || extInv.serviceDesc}
+                        </p>
+                      )}
+                    </td>
+                    <td style={{ color: "var(--text-muted)", fontSize: "0.82rem" }}>
+                      <div>{inv.invoiceDate.toLocaleDateString("en-IN")}</div>
+                      {extInv.dueDate && (
+                        <div className="text-xs" style={{ color: "var(--text-dim)" }}>
+                          Due {extInv.dueDate.toLocaleDateString("en-IN")}
+                        </div>
+                      )}
+                    </td>
+                    <td>
+                      <InvoiceStatusCell
+                        invoiceId={inv.id}
+                        initialStatus={inv.paymentStatus ?? null}
+                        initialTdsDeducted={extInv.tdsDeducted}
+                        initialTdsAmount={extInv.tdsAmount}
+                      />
+                    </td>
+                    <td className="tabular-nums text-sm">{formatINR(inv.taxableTotal)}</td>
+                    <td>
+                      <span className="tabular-nums font-semibold" style={{ color: "#fbbf24" }}>
+                        {formatINR(inv.grandTotal)}
                       </span>
-                    ) : <span style={{ color: "var(--text-dim)" }}>—</span>}
-                  </td>
-                  <td className="tabular-nums text-sm">{formatINR(inv.taxableTotal)}</td>
-                  <td>
-                    <span className="tabular-nums font-semibold" style={{ color: "#fbbf24" }}>
-                      {formatINR(inv.grandTotal)}
-                    </span>
-                  </td>
-                  <td>
-                    <div className="flex items-center gap-1">
-                      {inv.filePath && (
-                        <Link
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all"
-                          style={{ background: "rgba(240,180,41,0.08)", border: "1px solid rgba(240,180,41,0.2)", color: "#fbbf24" }}
-                          href={`/api/files/${inv.filePath}`}
-                          target="_blank"
-                        >
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-                          PDF
-                        </Link>
-                      )}
-                      {(inv as { sourceFilePath?: string | null }).sourceFilePath && (
-                        <Link
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all"
-                          style={{ background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)", color: "#818cf8" }}
-                          href={`/${(inv as { sourceFilePath: string }).sourceFilePath}`}
-                          target="_blank"
-                          title="View original invoice"
-                        >
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8zM12 9a3 3 0 110 6 3 3 0 010-6z"/></svg>
-                          Orig
-                        </Link>
-                      )}
-                    </div>
-                  </td>
-                </tr>
+                    </td>
+                    <td>
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {/* Generated PDF — View + Download */}
+                        {inv.filePath && (
+                          <>
+                            <Link
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all hover:opacity-80"
+                              style={{ background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)", color: "#818cf8" }}
+                              href={`/api/files/${inv.filePath}`}
+                              target="_blank"
+                              title="View PDF"
+                            >
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8zM12 9a3 3 0 110 6 3 3 0 010-6z"/></svg>
+                              View
+                            </Link>
+                            <Link
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all hover:opacity-80"
+                              style={{ background: "rgba(240,180,41,0.08)", border: "1px solid rgba(240,180,41,0.2)", color: "#fbbf24" }}
+                              href={`/api/files/${inv.filePath}`}
+                              download={`${inv.number}.pdf`}
+                              title="Download PDF"
+                            >
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                              PDF
+                            </Link>
+                          </>
+                        )}
+                        {/* Original uploaded file — View + Download */}
+                        {extInv.sourceFilePath && (
+                          <>
+                            <Link
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all hover:opacity-80"
+                              style={{ background: "rgba(52,211,153,0.08)", border: "1px solid rgba(52,211,153,0.2)", color: "#34d399" }}
+                              href={`/${extInv.sourceFilePath}`}
+                              target="_blank"
+                              title="View original invoice"
+                            >
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8zM12 9a3 3 0 110 6 3 3 0 010-6z"/></svg>
+                              Orig
+                            </Link>
+                            <Link
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all hover:opacity-80"
+                              style={{ background: "rgba(52,211,153,0.08)", border: "1px solid rgba(52,211,153,0.2)", color: "#34d399" }}
+                              href={`/${extInv.sourceFilePath}`}
+                              download
+                              title="Download original"
+                            >
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                              DL
+                            </Link>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
                 );
               })}
               {invoices.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="text-center py-12">
+                  <td colSpan={7} className="text-center py-12">
                     <p style={{ color: "var(--text-dim)" }}>No invoices yet — create your first one above.</p>
                   </td>
                 </tr>

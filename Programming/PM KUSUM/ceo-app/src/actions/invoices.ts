@@ -234,6 +234,30 @@ export async function importInvoice(input: ImportInvoiceInput) {
   return { id: invoice.id, number: invoice.number, grandTotal: invoice.grandTotal };
 }
 
+export async function updateInvoicePayment(input: {
+  id: string;
+  paymentStatus: string;
+  tdsDeducted: boolean;
+  tdsAmount?: number | null;
+}) {
+  await requireCeo();
+  if (!input.id) throw new Error("Invoice ID required");
+  const valid = ["PAID", "UNPAID", "PARTIAL", "OVERDUE"];
+  if (!valid.includes(input.paymentStatus)) throw new Error("Invalid payment status");
+
+  await prisma.invoice.update({
+    where: { id: input.id },
+    data: {
+      paymentStatus: input.paymentStatus,
+      tdsDeducted: input.tdsDeducted,
+      tdsAmount: input.tdsAmount ?? null,
+    },
+  });
+
+  revalidatePath("/ceo/invoices");
+  revalidatePath("/ceo");
+}
+
 export async function listInvoices(query?: string) {
   await requireCeo();
   return prisma.invoice.findMany({

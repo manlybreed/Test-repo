@@ -146,6 +146,8 @@ model Invoice {
   grandTotal     Float
   amountInWords  String?
   paymentStatus  String?       // PAID | UNPAID | PARTIAL | OVERDUE
+  tdsDeducted    Boolean       @default(false)
+  tdsAmount      Float?
   isImported     Boolean       @default(false)
   sourceFilePath String?
   rawExtract     String?
