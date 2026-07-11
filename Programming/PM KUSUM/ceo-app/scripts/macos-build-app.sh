@@ -36,9 +36,18 @@ rsync -a --delete \
   --exclude node_modules/.cache \
   "$STANDALONE/" "$RES/"
 
-mkdir -p "$RES/.next"
-rsync -a "$ROOT/.next/static" "$RES/.next/static"
-rsync -a "$ROOT/public/" "$RES/public/" 2>/dev/null || true
+mkdir -p "$RES/.next/static"
+# Trailing slashes copy *contents* into .next/static (avoid .next/static/static nest)
+rsync -a --delete "$ROOT/.next/static/" "$RES/.next/static/"
+mkdir -p "$RES/public"
+rsync -a --delete "$ROOT/public/" "$RES/public/" 2>/dev/null || true
+
+# Gate: client chunks must exist at the path Next serves
+if [[ ! -d "$RES/.next/static/chunks" ]]; then
+  echo "FATAL: missing $RES/.next/static/chunks (static assets mis-copied)." >&2
+  ls -la "$RES/.next/static" >&2 || true
+  exit 1
+fi
 
 mkdir -p "$RES/node_modules"
 if [[ -d "$ROOT/node_modules/.prisma" ]]; then

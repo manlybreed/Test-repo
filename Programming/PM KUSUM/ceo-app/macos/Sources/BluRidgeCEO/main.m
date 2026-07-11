@@ -153,7 +153,7 @@
     return;
   }
 
-  NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:%@", _port]];
+  NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:%@/login", _port]];
   if (self.onStatus) {
     self.onStatus([NSString stringWithFormat:@"Starting BluRidge server on port %@…", _port], nil, NO);
   }
@@ -337,12 +337,35 @@
     _webView.allowsBackForwardNavigationGestures = YES;
     _webView.allowsMagnification = YES;
     _webView.navigationDelegate = self;
-    [_webView setValue:@NO forKey:@"drawsBackground"];
+    if (@available(macOS 12.0, *)) {
+      _webView.underPageBackgroundColor =
+          [NSColor colorWithRed:0.06 green:0.07 blue:0.10 alpha:1];
+    }
     [content addSubview:_webView];
   }
   NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
   [req setValue:@"BluRidgeCEO-macOS" forHTTPHeaderField:@"X-Desktop-App"];
   [_webView loadRequest:req];
+}
+
+- (void)webView:(WKWebView *)webView
+    didFailProvisionalNavigation:(WKNavigation *)navigation
+                       withError:(NSError *)error {
+  _status.hidden = NO;
+  _status.stringValue = [NSString
+      stringWithFormat:@"Failed to load UI.\n%@", error.localizedDescription ?: @"Unknown error"];
+  [webView removeFromSuperview];
+  _webView = nil;
+}
+
+- (void)webView:(WKWebView *)webView
+    didFailNavigation:(WKNavigation *)navigation
+            withError:(NSError *)error {
+  // Ignore cancelled navigations (redirects)
+  if (error.code == NSURLErrorCancelled) return;
+  _status.hidden = NO;
+  _status.stringValue = [NSString
+      stringWithFormat:@"Page error.\n%@", error.localizedDescription ?: @"Unknown error"];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)n {

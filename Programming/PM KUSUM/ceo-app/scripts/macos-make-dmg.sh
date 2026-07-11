@@ -24,6 +24,14 @@ if [[ ! -f "$SERVER" ]]; then
   exit 1
 fi
 
+CHUNKS="$APP/Contents/Resources/ceo-app/.next/static/chunks"
+if [[ ! -d "$CHUNKS" ]]; then
+  echo "Incomplete app — static chunks missing (UI would be blank):" >&2
+  echo "  $CHUNKS" >&2
+  echo "Run: npm run desktop:build" >&2
+  exit 1
+fi
+
 if [[ "$(uname -m)" != "arm64" ]]; then
   echo "DMG is produced for Apple Silicon (arm64)." >&2
   exit 1
