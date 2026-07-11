@@ -458,6 +458,7 @@ export function EmployeeForm({
   function validate(): string | null {
     if (!form.name.trim()) return "Employee name is required.";
     if (!form.phone.trim()) return "Contact number is required.";
+    if (!form.emailOfficial.trim()) return "Corporate / official email is required.";
     if (form.basic.trim() === "" || Number.isNaN(Number(form.basic))) return "Basic salary is required.";
     return null;
   }
@@ -746,8 +747,15 @@ export function EmployeeForm({
                 <input className="input" type="email" value={form.email} onChange={(e) => setField("email", e.target.value)} placeholder="From documents / personal" />
               </div>
               <div>
-                <label className="label">Official email</label>
-                <input className="input" type="email" value={form.emailOfficial} onChange={(e) => setField("emailOfficial", e.target.value)} placeholder="Enter manually" />
+                <label className="label">Corporate / official email *</label>
+                <input
+                  className="input"
+                  type="email"
+                  required
+                  value={form.emailOfficial}
+                  onChange={(e) => setField("emailOfficial", e.target.value)}
+                  placeholder="name@blueridge.company"
+                />
               </div>
               <div>
                 <label className="label">Contact number *</label>

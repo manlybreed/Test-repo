@@ -135,7 +135,7 @@ export const ceoTools: Anthropic.Tool[] = [
         professionalTax: { type: "number" },
         tdsPercent: { type: "number", description: "TDS rate as percent of gross" },
       },
-      required: ["name", "basic", "phone"],
+      required: ["name", "basic", "phone", "emailOfficial"],
     },
   },
   {

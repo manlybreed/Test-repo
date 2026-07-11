@@ -19,6 +19,8 @@ export type SalarySlipPdfInput = {
   employeeCode?: string | null;
   designation?: string | null;
   department?: string | null;
+  emailOfficial?: string | null;
+  phone?: string | null;
   pan?: string | null;
   uan?: string | null;
   month: number;
@@ -139,6 +141,16 @@ function SlipDoc({ data }: { data: SalarySlipPdfInput }) {
           <View style={s.col}>
             <Text style={s.label}>Department</Text>
             <Text style={s.value}>{data.department || "—"}</Text>
+          </View>
+        </View>
+        <View style={s.row}>
+          <View style={s.col}>
+            <Text style={s.label}>Corporate email</Text>
+            <Text style={s.value}>{data.emailOfficial || "—"}</Text>
+          </View>
+          <View style={s.col}>
+            <Text style={s.label}>Phone</Text>
+            <Text style={s.value}>{data.phone || "—"}</Text>
           </View>
         </View>
         <View style={s.row}>
