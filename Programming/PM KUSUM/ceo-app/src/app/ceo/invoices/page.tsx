@@ -2,7 +2,15 @@ import Link from "next/link";
 import { listInvoices } from "@/actions/invoices";
 import { listClients } from "@/actions/clients";
 import { InvoiceForm } from "@/components/invoice-form";
+import { ImportSection } from "./import-section";
 import { formatINR } from "@/lib/utils";
+
+const STATUS_STYLE: Record<string, { color: string; bg: string }> = {
+  PAID:     { color: "#34d399", bg: "rgba(16,185,129,0.1)" },
+  UNPAID:   { color: "#f87171", bg: "rgba(248,113,113,0.1)" },
+  PARTIAL:  { color: "#fb923c", bg: "rgba(251,146,60,0.1)" },
+  OVERDUE:  { color: "#fbbf24", bg: "rgba(251,191,36,0.1)" },
+};
 
 export default async function InvoicesPage({
   searchParams,
@@ -28,7 +36,7 @@ export default async function InvoicesPage({
           <span className="grad-text">GST Invoices</span>
         </h1>
         <p className="text-sm max-w-xl" style={{ color: "var(--text-muted)" }}>
-          Tax invoices with BluRidge letterhead — sequence continues from INV-08.
+          GST-compliant tax invoices with BluRidge letterhead. Import from Zoho, Tally, or any platform.
         </p>
       </header>
 
@@ -68,6 +76,9 @@ export default async function InvoicesPage({
           </Link>
         </div>
       )}
+
+      {/* Import section */}
+      <ImportSection />
 
       {/* New invoice form */}
       <section className="relative overflow-hidden rounded-xl mb-8"
@@ -112,27 +123,54 @@ export default async function InvoicesPage({
                 <th>Invoice No.</th>
                 <th>Buyer</th>
                 <th>Date</th>
+                <th>Status</th>
                 <th>Taxable</th>
                 <th>Grand Total</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {invoices.map((inv) => (
+              {invoices.map((inv) => {
+                const st = (inv.paymentStatus as string | null) ?? (inv.isImported ? "UNPAID" : null);
+                const stStyle = st ? STATUS_STYLE[st] ?? STATUS_STYLE.UNPAID : null;
+                return (
                 <tr key={inv.id}>
                   <td>
-                    <span className="font-mono font-semibold text-sm" style={{ color: "#818cf8" }}>
-                      {inv.number}
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-mono font-semibold text-sm" style={{ color: "#818cf8" }}>
+                        {inv.number}
+                      </span>
+                      {inv.isImported && (
+                        <span className="text-[0.55rem] px-1.5 py-0.5 rounded font-semibold"
+                          style={{ background: "rgba(99,102,241,0.12)", color: "#818cf8", border: "1px solid rgba(99,102,241,0.2)" }}>
+                          IMPORTED
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td>
                     <p className="font-medium text-sm">{inv.buyerName}</p>
-                    {inv.remarks && (
-                      <p className="text-xs mt-0.5" style={{ color: "var(--text-dim)" }}>{inv.remarks}</p>
+                    {(inv.remarks || (inv as { serviceDesc?: string | null }).serviceDesc) && (
+                      <p className="text-xs mt-0.5 truncate max-w-[200px]" style={{ color: "var(--text-dim)" }}>
+                        {inv.remarks || (inv as { serviceDesc?: string | null }).serviceDesc}
+                      </p>
                     )}
                   </td>
                   <td style={{ color: "var(--text-muted)", fontSize: "0.82rem" }}>
-                    {inv.invoiceDate.toLocaleDateString("en-IN")}
+                    <div>{inv.invoiceDate.toLocaleDateString("en-IN")}</div>
+                    {(inv as { dueDate?: Date | null }).dueDate && (
+                      <div className="text-xs" style={{ color: "var(--text-dim)" }}>
+                        Due {(inv as { dueDate: Date }).dueDate.toLocaleDateString("en-IN")}
+                      </div>
+                    )}
+                  </td>
+                  <td>
+                    {stStyle && st ? (
+                      <span className="text-xs px-2 py-0.5 rounded font-semibold"
+                        style={{ background: stStyle.bg, color: stStyle.color, border: `1px solid ${stStyle.color}33` }}>
+                        {st}
+                      </span>
+                    ) : <span style={{ color: "var(--text-dim)" }}>—</span>}
                   </td>
                   <td className="tabular-nums text-sm">{formatINR(inv.taxableTotal)}</td>
                   <td>
@@ -141,20 +179,35 @@ export default async function InvoicesPage({
                     </span>
                   </td>
                   <td>
-                    {inv.filePath && (
-                      <Link
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
-                        style={{ background: "rgba(240,180,41,0.08)", border: "1px solid rgba(240,180,41,0.2)", color: "#fbbf24" }}
-                        href={`/api/files/${inv.filePath}`}
-                        target="_blank"
-                      >
-                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-                        PDF
-                      </Link>
-                    )}
+                    <div className="flex items-center gap-1">
+                      {inv.filePath && (
+                        <Link
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all"
+                          style={{ background: "rgba(240,180,41,0.08)", border: "1px solid rgba(240,180,41,0.2)", color: "#fbbf24" }}
+                          href={`/api/files/${inv.filePath}`}
+                          target="_blank"
+                        >
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                          PDF
+                        </Link>
+                      )}
+                      {(inv as { sourceFilePath?: string | null }).sourceFilePath && (
+                        <Link
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all"
+                          style={{ background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)", color: "#818cf8" }}
+                          href={`/${(inv as { sourceFilePath: string }).sourceFilePath}`}
+                          target="_blank"
+                          title="View original invoice"
+                        >
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8zM12 9a3 3 0 110 6 3 3 0 010-6z"/></svg>
+                          Orig
+                        </Link>
+                      )}
+                    </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
               {invoices.length === 0 && (
                 <tr>
                   <td colSpan={6} className="text-center py-12">

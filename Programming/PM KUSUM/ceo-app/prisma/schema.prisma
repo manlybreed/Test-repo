@@ -126,27 +126,33 @@ model AgreementVersion {
 }
 
 model Invoice {
-  id           String        @id @default(cuid())
-  number       String        @unique
-  clientId     String?
-  client       Client?       @relation(fields: [clientId], references: [id])
-  buyerName    String
-  buyerAddress String?
-  buyerGstin   String?
-  buyerState   String?
+  id             String        @id @default(cuid())
+  number         String        @unique
+  clientId       String?
+  client         Client?       @relation(fields: [clientId], references: [id])
+  buyerName      String
+  buyerAddress   String?
+  buyerGstin     String?
+  buyerState     String?
   buyerStateCode String?
-  invoiceDate  DateTime      @default(now())
-  remarks      String?
-  taxableTotal Float
-  cgstAmount   Float
-  sgstAmount   Float
-  igstAmount   Float         @default(0)
-  grandTotal   Float
-  amountInWords String?
-  filePath     String?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  lines        InvoiceLine[]
+  invoiceDate    DateTime      @default(now())
+  dueDate        DateTime?
+  remarks        String?
+  serviceDesc    String?
+  taxableTotal   Float
+  cgstAmount     Float
+  sgstAmount     Float
+  igstAmount     Float         @default(0)
+  grandTotal     Float
+  amountInWords  String?
+  paymentStatus  String?       // PAID | UNPAID | PARTIAL | OVERDUE
+  isImported     Boolean       @default(false)
+  sourceFilePath String?
+  rawExtract     String?
+  filePath       String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  lines          InvoiceLine[]
 }
 
 model InvoiceLine {

@@ -150,6 +150,86 @@ export async function createInvoice(input: {
   return { id: invoice.id, number: invoice.number, filePath, grandTotal };
 }
 
+export type ImportInvoiceInput = {
+  invoiceNumber?: string;
+  invoiceDate: string;
+  dueDate?: string;
+  buyerName: string;
+  buyerAddress?: string;
+  buyerGstin?: string;
+  buyerState?: string;
+  buyerStateCode?: string;
+  serviceDesc?: string;
+  lines: { description: string; hsn?: string; quantity?: number; rate: number; amount: number }[];
+  taxableTotal: number;
+  cgstAmount: number;
+  sgstAmount: number;
+  igstAmount: number;
+  grandTotal: number;
+  paymentStatus?: string;
+  remarks?: string;
+  sourceFilePath?: string;
+  rawExtract?: string;
+};
+
+export async function importInvoice(input: ImportInvoiceInput) {
+  await requireCeo();
+  if (!input.buyerName?.trim()) throw new Error("Buyer name is required");
+
+  const invoice = await prisma.$transaction(async (tx) => {
+    // Use provided number or generate next in sequence
+    let number = input.invoiceNumber?.trim();
+    if (!number) {
+      const seq = await tx.invoiceSequence.upsert({
+        where: { id: "default" },
+        create: { id: "default", lastNum: 8 },
+        update: { lastNum: { increment: 1 } },
+      });
+      number = `INV-${String(seq.lastNum).padStart(2, "0")}`;
+    }
+
+    return tx.invoice.create({
+      data: {
+        number,
+        buyerName: input.buyerName.trim(),
+        buyerAddress: input.buyerAddress || null,
+        buyerGstin: input.buyerGstin || null,
+        buyerState: input.buyerState || null,
+        buyerStateCode: input.buyerStateCode || null,
+        invoiceDate: new Date(input.invoiceDate),
+        dueDate: input.dueDate ? new Date(input.dueDate) : null,
+        serviceDesc: input.serviceDesc || null,
+        remarks: input.remarks || null,
+        taxableTotal: input.taxableTotal,
+        cgstAmount: input.cgstAmount,
+        sgstAmount: input.sgstAmount,
+        igstAmount: input.igstAmount,
+        grandTotal: input.grandTotal,
+        amountInWords: amountInWordsINR(input.grandTotal),
+        paymentStatus: input.paymentStatus || "UNPAID",
+        isImported: true,
+        sourceFilePath: input.sourceFilePath || null,
+        rawExtract: input.rawExtract || null,
+        lines: {
+          create: input.lines.map((l, i) => ({
+            description: l.description,
+            hsn: l.hsn || "998313",
+            quantity: l.quantity ?? 1,
+            rate: l.rate,
+            amount: l.amount,
+            sortOrder: i,
+          })),
+        },
+      },
+      include: { lines: true },
+    });
+  });
+
+  revalidatePath("/ceo/invoices");
+  revalidatePath("/ceo");
+  return { id: invoice.id, number: invoice.number, grandTotal: invoice.grandTotal };
+}
+
 export async function listInvoices(query?: string) {
   await requireCeo();
   return prisma.invoice.findMany({

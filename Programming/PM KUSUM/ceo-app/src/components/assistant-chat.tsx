@@ -2,6 +2,8 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 type Msg = {
   role: "user" | "assistant";
@@ -111,13 +113,54 @@ export function AssistantChat() {
                   {m.role === "user" ? "You" : "Assistant"}
                 </p>
                 <div
-                  className="px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap rounded-md"
+                  className="px-4 py-3 text-sm leading-relaxed rounded-md chat-message"
                   style={{
                     background: m.role === "user" ? "var(--navy-muted)" : "var(--bg-elevated)",
                     border: `1px solid ${m.role === "user" ? "var(--border-strong)" : "var(--border)"}`,
                   }}
                 >
-                  {m.content}
+                  {m.role === "user" ? (
+                    <span className="whitespace-pre-wrap">{m.content}</span>
+                  ) : (
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                        strong: ({ children }) => <strong className="font-semibold" style={{ color: "var(--text)" }}>{children}</strong>,
+                        em: ({ children }) => <em className="italic" style={{ color: "var(--text-muted)" }}>{children}</em>,
+                        ul: ({ children }) => <ul className="list-disc list-inside space-y-1 mb-2 pl-1">{children}</ul>,
+                        ol: ({ children }) => <ol className="list-decimal list-inside space-y-1 mb-2 pl-1">{children}</ol>,
+                        li: ({ children }) => <li className="text-sm">{children}</li>,
+                        code: ({ children, className }) => {
+                          const isBlock = className?.includes("language-");
+                          return isBlock ? (
+                            <code className="block px-3 py-2 rounded text-xs font-mono my-2 overflow-x-auto"
+                              style={{ background: "rgba(0,0,0,0.3)", color: "#a5f3fc" }}>{children}</code>
+                          ) : (
+                            <code className="px-1.5 py-0.5 rounded text-xs font-mono"
+                              style={{ background: "rgba(0,0,0,0.25)", color: "#a5f3fc" }}>{children}</code>
+                          );
+                        },
+                        table: ({ children }) => (
+                          <div className="overflow-x-auto my-3 rounded-lg" style={{ border: "1px solid var(--border)" }}>
+                            <table className="w-full text-xs">{children}</table>
+                          </div>
+                        ),
+                        thead: ({ children }) => <thead style={{ background: "rgba(255,255,255,0.04)", borderBottom: "1px solid var(--border)" }}>{children}</thead>,
+                        th: ({ children }) => <th className="px-3 py-2 text-left font-semibold tracking-wide" style={{ color: "var(--text-dim)" }}>{children}</th>,
+                        td: ({ children }) => <td className="px-3 py-2" style={{ borderTop: "1px solid var(--border)", color: "var(--text-muted)" }}>{children}</td>,
+                        blockquote: ({ children }) => (
+                          <blockquote className="pl-3 my-2 text-sm italic" style={{ borderLeft: "3px solid var(--border-strong)", color: "var(--text-dim)" }}>{children}</blockquote>
+                        ),
+                        h1: ({ children }) => <h1 className="text-base font-bold mb-2 mt-1">{children}</h1>,
+                        h2: ({ children }) => <h2 className="text-sm font-bold mb-1.5 mt-1" style={{ color: "#818cf8" }}>{children}</h2>,
+                        h3: ({ children }) => <h3 className="text-sm font-semibold mb-1">{children}</h3>,
+                        hr: () => <hr className="my-3" style={{ borderColor: "var(--border)" }} />,
+                      }}
+                    >
+                      {m.content}
+                    </ReactMarkdown>
+                  )}
                 </div>
                 {m.downloads && m.downloads.length > 0 && (
                   <div className="mt-2 flex flex-wrap gap-2">
