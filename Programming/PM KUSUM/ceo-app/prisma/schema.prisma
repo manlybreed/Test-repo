@@ -234,6 +234,7 @@ model SalarySlip {
   netPay       Float
   amountInWords String?
   filePath     String?
+  paymentStatus String  @default("UNPAID") // PAID | UNPAID
   createdAt    DateTime @default(now())
 
   @@unique([employeeId, month, year])

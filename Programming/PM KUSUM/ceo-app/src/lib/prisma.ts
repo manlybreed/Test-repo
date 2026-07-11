@@ -1,7 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 
 /** Bump when Prisma schema fields change so the next.js global singleton is recreated in dev. */
-const PRISMA_SCHEMA_STAMP = "employee-dob-v1";
+const PRISMA_SCHEMA_STAMP = "salary-payment-v2";
 
 const globalForPrisma = globalThis as unknown as {
   prisma?: PrismaClient;

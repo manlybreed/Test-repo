@@ -25,6 +25,7 @@ export default async function PayrollPage() {
     tds: s.tds,
     totalDeduct: s.totalDeduct,
     netPay: s.netPay,
+    paymentStatus: s.paymentStatus ?? "UNPAID",
     filePath: s.filePath,
   }));
 

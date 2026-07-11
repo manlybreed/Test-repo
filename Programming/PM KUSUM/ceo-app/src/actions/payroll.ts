@@ -183,6 +183,21 @@ export async function generateSalarySlip(input: {
     otherDeduct,
   });
 
+  const existing = await prisma.salarySlip.findUnique({
+    where: {
+      employeeId_month_year: {
+        employeeId: employee.id,
+        month: input.month,
+        year: input.year,
+      },
+    },
+  });
+  if (existing?.paymentStatus === "PAID") {
+    throw new Error(
+      `Salary slip for ${employee.name} (${input.month}/${input.year}) is marked PAID and is view-only`,
+    );
+  }
+
   const pdfBuf = await renderSalarySlipPdf({
     companyName: company.legalName,
     companyAddress: `${company.addressLine1}, ${company.city}, ${company.state}`,
@@ -240,6 +255,7 @@ export async function generateSalarySlip(input: {
       netPay,
       amountInWords: amountInWordsINR(netPay),
       filePath,
+      paymentStatus: "UNPAID",
     },
     update: {
       basic,
@@ -275,6 +291,9 @@ export async function deleteSalarySlip(id: string) {
   if (!id) throw new Error("Salary slip ID required");
   const slip = await prisma.salarySlip.findUnique({ where: { id } });
   if (!slip) throw new Error("Salary slip not found");
+  if (slip.paymentStatus === "PAID") {
+    throw new Error("Paid salary slips are view-only and cannot be deleted");
+  }
   await prisma.salarySlip.delete({ where: { id } });
   await deleteStorageFile(slip.filePath);
   revalidatePath("/ceo/payroll");
@@ -287,6 +306,9 @@ export async function regenerateSalarySlip(id: string) {
   if (!id) throw new Error("Salary slip ID required");
   const slip = await prisma.salarySlip.findUnique({ where: { id } });
   if (!slip) throw new Error("Salary slip not found");
+  if (slip.paymentStatus === "PAID") {
+    throw new Error("Paid salary slips are view-only and cannot be modified");
+  }
   return generateSalarySlip({
     employeeId: slip.employeeId,
     month: slip.month,
@@ -294,11 +316,32 @@ export async function regenerateSalarySlip(id: string) {
   });
 }
 
+export async function updateSalarySlipPayment(input: {
+  id: string;
+  paymentStatus: string;
+}) {
+  await requireCeo();
+  const valid = ["PAID", "UNPAID"];
+  if (!valid.includes(input.paymentStatus)) throw new Error("Invalid payment status");
+  await prisma.salarySlip.update({
+    where: { id: input.id },
+    data: { paymentStatus: input.paymentStatus },
+  });
+  revalidatePath("/ceo/payroll");
+  revalidatePath("/ceo");
+}
+
 export async function generateSlipsForMonth(month: number, year: number) {
   await requireCeo();
   const employees = await prisma.employee.findMany({ where: { active: true } });
   const results = [];
   for (const emp of employees) {
+    const existing = await prisma.salarySlip.findUnique({
+      where: {
+        employeeId_month_year: { employeeId: emp.id, month, year },
+      },
+    });
+    if (existing?.paymentStatus === "PAID") continue;
     results.push(
       await generateSalarySlip({ employeeId: emp.id, month, year }),
     );

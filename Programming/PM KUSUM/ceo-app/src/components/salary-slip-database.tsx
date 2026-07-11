@@ -6,6 +6,8 @@ import {
   SalarySlipDeleteButton,
   SalarySlipRegenerateButton,
 } from "@/components/salary-slip-row-actions";
+import { SalarySlipStatusCell } from "@/components/salary-slip-status-cell";
+import { GlassSelect } from "@/components/glass-select";
 import { formatINR, monthName } from "@/lib/utils";
 
 export type SalarySlipDbRow = {
@@ -23,10 +25,12 @@ export type SalarySlipDbRow = {
   tds: number;
   totalDeduct: number;
   netPay: number;
+  paymentStatus: string;
   filePath: string | null;
 };
 
 type TdsFilter = "ALL" | "YES" | "NO";
+type PayFilter = "ALL" | "PAID" | "UNPAID";
 
 const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
 
@@ -38,6 +42,7 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
   const [amountMin, setAmountMin] = useState("");
   const [amountMax, setAmountMax] = useState("");
   const [tds, setTds] = useState<TdsFilter>("ALL");
+  const [pay, setPay] = useState<PayFilter>("ALL");
 
   const employeeOptions = useMemo(() => {
     const names = [...new Set(slips.map((s) => s.employeeName))].sort((a, b) =>
@@ -66,7 +71,11 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
     const monthN = month.trim() === "" ? null : Number(month);
 
     return slips.filter((s) => {
-      if (eq && !s.employeeName.toLowerCase().includes(eq) && !(s.employeeCode || "").toLowerCase().includes(eq)) {
+      if (
+        eq &&
+        !s.employeeName.toLowerCase().includes(eq) &&
+        !(s.employeeCode || "").toLowerCase().includes(eq)
+      ) {
         return false;
       }
       if (dq && !(s.department || "").toLowerCase().includes(dq)) return false;
@@ -76,9 +85,11 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
       if (max != null && !Number.isNaN(max) && s.netPay > max) return false;
       if (tds === "YES" && s.tds <= 0) return false;
       if (tds === "NO" && s.tds > 0) return false;
+      if (pay === "PAID" && s.paymentStatus !== "PAID") return false;
+      if (pay === "UNPAID" && s.paymentStatus === "PAID") return false;
       return true;
     });
-  }, [slips, employee, department, year, month, amountMin, amountMax, tds]);
+  }, [slips, employee, department, year, month, amountMin, amountMax, tds, pay]);
 
   const hasFilters =
     employee ||
@@ -87,7 +98,8 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
     month ||
     amountMin ||
     amountMax ||
-    tds !== "ALL";
+    tds !== "ALL" ||
+    pay !== "ALL";
 
   function clearFilters() {
     setEmployee("");
@@ -97,6 +109,7 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
     setAmountMin("");
     setAmountMax("");
     setTds("ALL");
+    setPay("ALL");
   }
 
   const filteredNet = filtered.reduce((sum, s) => sum + s.netPay, 0);
@@ -119,7 +132,7 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
           </span>
         </div>
         <p className="text-xs" style={{ color: "rgba(255,255,255,0.4)" }}>
-          View / PDF · Modify regenerates from employee salary · Del removes slip
+          Mark PAID to lock slip as view-only · Modify / Del hidden when paid
         </p>
       </div>
 
@@ -184,26 +197,28 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
 
           <div>
             <label className="label">Year</label>
-            <select className="input" value={year} onChange={(e) => setYear(e.target.value)}>
-              <option value="">All years</option>
-              {yearOptions.map((y) => (
-                <option key={y} value={y}>
-                  {y}
-                </option>
-              ))}
-            </select>
+            <GlassSelect
+              value={year}
+              onChange={setYear}
+              placeholder="All years"
+              options={[
+                { value: "", label: "All years" },
+                ...yearOptions.map((y) => ({ value: String(y), label: String(y) })),
+              ]}
+            />
           </div>
 
           <div>
             <label className="label">Month</label>
-            <select className="input" value={month} onChange={(e) => setMonth(e.target.value)}>
-              <option value="">All months</option>
-              {MONTHS.map((m) => (
-                <option key={m} value={m}>
-                  {monthName(m)}
-                </option>
-              ))}
-            </select>
+            <GlassSelect
+              value={month}
+              onChange={setMonth}
+              placeholder="All months"
+              options={[
+                { value: "", label: "All months" },
+                ...MONTHS.map((m) => ({ value: String(m), label: monthName(m) })),
+              ]}
+            />
           </div>
 
           <div>
@@ -232,6 +247,55 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
         </div>
 
         <div className="flex flex-wrap gap-4 pt-1">
+          <div>
+            <p className="label mb-1.5">Payment</p>
+            <div className="flex gap-1.5">
+              {(
+                [
+                  { id: "ALL", label: "All" },
+                  { id: "UNPAID", label: "Unpaid" },
+                  { id: "PAID", label: "Paid" },
+                ] as const
+              ).map((v) => (
+                <button
+                  key={v.id}
+                  type="button"
+                  onClick={() => setPay(v.id)}
+                  className="text-[0.65rem] font-bold px-2.5 py-1 rounded-lg transition-all"
+                  style={{
+                    background:
+                      pay === v.id
+                        ? v.id === "PAID"
+                          ? "rgba(16,185,129,0.15)"
+                          : v.id === "UNPAID"
+                            ? "rgba(248,113,113,0.12)"
+                            : "rgba(255,255,255,0.08)"
+                        : "rgba(255,255,255,0.02)",
+                    color:
+                      pay === v.id
+                        ? v.id === "PAID"
+                          ? "#34d399"
+                          : v.id === "UNPAID"
+                            ? "#f87171"
+                            : "rgba(255,255,255,0.85)"
+                        : "rgba(255,255,255,0.4)",
+                    border: `1px solid ${
+                      pay === v.id
+                        ? v.id === "PAID"
+                          ? "rgba(52,211,153,0.35)"
+                          : v.id === "UNPAID"
+                            ? "rgba(248,113,113,0.35)"
+                            : "rgba(255,255,255,0.15)"
+                        : "rgba(255,255,255,0.08)"
+                    }`,
+                  }}
+                >
+                  {v.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div>
             <p className="label mb-1.5">TDS</p>
             <div className="flex gap-1.5">
@@ -271,6 +335,7 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
               <th>Employee</th>
               <th>Period</th>
               <th>Department</th>
+              <th>Status</th>
               <th>Gross</th>
               <th>TDS</th>
               <th>Deductions</th>
@@ -281,9 +346,13 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
           <tbody>
             {filtered.map((s) => {
               const period = `${monthName(s.month)} ${s.year}`;
+              const isPaid = s.paymentStatus === "PAID";
               const downloadName = `Salary_${s.employeeCode || s.employeeName.replace(/\s+/g, "_")}_${s.year}_${String(s.month).padStart(2, "0")}.pdf`;
               return (
-                <tr key={s.id}>
+                <tr
+                  key={s.id}
+                  style={isPaid ? { background: "rgba(16,185,129,0.03)" } : undefined}
+                >
                   <td>
                     <p className="font-medium text-sm">{s.employeeName}</p>
                     <p className="text-xs mt-0.5" style={{ color: "rgba(255,255,255,0.4)" }}>
@@ -303,6 +372,9 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
                   </td>
                   <td style={{ color: "rgba(255,255,255,0.65)", fontSize: "0.82rem" }}>
                     {s.department || "—"}
+                  </td>
+                  <td>
+                    <SalarySlipStatusCell slipId={s.id} initialStatus={s.paymentStatus} />
                   </td>
                   <td className="tabular-nums text-sm" style={{ color: "rgba(255,255,255,0.72)" }}>
                     {formatINR(s.gross)}
@@ -350,16 +422,32 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
                           </Link>
                         </>
                       )}
-                      <SalarySlipRegenerateButton
-                        slipId={s.id}
-                        employeeName={s.employeeName}
-                        periodLabel={period}
-                      />
-                      <SalarySlipDeleteButton
-                        slipId={s.id}
-                        employeeName={s.employeeName}
-                        periodLabel={period}
-                      />
+                      {isPaid ? (
+                        <span
+                          className="text-[0.6rem] px-2 py-1 rounded-lg font-semibold"
+                          style={{
+                            background: "rgba(16,185,129,0.08)",
+                            border: "1px solid rgba(52,211,153,0.2)",
+                            color: "#6ee7b7",
+                          }}
+                          title="Paid slips are view-only"
+                        >
+                          View only
+                        </span>
+                      ) : (
+                        <>
+                          <SalarySlipRegenerateButton
+                            slipId={s.id}
+                            employeeName={s.employeeName}
+                            periodLabel={period}
+                          />
+                          <SalarySlipDeleteButton
+                            slipId={s.id}
+                            employeeName={s.employeeName}
+                            periodLabel={period}
+                          />
+                        </>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -367,7 +455,7 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
             })}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={8} className="text-center py-12">
+                <td colSpan={9} className="text-center py-12">
                   <p style={{ color: "rgba(255,255,255,0.4)" }}>
                     {slips.length === 0
                       ? "No salary slips yet — generate slips above."
