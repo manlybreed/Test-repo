@@ -84,7 +84,7 @@ export async function POST(req: NextRequest) {
       }
 
       const msg = await client.messages.create({
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-6",
         max_tokens: 512,
         messages: [{ role: "user", content: contentParts }],
       });
@@ -94,7 +94,7 @@ export async function POST(req: NextRequest) {
       extractedData = JSON.parse(json);
     } else if (textHint) {
       const msg = await client.messages.create({
-        model: "claude-3-5-haiku-20241022",
+        model: "claude-haiku-4-5",
         max_tokens: 512,
         messages: [
           {
