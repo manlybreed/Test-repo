@@ -68,6 +68,9 @@ export async function upsertEmployee(input: EmployeeInput) {
   await requireCeo();
   if (!input.name?.trim()) throw new Error("Name is required");
   if (!input.phone?.trim()) throw new Error("Contact number is required");
+  if (!input.emailOfficial?.trim()) {
+    throw new Error("Corporate / official email is required");
+  }
   if (input.basic == null || Number.isNaN(Number(input.basic))) {
     throw new Error("Basic salary is required");
   }
@@ -89,7 +92,7 @@ export async function upsertEmployee(input: EmployeeInput) {
     designation: input.designation || null,
     department: input.department || null,
     email: input.email || null,
-    emailOfficial: input.emailOfficial || null,
+    emailOfficial: input.emailOfficial.trim(),
     phone: input.phone.trim(),
     pan: input.pan?.toUpperCase() || null,
     aadhaar: input.aadhaar ? formatAadhaar(input.aadhaar) || null : null,
@@ -188,6 +191,8 @@ export async function generateSalarySlip(input: {
     employeeCode: employee.employeeCode,
     designation: employee.designation,
     department: employee.department,
+    emailOfficial: employee.emailOfficial,
+    phone: employee.phone,
     pan: employee.pan,
     uan: employee.uan,
     month: input.month,
