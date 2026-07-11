@@ -1,0 +1,361 @@
+@import "tailwindcss";
+
+:root {
+  /* ── Surface hierarchy ───────────────────────────────────────── */
+  --bg:            #0d0f14;
+  --bg-elevated:   #13161e;
+  --bg-panel:      #181c27;
+  --bg-hover:      #1e2233;
+  --bg-glass:      rgba(18, 22, 34, 0.80);
+
+  /* ── Borders ─────────────────────────────────────────────────── */
+  --border:        rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.13);
+  --border-glow:   rgba(99, 102, 241, 0.50);
+
+  /* ── Brand navy (kept for PDFs / Word docs) ─────────────────── */
+  --navy:          #1a3560;
+  --navy-bright:   #2a52a0;
+  --navy-muted:    #0e2040;
+  --navy-glow:     rgba(42, 82, 160, 0.30);
+
+  /* ── Accent: electric indigo ─────────────────────────────────── */
+  --accent:        #6366f1;
+  --accent-dim:    rgba(99, 102, 241, 0.15);
+  --accent-glow:   rgba(99, 102, 241, 0.35);
+  --accent-bright: #818cf8;
+
+  /* ── Gold highlight ──────────────────────────────────────────── */
+  --gold:          #f0b429;
+  --gold-dim:      rgba(240, 180, 41, 0.12);
+
+  /* ── Text ────────────────────────────────────────────────────── */
+  --text:          #e4e8f2;
+  --text-muted:    #7a85a3;
+  --text-dim:      #3d4460;
+
+  /* ── Semantic ────────────────────────────────────────────────── */
+  --success:       #10b981;
+  --warning:       #f59e0b;
+  --danger:        #ef4444;
+  --focus:         #6366f1;
+
+  /* ── Gradients ───────────────────────────────────────────────── */
+  --grad-hero: radial-gradient(ellipse 80% 50% at -5% -10%,
+                 rgba(99,102,241,0.12) 0%, transparent 60%),
+               radial-gradient(ellipse 50% 40% at 110% 110%,
+                 rgba(42,82,160,0.10) 0%, transparent 55%);
+}
+
+@theme inline {
+  --color-background:    var(--bg);
+  --color-foreground:    var(--text);
+  --color-panel:         var(--bg-panel);
+  --color-elevated:      var(--bg-elevated);
+  --color-border:        var(--border);
+  --color-navy:          var(--navy);
+  --color-navy-bright:   var(--navy-bright);
+  --color-muted:         var(--text-muted);
+  --color-dim:           var(--text-dim);
+  --color-accent:        var(--accent);
+  --font-sans:           var(--font-display);
+  --font-mono:           var(--font-mono);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  background-image: var(--grad-hero);
+  background-attachment: fixed;
+  color: var(--text);
+  font-family: var(--font-display), "Inter", "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100dvh;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.22); }
+
+::selection { background: rgba(99,102,241,0.35); color: #fff; }
+
+a { color: inherit; text-decoration: none; }
+input, textarea, select, button { font: inherit; }
+
+/* ── Inputs ────────────────────────────────────────────────────── */
+.input {
+  width: 100%;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  padding: 0.6rem 0.875rem;
+  border-radius: 6px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.input:hover  { border-color: rgba(255,255,255,0.2); }
+.input:focus  {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+.input::placeholder { color: var(--text-dim); }
+select.input option { background: var(--bg-panel); }
+
+/* ── Labels ─────────────────────────────────────────────────────── */
+.label {
+  display: block;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 0.375rem;
+  font-weight: 500;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.55rem 1.1rem;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-size: 0.84rem;
+  font-weight: 500;
+  letter-spacing: 0.015em;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  position: relative;
+  overflow: hidden;
+}
+.btn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(255,255,255,0);
+  transition: background 0.15s;
+}
+.btn:hover::after  { background: rgba(255,255,255,0.04); }
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:disabled { opacity: 0.38; cursor: not-allowed; }
+
+.btn-primary {
+  background: var(--accent);
+  border-color: rgba(129,140,248,0.4);
+  color: #fff;
+  box-shadow: 0 1px 16px var(--accent-glow), 0 0 0 0 var(--accent-dim);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-bright);
+  box-shadow: 0 2px 24px rgba(99,102,241,0.5);
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: var(--border-strong);
+  color: var(--text-muted);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: rgba(255,255,255,0.18);
+  color: var(--text);
+}
+
+.btn-gold {
+  background: var(--gold-dim);
+  border-color: rgba(240,180,41,0.35);
+  color: var(--gold);
+}
+.btn-gold:hover:not(:disabled) {
+  background: rgba(240,180,41,0.18);
+  box-shadow: 0 2px 16px rgba(240,180,41,0.2);
+}
+
+.btn-danger {
+  background: transparent;
+  border-color: rgba(239,68,68,0.4);
+  color: #f87171;
+}
+.btn-danger:hover:not(:disabled) {
+  background: rgba(239,68,68,0.1);
+}
+
+/* ── Panels ─────────────────────────────────────────────────────── */
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.panel-glass {
+  background: var(--bg-glass);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.hairline { border-color: var(--border); }
+
+/* ── Tables ──────────────────────────────────────────────────────── */
+.table-wrap { overflow-x: auto; }
+
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+table.data th {
+  text-align: left;
+  font-size: 0.67rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+table.data td {
+  padding: 0.9rem 1rem;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  color: var(--text);
+  vertical-align: middle;
+}
+table.data tbody tr { transition: background 0.12s; }
+table.data tbody tr:hover td { background: rgba(255,255,255,0.025); }
+
+/* ── Badges ──────────────────────────────────────────────────────── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.62rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  font-weight: 600;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+}
+.badge-final { border-color: rgba(16,185,129,0.35); color: #34d399; background: rgba(16,185,129,0.08); }
+.badge-draft { border-color: rgba(245,158,11,0.35); color: #fbbf24; background: rgba(245,158,11,0.08); }
+
+/* ── Animations ──────────────────────────────────────────────────── */
+@keyframes spin  { to { transform: rotate(360deg); } }
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 12px var(--accent-glow); }
+  50%       { box-shadow: 0 0 28px var(--accent-glow), 0 0 48px rgba(99,102,241,0.15); }
+}
+@keyframes float-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.loading-spin {
+  display: inline-block;
+  width: 14px; height: 14px;
+  border: 2px solid rgba(255,255,255,0.15);
+  border-top-color: var(--accent-bright);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+/* ── Gradient text ───────────────────────────────────────────────── */
+.grad-text {
+  background: linear-gradient(130deg, #a5b4fc 0%, #e0e7ff 50%, #818cf8 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.grad-gold {
+  background: linear-gradient(130deg, #fbbf24 0%, #f8e16c 50%, #f0b429 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ── Glow ────────────────────────────────────────────────────────── */
+.glow        { box-shadow: 0 0 40px -8px var(--accent-glow), 0 0 80px -20px rgba(99,102,241,0.15); }
+.glow-accent { animation: pulse-glow 3s ease-in-out infinite; }
+
+/* ── Command bar specific ────────────────────────────────────────── */
+.cmd-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  z-index: 9999;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 18vh;
+}
+
+.cmd-palette {
+  width: min(640px, calc(100vw - 2rem));
+  background: #1a1d2a;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 12px;
+  box-shadow: 0 32px 80px rgba(0,0,0,0.7), 0 0 0 1px rgba(99,102,241,0.1), 0 0 60px rgba(99,102,241,0.08);
+  overflow: hidden;
+}
+
+.cmd-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.875rem 1.25rem;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+
+.cmd-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 1rem;
+  color: var(--text);
+  caret-color: var(--accent);
+}
+
+.cmd-input::placeholder { color: var(--text-dim); }
+
+.cmd-result {
+  padding: 1rem 1.25rem;
+  min-height: 60px;
+  max-height: 340px;
+  overflow-y: auto;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.cmd-shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.cmd-shortcut kbd {
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: inherit;
+}

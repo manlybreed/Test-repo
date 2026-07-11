@@ -1,0 +1,285 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Prisma 6 — URL in schema; docker compose on port 5433
+
+enum Role {
+  CEO
+}
+
+enum AgreementStatus {
+  DRAFT
+  FINAL
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  DONE
+}
+
+enum TimeSessionKind {
+  POMODORO
+  BREAK
+  MANUAL
+}
+
+model User {
+  id           String        @id @default(cuid())
+  email        String        @unique
+  name         String
+  passwordHash String
+  role         Role          @default(CEO)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  chatThreads  ChatThread[]
+  tasks        Task[]
+  timeSessions TimeSession[]
+}
+
+model CompanyProfile {
+  id           String   @id @default(cuid())
+  legalName    String
+  tradeName    String?
+  addressLine1 String
+  addressLine2 String?
+  city         String
+  state        String
+  stateCode    String
+  pincode      String?
+  gstin        String
+  pan          String?
+  email        String?
+  phone        String?
+  bankName     String?
+  bankAccount  String?
+  bankIfsc     String?
+  hsnDefault   String   @default("998313")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Client {
+  id           String      @id @default(cuid())
+  name         String
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  state        String?
+  stateCode    String?
+  pincode      String?
+  gstin        String?
+  pan          String?
+  email        String?
+  phone        String?
+  notes        String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  agreements   Agreement[]
+  invoices     Invoice[]
+}
+
+model Agreement {
+  id              String              @id @default(cuid())
+  clientId        String?
+  client          Client?             @relation(fields: [clientId], references: [id])
+  clientName      String
+  clientAddress   String?
+  clientGstin     String?
+  clientPan       String?
+  spvName         String?
+  plantCount      Int                 @default(1)
+  tokenFeePerPlant Float              @default(40000)
+  successFeePct   Float               @default(1)
+  gstPct          Float               @default(18)
+  designatedLender String?
+  interestRange   String?
+  minLoan         String?
+  maxLoan         String?
+  tenure          String?
+  moratorium      String?
+  effectiveDate   DateTime            @default(now())
+  termMonths      Int                 @default(9)
+  tailMonths      Int                 @default(24)
+  status          AgreementStatus     @default(DRAFT)
+  inputsJson      Json?
+  filePath        String?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  versions        AgreementVersion[]
+}
+
+model AgreementVersion {
+  id          String    @id @default(cuid())
+  agreementId String
+  agreement   Agreement @relation(fields: [agreementId], references: [id], onDelete: Cascade)
+  version     Int
+  filePath    String
+  inputsJson  Json?
+  createdAt   DateTime  @default(now())
+}
+
+model Invoice {
+  id           String        @id @default(cuid())
+  number       String        @unique
+  clientId     String?
+  client       Client?       @relation(fields: [clientId], references: [id])
+  buyerName    String
+  buyerAddress String?
+  buyerGstin   String?
+  buyerState   String?
+  buyerStateCode String?
+  invoiceDate  DateTime      @default(now())
+  remarks      String?
+  taxableTotal Float
+  cgstAmount   Float
+  sgstAmount   Float
+  igstAmount   Float         @default(0)
+  grandTotal   Float
+  amountInWords String?
+  filePath     String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  lines        InvoiceLine[]
+}
+
+model InvoiceLine {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  description String
+  hsn         String  @default("998313")
+  quantity    Float   @default(1)
+  rate        Float
+  amount      Float
+  sortOrder   Int     @default(0)
+}
+
+model Employee {
+  id           String       @id @default(cuid())
+  name         String
+  employeeCode String?      @unique
+  designation  String?
+  department   String?
+  email        String?
+  pan          String?
+  uan          String?
+  bankAccount  String?
+  bankIfsc     String?
+  basic        Float
+  hra          Float        @default(0)
+  special      Float        @default(0)
+  otherAllow   Float        @default(0)
+  pf           Float        @default(0)
+  professionalTax Float     @default(0)
+  tds          Float        @default(0)
+  otherDeduct  Float        @default(0)
+  joinDate     DateTime?
+  active       Boolean      @default(true)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  slips        SalarySlip[]
+}
+
+model SalarySlip {
+  id           String   @id @default(cuid())
+  employeeId   String
+  employee     Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  month        Int
+  year         Int
+  basic        Float
+  hra          Float
+  special      Float
+  otherAllow   Float
+  gross        Float
+  pf           Float
+  professionalTax Float
+  tds          Float
+  otherDeduct  Float
+  totalDeduct  Float
+  netPay       Float
+  amountInWords String?
+  filePath     String?
+  createdAt    DateTime @default(now())
+
+  @@unique([employeeId, month, year])
+}
+
+model Task {
+  id           String        @id @default(cuid())
+  userId       String
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title        String
+  description  String?
+  projectTag   String?
+  clientTag    String?
+  status       TaskStatus    @default(TODO)
+  estimateMin  Int?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  sessions     TimeSession[]
+}
+
+model TimeSession {
+  id          String          @id @default(cuid())
+  userId      String
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  taskId      String?
+  task        Task?           @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  kind        TimeSessionKind @default(MANUAL)
+  startedAt   DateTime
+  endedAt     DateTime?
+  durationSec Int?
+  notes       String?
+  createdAt   DateTime        @default(now())
+}
+
+model ChatThread {
+  id        String        @id @default(cuid())
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String        @default("CEO Assistant")
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  messages  ChatMessage[]
+}
+
+model ChatMessage {
+  id        String     @id @default(cuid())
+  threadId  String
+  thread    ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  role      String
+  content   String
+  toolCalls Json?
+  createdAt DateTime   @default(now())
+}
+
+model InvoiceSequence {
+  id      String @id @default("default")
+  lastNum Int    @default(8)
+}
+
+model Expense {
+  id          String   @id @default(cuid())
+  date        DateTime
+  vendor      String
+  amount      Decimal  @db.Decimal(12, 2)
+  category    String
+  subCategory String?
+  description String?
+  paymentMode String?
+  gstAmount   Decimal? @db.Decimal(12, 2)
+  invoiceNo   String?
+  filePath    String?
+  rawExtract  String?
+  notes       String?
+  needsReview Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
