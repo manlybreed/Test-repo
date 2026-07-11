@@ -31,14 +31,14 @@ export default async function PayrollPage() {
 
   return (
     <div>
-      <header className="mb-8">
+      <header className="mb-5">
         <p
-          className="text-[0.6rem] tracking-[0.26em] uppercase mb-2 font-semibold"
+          className="text-[0.6rem] tracking-[0.26em] uppercase mb-1.5 font-semibold"
           style={{ color: "var(--text-dim)" }}
         >
           Module · Payroll
         </p>
-        <h1 className="text-[2.2rem] font-bold tracking-tight leading-none mb-3">
+        <h1 className="text-[1.85rem] font-bold tracking-tight leading-none mb-2">
           <span className="grad-text">Payroll</span>
         </h1>
         <p className="text-sm max-w-xl" style={{ color: "var(--text-muted)" }}>
@@ -46,7 +46,7 @@ export default async function PayrollPage() {
         </p>
       </header>
 
-      <div className="grid grid-cols-3 gap-4 mb-8">
+      <div className="grid grid-cols-3 gap-3 mb-5">
         {[
           {
             label: "Active staff",
@@ -95,7 +95,7 @@ export default async function PayrollPage() {
       </div>
 
       <section
-        className="relative overflow-hidden rounded-xl mb-8"
+        className="relative overflow-hidden rounded-xl mb-5"
         style={{ background: "var(--bg-panel)", border: "1px solid var(--border)" }}
       >
         <div
@@ -105,15 +105,15 @@ export default async function PayrollPage() {
               "radial-gradient(ellipse 50% 60% at 0% 0%, rgba(16,185,129,0.06) 0%, transparent 55%)",
           }}
         />
-        <div className="relative p-6">
-          <div className="flex items-center gap-3 mb-6">
+        <div className="relative p-4 sm:p-5">
+          <div className="flex items-center gap-3 mb-4">
             <div
-              className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
+              className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0"
               style={{ background: "rgba(16,185,129,0.12)", color: "#34d399" }}
             >
               <svg
-                width="15"
-                height="15"
+                width="14"
+                height="14"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"

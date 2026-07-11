@@ -35,7 +35,7 @@ export function SalarySlipRegenerateButton({
       <button
         type="button"
         onClick={() => setConfirmOpen(true)}
-        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all hover:opacity-80"
+        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.65rem] font-medium transition-all hover:opacity-80"
         style={{
           background: "rgba(99,102,241,0.08)",
           border: "1px solid rgba(99,102,241,0.25)",
@@ -88,7 +88,7 @@ export function SalarySlipDeleteButton({
       <button
         type="button"
         onClick={() => setConfirmOpen(true)}
-        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all hover:opacity-80"
+        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.65rem] font-medium transition-all hover:opacity-80"
         style={{
           background: "rgba(239,68,68,0.08)",
           border: "1px solid rgba(239,68,68,0.25)",
