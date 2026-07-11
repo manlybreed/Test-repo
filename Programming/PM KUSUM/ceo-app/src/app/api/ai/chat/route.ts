@@ -39,6 +39,15 @@ export async function POST(req: NextRequest) {
       },
     });
     threadId = thread.id;
+  } else {
+    // Verify thread belongs to this user
+    const thread = await prisma.chatThread.findFirst({
+      where: { id: threadId, userId: session.user.id },
+      select: { id: true },
+    });
+    if (!thread) {
+      return NextResponse.json({ error: "Thread not found" }, { status: 404 });
+    }
   }
 
   await prisma.chatMessage.create({
@@ -63,69 +72,87 @@ export async function POST(req: NextRequest) {
 
   let finalText = "";
   const downloads: { label: string; href: string }[] = [];
-  let guard = 0;
 
-  while (guard < 6) {
-    guard += 1;
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 4096,
-      system: SYSTEM_PROMPT,
-      tools: ceoTools,
-      messages,
-    });
+  try {
+    let guard = 0;
 
-    const toolUses = response.content.filter(
-      (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
-    );
-    const texts = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === "text")
-      .map((b) => b.text);
-
-    if (toolUses.length === 0) {
-      finalText = texts.join("\n") || "Done.";
-      break;
-    }
-
-    messages.push({ role: "assistant", content: response.content });
-
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
-    for (const tool of toolUses) {
-      const result = await runCeoTool(tool.name, tool.input);
-      try {
-        const parsed = JSON.parse(result);
-        if (parsed.download) {
-          downloads.push({
-            label:
-              parsed.number ||
-              parsed.clientName ||
-              parsed.employeeName ||
-              tool.name,
-            href: parsed.download,
-          });
-        }
-      } catch {
-        /* ignore */
-      }
-      toolResults.push({
-        type: "tool_result",
-        tool_use_id: tool.id,
-        content: result,
+    while (guard < 6) {
+      guard += 1;
+      const response = await anthropic.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 4096,
+        system: SYSTEM_PROMPT,
+        tools: ceoTools,
+        messages,
       });
+
+      const toolUses = response.content.filter(
+        (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+      );
+      const texts = response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === "text")
+        .map((b) => b.text);
+
+      if (toolUses.length === 0) {
+        finalText = texts.join("\n") || "Done.";
+        break;
+      }
+
+      messages.push({ role: "assistant", content: response.content });
+
+      const toolResults: Anthropic.ToolResultBlockParam[] = [];
+      for (const tool of toolUses) {
+        const result = await runCeoTool(tool.name, tool.input);
+        try {
+          const parsed = JSON.parse(result);
+          if (parsed.download) {
+            downloads.push({
+              label:
+                parsed.number ||
+                parsed.clientName ||
+                parsed.employeeName ||
+                tool.name,
+              href: parsed.download,
+            });
+          }
+        } catch {
+          /* ignore */
+        }
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: tool.id,
+          content: result,
+        });
+      }
+
+      messages.push({ role: "user", content: toolResults });
+
+      if (response.stop_reason === "end_turn" && texts.length) {
+        finalText = texts.join("\n");
+      }
     }
 
-    messages.push({ role: "user", content: toolResults });
-
-    if (response.stop_reason === "end_turn" && texts.length) {
-      finalText = texts.join("\n");
+    if (!finalText) {
+      finalText =
+        downloads.length > 0
+          ? "Completed. Documents are ready to download."
+          : "Completed.";
     }
-  }
-
-  if (!finalText) {
-    finalText =
-      downloads.length > 0
-        ? "Completed. Documents are ready to download."
-        : "Completed.";
+  } catch (err) {
+    console.error("[/api/ai/chat] Anthropic error:", err);
+    const errMsg =
+      err instanceof Error ? err.message : "AI request failed. Please try again.";
+    await prisma.chatMessage.create({
+      data: {
+        threadId: threadId!,
+        role: "assistant",
+        content: `Sorry, I encountered an error: ${errMsg}`,
+      },
+    });
+    return NextResponse.json(
+      { threadId, reply: `Sorry, I encountered an error: ${errMsg}`, downloads: [] },
+      { status: 500 },
+    );
   }
 
   await prisma.chatMessage.create({
