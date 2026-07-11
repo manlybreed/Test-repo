@@ -29,3 +29,12 @@ export function resolveStoragePath(relativePath: string): string {
   }
   return full;
 }
+
+export async function deleteStorageFile(relativePath: string | null | undefined) {
+  if (!relativePath) return;
+  try {
+    await fs.unlink(resolveStoragePath(relativePath));
+  } catch {
+    // File may already be gone — ignore
+  }
+}

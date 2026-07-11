@@ -4,7 +4,7 @@ import path from "path";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireCeoAction as requireCeo } from "@/lib/session";
-import { writeStorageFile } from "@/lib/storage";
+import { deleteStorageFile, writeStorageFile } from "@/lib/storage";
 import { amountInWordsINR } from "@/lib/utils";
 import { renderSalarySlipPdf } from "@/lib/docgen/salary-slip";
 import { employeeSalaryTotals } from "@/lib/employee-salary";
@@ -265,8 +265,32 @@ export async function generateSalarySlip(input: {
 export async function listSalarySlips() {
   await requireCeo();
   return prisma.salarySlip.findMany({
-    orderBy: [{ year: "desc" }, { month: "desc" }],
+    orderBy: [{ year: "desc" }, { month: "desc" }, { createdAt: "desc" }],
     include: { employee: true },
+  });
+}
+
+export async function deleteSalarySlip(id: string) {
+  await requireCeo();
+  if (!id) throw new Error("Salary slip ID required");
+  const slip = await prisma.salarySlip.findUnique({ where: { id } });
+  if (!slip) throw new Error("Salary slip not found");
+  await prisma.salarySlip.delete({ where: { id } });
+  await deleteStorageFile(slip.filePath);
+  revalidatePath("/ceo/payroll");
+  revalidatePath("/ceo");
+}
+
+/** Re-generate PDF + amounts from the employee's current salary structure. */
+export async function regenerateSalarySlip(id: string) {
+  await requireCeo();
+  if (!id) throw new Error("Salary slip ID required");
+  const slip = await prisma.salarySlip.findUnique({ where: { id } });
+  if (!slip) throw new Error("Salary slip not found");
+  return generateSalarySlip({
+    employeeId: slip.employeeId,
+    month: slip.month,
+    year: slip.year,
   });
 }
 
