@@ -116,10 +116,13 @@ export function InvoiceStatusCell({
       {/* Inline status list — expands row height */}
       {statusOpen && (
         <div
-          className="flex flex-col rounded-lg overflow-hidden self-start"
+          className="flex flex-col rounded-xl overflow-hidden self-start"
           style={{
-            border: "1px solid var(--border, rgba(255,255,255,0.1))",
-            background: "var(--bg-elevated, rgba(255,255,255,0.03))",
+            background: "rgba(18, 22, 34, 0.72)",
+            backdropFilter: "blur(20px)",
+            WebkitBackdropFilter: "blur(20px)",
+            border: "1px solid rgba(255,255,255,0.12)",
+            boxShadow: "0 16px 40px rgba(0,0,0,0.45)",
             minWidth: 120,
           }}
         >
@@ -162,10 +165,13 @@ export function InvoiceStatusCell({
       {/* Inline TDS editor — expands row height */}
       {tdsOpen && (
         <div
-          className="rounded-lg p-2.5 self-start"
+          className="rounded-xl p-2.5 self-start"
           style={{
-            border: "1px solid rgba(139,92,246,0.25)",
-            background: "rgba(139,92,246,0.06)",
+            background: "rgba(18, 22, 34, 0.72)",
+            backdropFilter: "blur(20px)",
+            WebkitBackdropFilter: "blur(20px)",
+            border: "1px solid rgba(139,92,246,0.28)",
+            boxShadow: "0 16px 40px rgba(0,0,0,0.45)",
             minWidth: 140,
           }}
         >
