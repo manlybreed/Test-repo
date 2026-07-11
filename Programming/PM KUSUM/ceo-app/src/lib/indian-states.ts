@@ -50,3 +50,18 @@ export function panFromGstin(gstin?: string | null): string | null {
   const pan = g.slice(2, 12);
   return /^[A-Z]{5}\d{4}[A-Z]$/.test(pan) ? pan : null;
 }
+
+/** Digits only from an Aadhaar string (may include spaces/dashes). */
+export function aadhaarDigits(value?: string | null): string {
+  return (value ?? "").replace(/\D/g, "").slice(0, 12);
+}
+
+/** Format as XXXX-XXXX-XXXX while typing or after extract. */
+export function formatAadhaar(value?: string | null): string {
+  const digits = aadhaarDigits(value);
+  const parts: string[] = [];
+  for (let i = 0; i < digits.length; i += 4) {
+    parts.push(digits.slice(i, i + 4));
+  }
+  return parts.join("-");
+}

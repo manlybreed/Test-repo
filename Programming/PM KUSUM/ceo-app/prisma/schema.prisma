@@ -172,29 +172,46 @@ model InvoiceLine {
 }
 
 model Employee {
-  id           String       @id @default(cuid())
-  name         String
-  employeeCode String?      @unique
-  designation  String?
-  department   String?
-  email        String?
-  pan          String?
-  uan          String?
-  bankAccount  String?
-  bankIfsc     String?
-  basic        Float
-  hra          Float        @default(0)
-  special      Float        @default(0)
-  otherAllow   Float        @default(0)
-  pf           Float        @default(0)
-  professionalTax Float     @default(0)
-  tds          Float        @default(0)
-  otherDeduct  Float        @default(0)
-  joinDate     DateTime?
-  active       Boolean      @default(true)
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
-  slips        SalarySlip[]
+  id              String       @id @default(cuid())
+  name            String
+  employeeCode    String?      @unique
+  designation     String?
+  department      String?
+  email           String?      // personal email
+  emailOfficial   String?      // company / official email (manual)
+  phone           String?
+  pan             String?
+  aadhaar         String?
+  uan             String?
+  addressLine1    String?
+  city            String?
+  state           String?
+  pincode         String?
+  bankAccount     String?
+  bankIfsc        String?
+  bankName        String?
+  bankBranch      String?
+  basic           Float
+  hra             Float        @default(0)
+  special         Float        @default(0)
+  otherAllow      Float        @default(0)
+  pf              Float        @default(0)
+  professionalTax Float        @default(0)
+  tdsPercent      Float        @default(0)  // TDS rate % applied on gross
+  otherDeduct     Float        @default(0)
+  joinDate        DateTime?
+  photoPath       String?
+  panDocPath      String?
+  aadhaarDocPath  String?
+  agreementPath   String?
+  bankDocPath     String?
+  salarySlipPath  String?      // source salary slip used for breakup
+  notes           String?
+  rawExtract      String?
+  active          Boolean      @default(true)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  slips           SalarySlip[]
 }
 
 model SalarySlip {

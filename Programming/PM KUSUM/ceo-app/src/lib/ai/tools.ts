@@ -125,14 +125,17 @@ export const ceoTools: Anthropic.Tool[] = [
         name: { type: "string" },
         employeeCode: { type: "string" },
         designation: { type: "string" },
+        phone: { type: "string" },
+        email: { type: "string" },
+        emailOfficial: { type: "string" },
         basic: { type: "number" },
         hra: { type: "number" },
         special: { type: "number" },
         pf: { type: "number" },
         professionalTax: { type: "number" },
-        tds: { type: "number" },
+        tdsPercent: { type: "number", description: "TDS rate as percent of gross" },
       },
-      required: ["name", "basic"],
+      required: ["name", "basic", "phone"],
     },
   },
   {
@@ -322,8 +325,27 @@ export async function runCeoTool(name: string, input: any): Promise<string> {
         );
       }
       case "add_employee": {
-        const emp = await upsertEmployee(input);
-        return JSON.stringify({ ok: true, id: emp.id, name: emp.name });
+        const raw = input as Record<string, unknown>;
+        const emp = await upsertEmployee({
+          name: String(raw.name ?? ""),
+          employeeCode: raw.employeeCode ? String(raw.employeeCode) : undefined,
+          designation: raw.designation ? String(raw.designation) : undefined,
+          phone: String(raw.phone ?? "0000000000"),
+          email: raw.email ? String(raw.email) : undefined,
+          emailOfficial: raw.emailOfficial ? String(raw.emailOfficial) : undefined,
+          basic: Number(raw.basic ?? 0),
+          hra: raw.hra != null ? Number(raw.hra) : undefined,
+          special: raw.special != null ? Number(raw.special) : undefined,
+          pf: raw.pf != null ? Number(raw.pf) : undefined,
+          professionalTax: raw.professionalTax != null ? Number(raw.professionalTax) : undefined,
+          tdsPercent:
+            raw.tdsPercent != null
+              ? Number(raw.tdsPercent)
+              : raw.tds != null
+                ? Number(raw.tds)
+                : 0,
+        });
+        return JSON.stringify({ ok: true, id: emp.id, name: emp.name, code: emp.employeeCode });
       }
       case "create_task": {
         const t = await createTask(input);

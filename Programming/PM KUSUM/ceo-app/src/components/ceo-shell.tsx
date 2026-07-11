@@ -61,6 +61,7 @@ const NAV_SECTIONS = [
   {
     label: "People & Time",
     items: [
+      { href: "/ceo/employees",  label: "Employees",   icon: "payroll" },
       { href: "/ceo/payroll",    label: "Payroll",     icon: "payroll" },
       { href: "/ceo/time",       label: "Time Tracker",icon: "time" },
     ],

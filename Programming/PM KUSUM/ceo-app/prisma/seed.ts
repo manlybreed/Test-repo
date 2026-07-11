@@ -88,12 +88,13 @@ async function main() {
         employeeCode: "BR-001",
         designation: "Analyst",
         department: "Advisory",
+        phone: "9999999999",
         basic: 40000,
         hra: 16000,
         special: 8000,
         pf: 1800,
         professionalTax: 200,
-        tds: 0,
+        tdsPercent: 0,
       },
     });
   }
