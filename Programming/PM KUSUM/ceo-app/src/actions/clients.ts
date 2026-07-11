@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { requireCeo } from "@/lib/session";
+import { requireCeoAction as requireCeo } from "@/lib/session";
 
 export async function createClient(input: {
   name: string;
@@ -38,6 +38,7 @@ export async function createClient(input: {
   });
   revalidatePath("/ceo/invoices");
   revalidatePath("/ceo/agreements");
+  revalidatePath("/ceo/clients");
   return client;
 }
 

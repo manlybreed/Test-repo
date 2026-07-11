@@ -1,7 +1,10 @@
 import Link from "next/link";
 import { listInvoices } from "@/actions/invoices";
 import { listClients } from "@/actions/clients";
+import { prisma } from "@/lib/prisma";
 import { InvoiceForm } from "@/components/invoice-form";
+import { ImportSection } from "./import-section";
+import { InvoiceDatabase } from "@/components/invoice-database";
 import { formatINR } from "@/lib/utils";
 
 export default async function InvoicesPage({
@@ -12,13 +15,62 @@ export default async function InvoicesPage({
   const sp = await searchParams;
   const [invoices, clients] = await Promise.all([listInvoices(), listClients()]);
 
-  const totalTaxable  = invoices.reduce((s, i) => s + i.taxableTotal, 0);
-  const totalGrand    = invoices.reduce((s, i) => s + i.grandTotal, 0);
-  const totalTax      = totalGrand - totalTaxable;
+  // Build buyer suggestions from clients + unique past invoice buyers
+  const pastBuyers = await prisma.invoice.findMany({
+    select: { buyerName: true, buyerGstin: true, buyerAddress: true, buyerState: true, buyerStateCode: true },
+    orderBy: { createdAt: "desc" },
+  });
+  const clientSuggestions = clients.map((c) => ({
+    name: c.name,
+    gstin: c.gstin ?? "",
+    address: [c.addressLine1, c.city, c.state].filter(Boolean).join(", "),
+    state: c.state ?? "",
+    stateCode: c.stateCode ?? "",
+  }));
+  const seen = new Set(clients.map((c) => c.name.toLowerCase()));
+  const buyerSuggestions = [...clientSuggestions];
+  for (const b of pastBuyers) {
+    if (!seen.has(b.buyerName.toLowerCase())) {
+      seen.add(b.buyerName.toLowerCase());
+      buyerSuggestions.push({
+        name: b.buyerName,
+        gstin: b.buyerGstin ?? "",
+        address: b.buyerAddress ?? "",
+        state: b.buyerState ?? "",
+        stateCode: b.buyerStateCode ?? "",
+      });
+    }
+  }
+
+  const numCount = new Map<string, number>();
+  for (const inv of invoices) numCount.set(inv.number, (numCount.get(inv.number) ?? 0) + 1);
+  const hasDupes = [...numCount.values()].some((v) => v > 1);
+
+  const totalTaxable = invoices.reduce((s, i) => s + i.taxableTotal, 0);
+  const totalGrand = invoices.reduce((s, i) => s + i.grandTotal, 0);
+  const totalTax = totalGrand - totalTaxable;
+
+  const dbRows = invoices.map((inv) => ({
+    id: inv.id,
+    number: inv.number,
+    buyerName: inv.buyerName,
+    remarks: inv.remarks,
+    serviceDesc: inv.serviceDesc ?? null,
+    invoiceDate: inv.invoiceDate.toISOString(),
+    dueDate: inv.dueDate?.toISOString() ?? null,
+    gstEntity: inv.gstEntity ?? null,
+    paymentStatus: inv.paymentStatus ?? null,
+    tdsDeducted: inv.tdsDeducted,
+    tdsPercent: inv.tdsPercent ?? null,
+    taxableTotal: inv.taxableTotal,
+    grandTotal: inv.grandTotal,
+    isImported: inv.isImported,
+    filePath: inv.filePath ?? null,
+    sourceFilePath: inv.sourceFilePath ?? null,
+  }));
 
   return (
     <div>
-      {/* Header */}
       <header className="mb-8">
         <p className="text-[0.6rem] tracking-[0.26em] uppercase mb-2 font-semibold"
           style={{ color: "var(--text-dim)" }}>
@@ -28,11 +80,10 @@ export default async function InvoicesPage({
           <span className="grad-text">GST Invoices</span>
         </h1>
         <p className="text-sm max-w-xl" style={{ color: "var(--text-muted)" }}>
-          Tax invoices with BluRidge letterhead — sequence continues from INV-08.
+          GST-compliant tax invoices with BluRidge letterhead. Import from Zoho, Tally, or any platform.
         </p>
       </header>
 
-      {/* Stat row */}
       <div className="grid grid-cols-3 gap-4 mb-8">
         {[
           { label: "Total billed",   value: formatINR(totalGrand),   color: "#fbbf24", bg: "rgba(240,180,41,0.1)" },
@@ -50,26 +101,42 @@ export default async function InvoicesPage({
         ))}
       </div>
 
-      {/* Success toast */}
       {sp.created && (
         <div className="flex items-center justify-between px-4 py-3 rounded-xl mb-6 text-sm"
           style={{ background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.25)" }}>
           <span className="flex items-center gap-2" style={{ color: "#34d399" }}>
             <span>✓</span> Invoice {sp.created} created.
           </span>
-          <Link
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
-            style={{ background: "rgba(16,185,129,0.12)", border: "1px solid rgba(16,185,129,0.3)", color: "#34d399" }}
-            href={`/api/files/invoices/${sp.created}.pdf`}
-            target="_blank"
-          >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-            Download PDF
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+              style={{ background: "rgba(16,185,129,0.12)", border: "1px solid rgba(16,185,129,0.3)", color: "#34d399" }}
+              href={`/api/files/invoices/${sp.created}.pdf`}
+              target="_blank"
+            >
+              View
+            </Link>
+            <Link
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+              style={{ background: "rgba(16,185,129,0.12)", border: "1px solid rgba(16,185,129,0.3)", color: "#34d399" }}
+              href={`/api/files/invoices/${sp.created}.pdf`}
+              download={`${sp.created}.pdf`}
+            >
+              Download
+            </Link>
+          </div>
         </div>
       )}
 
-      {/* New invoice form */}
+      {hasDupes && (
+        <div className="px-4 py-3 rounded-xl mb-6 text-sm"
+          style={{ background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.25)", color: "#fbbf24" }}>
+          ⚠ Duplicate invoice numbers detected in the database. Please review the table below.
+        </div>
+      )}
+
+      <ImportSection />
+
       <section className="relative overflow-hidden rounded-xl mb-8"
         style={{ background: "var(--bg-panel)", border: "1px solid var(--border)" }}>
         <div className="absolute inset-0 pointer-events-none"
@@ -85,87 +152,15 @@ export default async function InvoicesPage({
             <div>
               <h2 className="text-base font-semibold">New Invoice</h2>
               <p className="text-xs mt-0.5" style={{ color: "var(--text-dim)" }}>
-                GST-compliant PDF with CGST/SGST or IGST based on buyer state
+                GST-compliant PDF with CGST/SGST or IGST based on buyer state. Buyer name autocompletes from past records.
               </p>
             </div>
           </div>
-          <InvoiceForm clients={clients} />
+          <InvoiceForm buyerSuggestions={buyerSuggestions} />
         </div>
       </section>
 
-      {/* History */}
-      <section>
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <h2 className="text-base font-semibold">History</h2>
-            <span className="text-xs px-2 py-0.5 rounded-md tabular-nums"
-              style={{ background: "rgba(240,180,41,0.1)", border: "1px solid rgba(240,180,41,0.2)", color: "#fbbf24" }}>
-              {invoices.length}
-            </span>
-          </div>
-        </div>
-
-        <div className="rounded-xl overflow-hidden" style={{ border: "1px solid var(--border)" }}>
-          <table className="data">
-            <thead>
-              <tr style={{ background: "rgba(255,255,255,0.02)" }}>
-                <th>Invoice No.</th>
-                <th>Buyer</th>
-                <th>Date</th>
-                <th>Taxable</th>
-                <th>Grand Total</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {invoices.map((inv) => (
-                <tr key={inv.id}>
-                  <td>
-                    <span className="font-mono font-semibold text-sm" style={{ color: "#818cf8" }}>
-                      {inv.number}
-                    </span>
-                  </td>
-                  <td>
-                    <p className="font-medium text-sm">{inv.buyerName}</p>
-                    {inv.remarks && (
-                      <p className="text-xs mt-0.5" style={{ color: "var(--text-dim)" }}>{inv.remarks}</p>
-                    )}
-                  </td>
-                  <td style={{ color: "var(--text-muted)", fontSize: "0.82rem" }}>
-                    {inv.invoiceDate.toLocaleDateString("en-IN")}
-                  </td>
-                  <td className="tabular-nums text-sm">{formatINR(inv.taxableTotal)}</td>
-                  <td>
-                    <span className="tabular-nums font-semibold" style={{ color: "#fbbf24" }}>
-                      {formatINR(inv.grandTotal)}
-                    </span>
-                  </td>
-                  <td>
-                    {inv.filePath && (
-                      <Link
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
-                        style={{ background: "rgba(240,180,41,0.08)", border: "1px solid rgba(240,180,41,0.2)", color: "#fbbf24" }}
-                        href={`/api/files/${inv.filePath}`}
-                        target="_blank"
-                      >
-                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-                        PDF
-                      </Link>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {invoices.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="text-center py-12">
-                    <p style={{ color: "var(--text-dim)" }}>No invoices yet — create your first one above.</p>
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <InvoiceDatabase invoices={dbRows} />
     </div>
   );
 }

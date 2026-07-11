@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { requireCeo } from "@/lib/session";
+import { requireCeoAction as requireCeo } from "@/lib/session";
 
 export async function createTask(input: {
   title: string;

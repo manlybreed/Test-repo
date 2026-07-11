@@ -2,10 +2,12 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { requireCeo } from "@/lib/session";
+import { requireCeoAction as requireCeo } from "@/lib/session";
 import { writeStorageFile } from "@/lib/storage";
 import { amountInWordsINR } from "@/lib/utils";
 import { renderInvoicePdf } from "@/lib/docgen/invoice";
+import { getSellerProfile, normalizeGstEntity, shouldUseIgst } from "@/lib/gst-entities";
+import { classifyInvoiceGstEntity } from "@/lib/ai/classify-gst-entity";
 
 export type InvoiceLineInput = {
   description: string;
@@ -36,6 +38,7 @@ export async function createInvoice(input: {
   remarks?: string;
   lines: InvoiceLineInput[];
   useIgst?: boolean;
+  gstEntity?: string;
 }) {
   await requireCeo();
 
@@ -44,6 +47,9 @@ export async function createInvoice(input: {
 
   const company = await prisma.companyProfile.findFirst();
   if (!company) throw new Error("Company profile not seeded");
+
+  const gstEntity = normalizeGstEntity(input.gstEntity);
+  const sellerProfile = getSellerProfile(gstEntity);
 
   const lines = input.lines.map((l, i) => {
     const qty = l.quantity ?? 1;
@@ -59,7 +65,7 @@ export async function createInvoice(input: {
   });
 
   const taxableTotal = lines.reduce((s, l) => s + l.amount, 0);
-  const useIgst = Boolean(input.useIgst);
+  const useIgst = input.useIgst ?? shouldUseIgst(gstEntity, input.buyerStateCode);
   const cgstAmount = useIgst ? 0 : taxableTotal * 0.09;
   const sgstAmount = useIgst ? 0 : taxableTotal * 0.09;
   const igstAmount = useIgst ? taxableTotal * 0.18 : 0;
@@ -92,25 +98,27 @@ export async function createInvoice(input: {
         igstAmount,
         grandTotal,
         amountInWords: amountInWordsINR(grandTotal),
+        gstEntity,
+        paymentStatus: "UNPAID",
         lines: { create: lines },
       },
       include: { lines: true },
     });
   });
 
-  const sellerAddress = [company.addressLine1, company.addressLine2]
+  const sellerAddress = [sellerProfile.addressLine1, sellerProfile.addressLine2]
     .filter(Boolean)
     .join(", ");
   const pdfBuf = await renderInvoicePdf({
     number: invoice.number,
     date: invoice.invoiceDate,
     seller: {
-      legalName: company.legalName,
+      legalName: sellerProfile.legalName,
       addressLine1: sellerAddress,
-      city: company.city,
-      state: company.state,
-      stateCode: company.stateCode,
-      gstin: company.gstin,
+      city: sellerProfile.city,
+      state: sellerProfile.state,
+      stateCode: sellerProfile.stateCode,
+      gstin: sellerProfile.gstin,
     },
     buyer: {
       name: invoice.buyerName,
@@ -148,6 +156,218 @@ export async function createInvoice(input: {
   revalidatePath("/ceo/invoices");
   revalidatePath("/ceo");
   return { id: invoice.id, number: invoice.number, filePath, grandTotal };
+}
+
+export type ImportInvoiceInput = {
+  invoiceNumber?: string;
+  invoiceDate: string;
+  dueDate?: string;
+  buyerName: string;
+  buyerAddress?: string;
+  buyerGstin?: string;
+  buyerState?: string;
+  buyerStateCode?: string;
+  serviceDesc?: string;
+  lines: { description: string; hsn?: string; quantity?: number; rate: number; amount: number }[];
+  taxableTotal: number;
+  cgstAmount: number;
+  sgstAmount: number;
+  igstAmount: number;
+  grandTotal: number;
+  paymentStatus?: string;
+  remarks?: string;
+  sourceFilePath?: string;
+  rawExtract?: string;
+  gstEntity?: string;
+};
+
+export async function importInvoice(input: ImportInvoiceInput) {
+  await requireCeo();
+  if (!input.buyerName?.trim()) throw new Error("Buyer name is required");
+
+  const invoice = await prisma.$transaction(async (tx) => {
+    // Use provided number, but fall back to auto-generated if it conflicts or is blank
+    let number = input.invoiceNumber?.trim();
+    if (number) {
+      const exists = await tx.invoice.findUnique({ where: { number }, select: { id: true } });
+      if (exists) number = undefined; // conflict — generate new one
+    }
+    if (!number) {
+      const seq = await tx.invoiceSequence.upsert({
+        where: { id: "default" },
+        create: { id: "default", lastNum: 8 },
+        update: { lastNum: { increment: 1 } },
+      });
+      number = `INV-${String(seq.lastNum).padStart(2, "0")}`;
+    }
+
+    return tx.invoice.create({
+      data: {
+        number,
+        buyerName: input.buyerName.trim(),
+        buyerAddress: input.buyerAddress || null,
+        buyerGstin: input.buyerGstin || null,
+        buyerState: input.buyerState || null,
+        buyerStateCode: input.buyerStateCode || null,
+        invoiceDate: new Date(input.invoiceDate),
+        dueDate: input.dueDate ? new Date(input.dueDate) : null,
+        serviceDesc: input.serviceDesc || null,
+        remarks: input.remarks || null,
+        taxableTotal: input.taxableTotal,
+        cgstAmount: input.cgstAmount,
+        sgstAmount: input.sgstAmount,
+        igstAmount: input.igstAmount,
+        grandTotal: input.grandTotal,
+        amountInWords: amountInWordsINR(input.grandTotal),
+        paymentStatus: input.paymentStatus || "UNPAID",
+        gstEntity: normalizeGstEntity(input.gstEntity),
+        isImported: true,
+        sourceFilePath: input.sourceFilePath || null,
+        rawExtract: input.rawExtract || null,
+        lines: {
+          create: input.lines.map((l, i) => ({
+            description: l.description,
+            hsn: l.hsn || "998313",
+            quantity: l.quantity ?? 1,
+            rate: l.rate,
+            amount: l.amount,
+            sortOrder: i,
+          })),
+        },
+      },
+      include: { lines: true },
+    });
+  });
+
+  revalidatePath("/ceo/invoices");
+  revalidatePath("/ceo");
+  return { id: invoice.id, number: invoice.number, grandTotal: invoice.grandTotal };
+}
+
+export async function checkInvoiceNumberExists(number: string) {
+  await requireCeo();
+  const inv = await prisma.invoice.findUnique({
+    where: { number: number.trim() },
+    select: {
+      number: true,
+      buyerName: true,
+      invoiceDate: true,
+      grandTotal: true,
+      paymentStatus: true,
+      isImported: true,
+    },
+  });
+  if (!inv) return { exists: false as const };
+  return {
+    exists: true as const,
+    invoice: {
+      number: inv.number,
+      buyerName: inv.buyerName,
+      invoiceDate: inv.invoiceDate.toISOString().slice(0, 10),
+      grandTotal: inv.grandTotal,
+      paymentStatus: inv.paymentStatus,
+      isImported: inv.isImported,
+    },
+  };
+}
+
+export async function updateInvoicePayment(input: {
+  id: string;
+  paymentStatus: string;
+  tdsDeducted: boolean;
+  tdsPercent?: number | null;
+}) {
+  await requireCeo();
+  if (!input.id) throw new Error("Invoice ID required");
+  const valid = ["PAID", "UNPAID", "PARTIAL", "OVERDUE"];
+  if (!valid.includes(input.paymentStatus)) throw new Error("Invalid payment status");
+
+  await prisma.invoice.update({
+    where: { id: input.id },
+    data: {
+      paymentStatus: input.paymentStatus,
+      tdsDeducted: input.tdsDeducted,
+      tdsPercent: input.tdsDeducted && input.tdsPercent != null ? input.tdsPercent : null,
+      tdsAmount: null,
+    },
+  });
+
+  revalidatePath("/ceo/invoices");
+  revalidatePath("/ceo");
+}
+
+export async function deleteInvoice(id: string) {
+  await requireCeo();
+  if (!id) throw new Error("Invoice ID required");
+  await prisma.invoice.delete({ where: { id } });
+  revalidatePath("/ceo/invoices");
+  revalidatePath("/ceo");
+}
+
+export async function classifyAllInvoiceGstEntities() {
+  await requireCeo();
+
+  const invoices = await prisma.invoice.findMany({
+    orderBy: { createdAt: "asc" },
+    select: {
+      id: true,
+      number: true,
+      buyerName: true,
+      buyerAddress: true,
+      buyerGstin: true,
+      buyerState: true,
+      buyerStateCode: true,
+      taxableTotal: true,
+      cgstAmount: true,
+      sgstAmount: true,
+      igstAmount: true,
+      grandTotal: true,
+      remarks: true,
+      rawExtract: true,
+      filePath: true,
+      sourceFilePath: true,
+      gstEntity: true,
+    },
+  });
+
+  const results: {
+    number: string;
+    previous: string | null;
+    gstEntity: string;
+    confidence: number;
+    method: string;
+    reason: string;
+  }[] = [];
+
+  for (const inv of invoices) {
+    const classification = await classifyInvoiceGstEntity(inv);
+    await prisma.invoice.update({
+      where: { id: inv.id },
+      data: { gstEntity: classification.gstEntity },
+    });
+    results.push({
+      number: inv.number,
+      previous: inv.gstEntity,
+      gstEntity: classification.gstEntity,
+      confidence: classification.confidence,
+      method: classification.method,
+      reason: classification.reason,
+    });
+  }
+
+  revalidatePath("/ceo/invoices");
+  revalidatePath("/ceo");
+  return { updated: results.length, results };
+}
+
+export async function backfillInvoiceGstEntities() {
+  await requireCeo();
+  const result = await prisma.invoice.updateMany({
+    where: { gstEntity: null },
+    data: { gstEntity: "DEL" },
+  });
+  revalidatePath("/ceo/invoices");
+  return { updated: result.count };
 }
 
 export async function listInvoices(query?: string) {

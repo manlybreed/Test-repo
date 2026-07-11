@@ -4,6 +4,8 @@ import { useState, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { createExpense } from "@/actions/expenses";
 import { EXPENSE_CATEGORIES } from "@/lib/expense-categories";
+import { GstEntitySelect } from "@/components/gst-entity-select";
+import type { GstEntity } from "@/lib/gst-entities";
 
 type Extracted = {
   vendor?: string;
@@ -27,7 +29,7 @@ export function ExpenseUploader({ onSaved }: { onSaved: () => void }) {
   const [fileName, setFileName]   = useState("");
   const [extracted, setExtracted] = useState<Extracted>({});
   const [filePath, setFilePath]   = useState("");
-  const [form, setForm]           = useState<Extracted & { notes?: string }>({});
+  const [form, setForm]           = useState<Extracted & { notes?: string; gstEntity?: GstEntity }>({});
   const [error, setError]         = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const fileObj = useRef<File | null>(null);
@@ -79,6 +81,7 @@ export function ExpenseUploader({ onSaved }: { onSaved: () => void }) {
       paymentMode: d.paymentMode || "",
       category:    d.category || "misc",
       notes:       "",
+      gstEntity:   "DEL",
     });
     setStage("confirm");
   }, []);
@@ -107,6 +110,7 @@ export function ExpenseUploader({ onSaved }: { onSaved: () => void }) {
         description: form.description,
         paymentMode: form.paymentMode,
         gstAmount:   form.gstAmount ? Number(form.gstAmount) : undefined,
+        gstEntity:   form.gstEntity || "DEL",
         invoiceNo:   form.invoiceNo,
         filePath,
         rawExtract:  JSON.stringify(extracted),
@@ -193,7 +197,7 @@ export function ExpenseUploader({ onSaved }: { onSaved: () => void }) {
               }}
               onClick={() => {
                 setExtracted({});
-                setForm({ date: new Date().toISOString().split("T")[0], category: "misc" });
+                setForm({ date: new Date().toISOString().split("T")[0], category: "misc", gstEntity: "DEL" });
                 setStage("confirm");
               }}
             >
@@ -313,6 +317,13 @@ export function ExpenseUploader({ onSaved }: { onSaved: () => void }) {
                     <option key={m} value={m}>{m}</option>
                   ))}
                 </select>
+              </div>
+              <div className="col-span-2">
+                <GstEntitySelect
+                  label="Vendor invoice booked under BluRidge GST"
+                  value={form.gstEntity || "DEL"}
+                  onChange={(v) => set("gstEntity", v)}
+                />
               </div>
             </div>
 
