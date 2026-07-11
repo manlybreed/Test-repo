@@ -3,6 +3,8 @@
 import { useState, useTransition, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { createInvoice } from "@/actions/invoices";
+import { GstEntitySelect } from "@/components/gst-entity-select";
+import type { GstEntity } from "@/lib/gst-entities";
 
 const PRESETS = [
   { description: "Consultancy Service - TEV", rate: 100000 },
@@ -16,16 +18,6 @@ const PRESETS = [
 
 type Line = { description: string; hsn: string; quantity: number; rate: number };
 
-type ClientOption = {
-  id: string;
-  name: string;
-  addressLine1: string | null;
-  city: string | null;
-  state: string | null;
-  stateCode: string | null;
-  gstin: string | null;
-};
-
 type BuyerSuggestion = {
   name: string;
   gstin: string;
@@ -35,10 +27,8 @@ type BuyerSuggestion = {
 };
 
 export function InvoiceForm({
-  clients,
   buyerSuggestions = [],
 }: {
-  clients: ClientOption[];
   buyerSuggestions?: BuyerSuggestion[];
 }) {
   const router = useRouter();
@@ -50,6 +40,7 @@ export function InvoiceForm({
   const [buyerState, setBuyerState] = useState("Delhi");
   const [buyerStateCode, setBuyerStateCode] = useState("07");
   const [remarks, setRemarks] = useState("");
+  const [gstEntity, setGstEntity] = useState<GstEntity>("DEL");
   const [invoiceDate, setInvoiceDate] = useState(
     new Date().toISOString().slice(0, 10),
   );
@@ -116,6 +107,7 @@ export function InvoiceForm({
           invoiceDate,
           remarks,
           lines,
+          gstEntity,
         });
         router.push(`/ceo/invoices?created=${res.number}`);
         router.refresh();
@@ -144,18 +136,31 @@ export function InvoiceForm({
           />
           {acOpen && acResults.length > 0 && (
             <div
-              className="absolute top-full left-0 right-0 z-50 rounded-xl overflow-hidden shadow-2xl mt-1"
-              style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}
+              className="absolute top-full left-0 right-0 z-[60] rounded-xl overflow-hidden shadow-2xl mt-1"
+              style={{
+                background: "#141821",
+                border: "1px solid rgba(255,255,255,0.12)",
+                boxShadow: "0 16px 40px rgba(0,0,0,0.55)",
+              }}
             >
               {acResults.slice(0, 8).map((s) => (
                 <button
                   key={s.name}
                   type="button"
-                  className="w-full text-left px-4 py-2.5 transition-colors hover:bg-white/5"
+                  className="w-full text-left px-4 py-2.5 transition-colors"
+                  style={{ background: "transparent" }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "rgba(99,102,241,0.12)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "transparent";
+                  }}
                   onClick={() => applyBuyerSuggestion(s)}
                 >
-                  <p className="text-sm font-medium">{s.name}</p>
-                  <p className="text-xs mt-0.5 truncate" style={{ color: "var(--text-dim)" }}>
+                  <p className="text-sm font-medium" style={{ color: "rgba(255,255,255,0.92)" }}>
+                    {s.name}
+                  </p>
+                  <p className="text-xs mt-0.5 truncate" style={{ color: "rgba(255,255,255,0.45)" }}>
                     {[s.gstin, s.address].filter(Boolean).join(" · ")}
                   </p>
                 </button>
@@ -173,6 +178,15 @@ export function InvoiceForm({
             onChange={(e) => setInvoiceDate(e.target.value)}
           />
         </div>
+
+        <div className="sm:col-span-2">
+          <GstEntitySelect
+            value={gstEntity}
+            onChange={setGstEntity}
+            label="Raised under BluRidge GST"
+          />
+        </div>
+
         <div>
           <label className="label">Buyer GSTIN</label>
           <input
@@ -192,7 +206,7 @@ export function InvoiceForm({
           />
         </div>
         <div>
-          <label className="label">State</label>
+          <label className="label">Buyer state</label>
           <input
             className="input"
             value={buyerState}
@@ -200,7 +214,7 @@ export function InvoiceForm({
           />
         </div>
         <div>
-          <label className="label">State code</label>
+          <label className="label">Buyer state code</label>
           <input
             className="input"
             value={buyerStateCode}
@@ -217,37 +231,6 @@ export function InvoiceForm({
           />
         </div>
       </div>
-
-      {/* Also keep saved client quick-fill as a secondary helper */}
-      {clients.length > 0 && (
-        <div>
-          <label className="label">
-            <span style={{ color: "var(--text-dim)" }}>Quick-fill from saved clients</span>
-          </label>
-          <select
-            className="input text-sm"
-            value=""
-            onChange={(e) => {
-              const c = clients.find((x) => x.id === e.target.value);
-              if (!c) return;
-              applyBuyerSuggestion({
-                name: c.name,
-                gstin: c.gstin ?? "",
-                address: [c.addressLine1, c.city, c.state].filter(Boolean).join(", "),
-                state: c.state ?? "",
-                stateCode: c.stateCode ?? "",
-              });
-            }}
-          >
-            <option value="">— select to auto-fill —</option>
-            {clients.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
 
       <div>
         <div className="flex flex-wrap gap-2 mb-3">

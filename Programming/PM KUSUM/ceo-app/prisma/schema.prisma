@@ -147,7 +147,9 @@ model Invoice {
   amountInWords  String?
   paymentStatus  String?       // PAID | UNPAID | PARTIAL | OVERDUE
   tdsDeducted    Boolean       @default(false)
-  tdsAmount      Float?
+  tdsPercent     Float?        // 5 | 10 | 20
+  tdsAmount      Float?        // legacy — unused in UI
+  gstEntity      String?       // DEL | RAJ — BluRidge GST under which invoice was raised
   isImported     Boolean       @default(false)
   sourceFilePath String?
   rawExtract     String?
@@ -283,6 +285,7 @@ model Expense {
   description String?
   paymentMode String?
   gstAmount   Decimal? @db.Decimal(12, 2)
+  gstEntity   String?  // DEL | RAJ — BluRidge GST under which vendor invoice was booked
   invoiceNo   String?
   filePath    String?
   rawExtract  String?

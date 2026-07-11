@@ -38,6 +38,7 @@ export async function createClient(input: {
   });
   revalidatePath("/ceo/invoices");
   revalidatePath("/ceo/agreements");
+  revalidatePath("/ceo/clients");
   return client;
 }
 

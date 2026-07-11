@@ -34,6 +34,7 @@ Return ONLY a JSON object with these exact keys (no markdown, no explanation):
   "igstAmount": <IGST amount as number, 0 if not present>,
   "grandTotal": <total including all taxes, as number>,
   "paymentStatus": "PAID or UNPAID or PARTIAL or OVERDUE — infer from context, default UNPAID",
+  "gstEntity": "DEL or RAJ — which BluRidge GST registration raised this invoice. DEL = GSTIN 07AANCB9956E1Z7 (Delhi). RAJ = GSTIN 08AANCB9956E1Z5 (Rajasthan). Match the SELLER GSTIN / address, not the buyer.",
   "remarks": "any remarks, reference numbers, or notes on the invoice",
   "currency": "INR or USD etc.",
   "confidence": <0.0 to 1.0>

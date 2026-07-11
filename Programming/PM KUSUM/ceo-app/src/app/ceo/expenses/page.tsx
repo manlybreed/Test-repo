@@ -96,6 +96,8 @@ export default async function ExpensesPage({
           filePath:    e.filePath ?? undefined,
           needsReview: e.needsReview,
           gstAmount:   e.gstAmount ? Number(e.gstAmount) : undefined,
+          gstEntity:   e.gstEntity ?? null,
+          notes:       e.notes ?? undefined,
         }))}
         activeFilter={sp.cat}
       />

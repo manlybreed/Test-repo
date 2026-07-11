@@ -3,6 +3,8 @@
 import { useCallback, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { importInvoice, checkInvoiceNumberExists } from "@/actions/invoices";
+import { GstEntitySelect } from "@/components/gst-entity-select";
+import { gstEntityFromSellerGstin, type GstEntity } from "@/lib/gst-entities";
 
 type Line = { description: string; hsn: string; quantity: number; rate: number; amount: number };
 
@@ -25,6 +27,9 @@ type Extracted = {
   paymentStatus?: string;
   remarks?: string;
   confidence?: number;
+  gstEntity?: string;
+  sellerGstin?: string;
+  sellerName?: string;
 };
 
 type ItemStatus = "queued" | "uploading" | "extracting" | "checking" | "conflict" | "ready" | "error" | "saving" | "saved";
@@ -53,6 +58,11 @@ type InvoiceItem = {
 
 const PAYMENT_STATUSES = ["UNPAID", "PAID", "PARTIAL", "OVERDUE"];
 
+function resolveGstEntity(d: Extracted): GstEntity {
+  if (d.gstEntity === "RAJ" || d.gstEntity === "DEL") return d.gstEntity;
+  return gstEntityFromSellerGstin(d.sellerGstin) ?? "DEL";
+}
+
 function makeForm(d: Extracted): Extracted {
   return {
     invoiceNumber: d.invoiceNumber ?? "",
@@ -72,6 +82,7 @@ function makeForm(d: Extracted): Extracted {
     paymentStatus: d.paymentStatus ?? "UNPAID",
     remarks:       d.remarks ?? "",
     lines:         d.lines ?? [],
+    gstEntity:     resolveGstEntity(d),
   };
 }
 
@@ -273,6 +284,7 @@ export function InvoiceImporter({ onSaved }: { onSaved: (nums: string[]) => void
         remarks:       f.remarks,
         sourceFilePath: item.filePath || undefined,
         rawExtract:    item.extracted ? JSON.stringify(item.extracted) : undefined,
+        gstEntity:     f.gstEntity === "RAJ" ? "RAJ" : "DEL",
       });
       updateItem(id, { status: "saved", expanded: false, form: { ...item.form, invoiceNumber: res.number } });
       return res.number;
@@ -555,6 +567,14 @@ export function InvoiceImporter({ onSaved }: { onSaved: (nums: string[]) => void
                           onChange={(e) => updateForm(item.id, "paymentStatus", e.target.value)}>
                           {PAYMENT_STATUSES.map((s) => <option key={s}>{s}</option>)}
                         </select>
+                      </div>
+                      <div className="col-span-2">
+                        <GstEntitySelect
+                          size="sm"
+                          label="Raised under BluRidge GST"
+                          value={(item.form.gstEntity as GstEntity) || "DEL"}
+                          onChange={(v) => updateForm(item.id, "gstEntity", v)}
+                        />
                       </div>
                     </div>
 
