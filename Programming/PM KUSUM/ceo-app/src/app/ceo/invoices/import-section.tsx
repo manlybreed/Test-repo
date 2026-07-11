@@ -9,9 +9,9 @@ export function ImportSection() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
 
-  function handleSaved(num: string) {
+  function handleSaved(nums: string[]) {
     setOpen(false);
-    router.push(`/ceo/invoices?created=${num}`);
+    router.push(`/ceo/invoices?created=${nums[nums.length - 1]}`);
   }
 
   return (

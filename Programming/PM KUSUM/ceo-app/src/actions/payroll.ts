@@ -3,7 +3,7 @@
 import path from "path";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { requireCeo } from "@/lib/session";
+import { requireCeoAction as requireCeo } from "@/lib/session";
 import { writeStorageFile } from "@/lib/storage";
 import { amountInWordsINR } from "@/lib/utils";
 import { renderSalarySlipPdf } from "@/lib/docgen/salary-slip";

@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { requireCeo } from "@/lib/session";
+import { requireCeoAction as requireCeo } from "@/lib/session";
 import { writeStorageFile } from "@/lib/storage";
 import { amountInWordsINR } from "@/lib/utils";
 import { renderInvoicePdf } from "@/lib/docgen/invoice";
@@ -177,8 +177,12 @@ export async function importInvoice(input: ImportInvoiceInput) {
   if (!input.buyerName?.trim()) throw new Error("Buyer name is required");
 
   const invoice = await prisma.$transaction(async (tx) => {
-    // Use provided number or generate next in sequence
+    // Use provided number, but fall back to auto-generated if it conflicts or is blank
     let number = input.invoiceNumber?.trim();
+    if (number) {
+      const exists = await tx.invoice.findUnique({ where: { number }, select: { id: true } });
+      if (exists) number = undefined; // conflict — generate new one
+    }
     if (!number) {
       const seq = await tx.invoiceSequence.upsert({
         where: { id: "default" },
