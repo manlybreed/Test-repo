@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import {
   SalarySlipDeleteButton,
@@ -34,6 +34,43 @@ type PayFilter = "ALL" | "PAID" | "UNPAID";
 
 const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
 
+const compactInput: CSSProperties = {
+  padding: "0.35rem 0.6rem",
+  fontSize: "0.8rem",
+  minHeight: 32,
+};
+
+function Chip({
+  active,
+  label,
+  onClick,
+  activeColor = "#a78bfa",
+  activeBg = "rgba(139,92,246,0.15)",
+  activeBorder = "rgba(139,92,246,0.35)",
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+  activeColor?: string;
+  activeBg?: string;
+  activeBorder?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="text-[0.6rem] font-bold px-2 py-0.5 rounded-md transition-all"
+      style={{
+        background: active ? activeBg : "rgba(255,255,255,0.02)",
+        color: active ? activeColor : "rgba(255,255,255,0.4)",
+        border: `1px solid ${active ? activeBorder : "rgba(255,255,255,0.08)"}`,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
 export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
   const [employee, setEmployee] = useState("");
   const [department, setDepartment] = useState("");
@@ -43,19 +80,17 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
   const [amountMax, setAmountMax] = useState("");
   const [tds, setTds] = useState<TdsFilter>("ALL");
   const [pay, setPay] = useState<PayFilter>("ALL");
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [statusOverrides, setStatusOverrides] = useState<Record<string, string>>({});
 
   const employeeOptions = useMemo(() => {
-    const names = [...new Set(slips.map((s) => s.employeeName))].sort((a, b) =>
-      a.localeCompare(b),
-    );
-    return names;
+    return [...new Set(slips.map((s) => s.employeeName))].sort((a, b) => a.localeCompare(b));
   }, [slips]);
 
   const departmentOptions = useMemo(() => {
-    const deps = [
+    return [
       ...new Set(slips.map((s) => s.department).filter(Boolean) as string[]),
     ].sort((a, b) => a.localeCompare(b));
-    return deps;
   }, [slips]);
 
   const yearOptions = useMemo(() => {
@@ -71,6 +106,7 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
     const monthN = month.trim() === "" ? null : Number(month);
 
     return slips.filter((s) => {
+      const status = statusOverrides[s.id] ?? s.paymentStatus;
       if (
         eq &&
         !s.employeeName.toLowerCase().includes(eq) &&
@@ -85,21 +121,32 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
       if (max != null && !Number.isNaN(max) && s.netPay > max) return false;
       if (tds === "YES" && s.tds <= 0) return false;
       if (tds === "NO" && s.tds > 0) return false;
-      if (pay === "PAID" && s.paymentStatus !== "PAID") return false;
-      if (pay === "UNPAID" && s.paymentStatus === "PAID") return false;
+      if (pay === "PAID" && status !== "PAID") return false;
+      if (pay === "UNPAID" && status === "PAID") return false;
       return true;
     });
-  }, [slips, employee, department, year, month, amountMin, amountMax, tds, pay]);
+  }, [
+    slips,
+    employee,
+    department,
+    year,
+    month,
+    amountMin,
+    amountMax,
+    tds,
+    pay,
+    statusOverrides,
+  ]);
 
   const hasFilters =
-    employee ||
-    department ||
-    year ||
-    month ||
-    amountMin ||
-    amountMax ||
-    tds !== "ALL" ||
-    pay !== "ALL";
+    !!(employee ||
+      department ||
+      year ||
+      month ||
+      amountMin ||
+      amountMax ||
+      tds !== "ALL" ||
+      pay !== "ALL");
 
   function clearFilters() {
     setEmployee("");
@@ -116,11 +163,11 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
 
   return (
     <section>
-      <div className="flex items-start justify-between gap-4 mb-4 flex-wrap">
+      <div className="flex items-center justify-between gap-3 mb-2.5 flex-wrap">
         <div className="flex items-center gap-2">
           <h2 className="text-base font-semibold">Salary slips database</h2>
           <span
-            className="text-xs px-2 py-0.5 rounded-md tabular-nums"
+            className="text-[0.65rem] px-1.5 py-0.5 rounded tabular-nums"
             style={{
               background: "rgba(16,185,129,0.1)",
               border: "1px solid rgba(16,185,129,0.2)",
@@ -131,271 +178,258 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
             {hasFilters ? ` / ${slips.length}` : ""}
           </span>
         </div>
-        <p className="text-xs" style={{ color: "rgba(255,255,255,0.4)" }}>
-          Mark PAID to lock slip as view-only · Modify / Del hidden when paid
-        </p>
+        <div className="flex items-center gap-2">
+          {hasFilters && (
+            <span className="text-[0.65rem] tabular-nums" style={{ color: "rgba(255,255,255,0.4)" }}>
+              {formatINR(filteredNet)} net
+            </span>
+          )}
+          <button
+            type="button"
+            className="text-[0.65rem] font-semibold px-2.5 py-1 rounded-lg transition-all"
+            style={{
+              background: filtersOpen || hasFilters ? "rgba(99,102,241,0.12)" : "rgba(255,255,255,0.04)",
+              border: `1px solid ${
+                filtersOpen || hasFilters ? "rgba(99,102,241,0.3)" : "rgba(255,255,255,0.1)"
+              }`,
+              color: filtersOpen || hasFilters ? "#a5b4fc" : "rgba(255,255,255,0.55)",
+            }}
+            onClick={() => setFiltersOpen((v) => !v)}
+          >
+            {filtersOpen ? "Hide filters" : hasFilters ? "Filters on" : "Filters"}
+          </button>
+          {hasFilters && (
+            <button type="button" className="btn btn-ghost text-[0.65rem] py-1 px-2" onClick={clearFilters}>
+              Clear
+            </button>
+          )}
+        </div>
       </div>
+
+      {filtersOpen && (
+        <div
+          className="rounded-xl px-3 py-2.5 mb-2.5"
+          style={{ background: "var(--bg-panel)", border: "1px solid var(--border)" }}
+        >
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="grow" style={{ minWidth: 140, flexBasis: 160 }}>
+              <label className="label mb-0.5" style={{ fontSize: "0.58rem" }}>
+                Employee
+              </label>
+              <input
+                className="input"
+                style={compactInput}
+                list="salary-employee-filter"
+                placeholder="Name or code…"
+                value={employee}
+                onChange={(e) => setEmployee(e.target.value)}
+              />
+              <datalist id="salary-employee-filter">
+                {employeeOptions.map((name) => (
+                  <option key={name} value={name} />
+                ))}
+              </datalist>
+            </div>
+            <div style={{ minWidth: 110, flexBasis: 120 }}>
+              <label className="label mb-0.5" style={{ fontSize: "0.58rem" }}>
+                Dept
+              </label>
+              <input
+                className="input"
+                style={compactInput}
+                list="salary-dept-filter"
+                placeholder="Any"
+                value={department}
+                onChange={(e) => setDepartment(e.target.value)}
+              />
+              <datalist id="salary-dept-filter">
+                {departmentOptions.map((d) => (
+                  <option key={d} value={d} />
+                ))}
+              </datalist>
+            </div>
+            <div style={{ minWidth: 100, flexBasis: 100 }}>
+              <label className="label mb-0.5" style={{ fontSize: "0.58rem" }}>
+                Year
+              </label>
+              <GlassSelect
+                value={year}
+                onChange={setYear}
+                placeholder="All"
+                buttonStyle={compactInput}
+                options={[
+                  { value: "", label: "All years" },
+                  ...yearOptions.map((y) => ({ value: String(y), label: String(y) })),
+                ]}
+              />
+            </div>
+            <div style={{ minWidth: 110, flexBasis: 110 }}>
+              <label className="label mb-0.5" style={{ fontSize: "0.58rem" }}>
+                Month
+              </label>
+              <GlassSelect
+                value={month}
+                onChange={setMonth}
+                placeholder="All"
+                buttonStyle={compactInput}
+                options={[
+                  { value: "", label: "All months" },
+                  ...MONTHS.map((m) => ({ value: String(m), label: monthName(m) })),
+                ]}
+              />
+            </div>
+            <div style={{ minWidth: 88, flexBasis: 88 }}>
+              <label className="label mb-0.5" style={{ fontSize: "0.58rem" }}>
+                Net min
+              </label>
+              <input
+                className="input"
+                style={compactInput}
+                type="number"
+                min={0}
+                placeholder="0"
+                value={amountMin}
+                onChange={(e) => setAmountMin(e.target.value)}
+              />
+            </div>
+            <div style={{ minWidth: 88, flexBasis: 88 }}>
+              <label className="label mb-0.5" style={{ fontSize: "0.58rem" }}>
+                Net max
+              </label>
+              <input
+                className="input"
+                style={compactInput}
+                type="number"
+                min={0}
+                placeholder="Any"
+                value={amountMax}
+                onChange={(e) => setAmountMax(e.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-1 pb-0.5">
+              <span className="label mb-0" style={{ fontSize: "0.58rem" }}>
+                Payment
+              </span>
+              <div className="flex gap-1">
+                <Chip active={pay === "ALL"} label="All" onClick={() => setPay("ALL")} />
+                <Chip
+                  active={pay === "UNPAID"}
+                  label="Unpaid"
+                  onClick={() => setPay("UNPAID")}
+                  activeColor="#f87171"
+                  activeBg="rgba(248,113,113,0.12)"
+                  activeBorder="rgba(248,113,113,0.35)"
+                />
+                <Chip
+                  active={pay === "PAID"}
+                  label="Paid"
+                  onClick={() => setPay("PAID")}
+                  activeColor="#34d399"
+                  activeBg="rgba(16,185,129,0.15)"
+                  activeBorder="rgba(52,211,153,0.35)"
+                />
+              </div>
+            </div>
+            <div className="flex flex-col gap-1 pb-0.5">
+              <span className="label mb-0" style={{ fontSize: "0.58rem" }}>
+                TDS
+              </span>
+              <div className="flex gap-1">
+                <Chip active={tds === "ALL"} label="All" onClick={() => setTds("ALL")} />
+                <Chip active={tds === "YES"} label="With" onClick={() => setTds("YES")} />
+                <Chip active={tds === "NO"} label="None" onClick={() => setTds("NO")} />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div
-        className="rounded-xl p-4 mb-4 space-y-3"
-        style={{ background: "var(--bg-panel)", border: "1px solid var(--border)" }}
+        className="rounded-xl overflow-auto"
+        style={{ border: "1px solid var(--border)", maxHeight: "min(58vh, 560px)" }}
       >
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <p
-            className="text-[0.6rem] uppercase tracking-[0.16em] font-semibold"
-            style={{ color: "rgba(255,255,255,0.4)" }}
-          >
-            Filters
-          </p>
-          <div className="flex items-center gap-3">
-            {hasFilters && (
-              <p className="text-xs tabular-nums" style={{ color: "rgba(255,255,255,0.45)" }}>
-                Showing {formatINR(filteredNet)} net across {filtered.length} slip
-                {filtered.length === 1 ? "" : "s"}
-              </p>
-            )}
-            {hasFilters && (
-              <button type="button" className="btn btn-ghost text-xs py-1 px-2" onClick={clearFilters}>
-                Clear all
-              </button>
-            )}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-          <div className="xl:col-span-2">
-            <label className="label">Employee</label>
-            <input
-              className="input"
-              list="salary-employee-filter"
-              placeholder="Name or code…"
-              value={employee}
-              onChange={(e) => setEmployee(e.target.value)}
-            />
-            <datalist id="salary-employee-filter">
-              {employeeOptions.map((name) => (
-                <option key={name} value={name} />
-              ))}
-            </datalist>
-          </div>
-
-          <div>
-            <label className="label">Department</label>
-            <input
-              className="input"
-              list="salary-dept-filter"
-              placeholder="Any"
-              value={department}
-              onChange={(e) => setDepartment(e.target.value)}
-            />
-            <datalist id="salary-dept-filter">
-              {departmentOptions.map((d) => (
-                <option key={d} value={d} />
-              ))}
-            </datalist>
-          </div>
-
-          <div>
-            <label className="label">Year</label>
-            <GlassSelect
-              value={year}
-              onChange={setYear}
-              placeholder="All years"
-              options={[
-                { value: "", label: "All years" },
-                ...yearOptions.map((y) => ({ value: String(y), label: String(y) })),
-              ]}
-            />
-          </div>
-
-          <div>
-            <label className="label">Month</label>
-            <GlassSelect
-              value={month}
-              onChange={setMonth}
-              placeholder="All months"
-              options={[
-                { value: "", label: "All months" },
-                ...MONTHS.map((m) => ({ value: String(m), label: monthName(m) })),
-              ]}
-            />
-          </div>
-
-          <div>
-            <label className="label">Net min (₹)</label>
-            <input
-              className="input"
-              type="number"
-              min={0}
-              placeholder="0"
-              value={amountMin}
-              onChange={(e) => setAmountMin(e.target.value)}
-            />
-          </div>
-
-          <div>
-            <label className="label">Net max (₹)</label>
-            <input
-              className="input"
-              type="number"
-              min={0}
-              placeholder="Any"
-              value={amountMax}
-              onChange={(e) => setAmountMax(e.target.value)}
-            />
-          </div>
-        </div>
-
-        <div className="flex flex-wrap gap-4 pt-1">
-          <div>
-            <p className="label mb-1.5">Payment</p>
-            <div className="flex gap-1.5">
-              {(
-                [
-                  { id: "ALL", label: "All" },
-                  { id: "UNPAID", label: "Unpaid" },
-                  { id: "PAID", label: "Paid" },
-                ] as const
-              ).map((v) => (
-                <button
-                  key={v.id}
-                  type="button"
-                  onClick={() => setPay(v.id)}
-                  className="text-[0.65rem] font-bold px-2.5 py-1 rounded-lg transition-all"
-                  style={{
-                    background:
-                      pay === v.id
-                        ? v.id === "PAID"
-                          ? "rgba(16,185,129,0.15)"
-                          : v.id === "UNPAID"
-                            ? "rgba(248,113,113,0.12)"
-                            : "rgba(255,255,255,0.08)"
-                        : "rgba(255,255,255,0.02)",
-                    color:
-                      pay === v.id
-                        ? v.id === "PAID"
-                          ? "#34d399"
-                          : v.id === "UNPAID"
-                            ? "#f87171"
-                            : "rgba(255,255,255,0.85)"
-                        : "rgba(255,255,255,0.4)",
-                    border: `1px solid ${
-                      pay === v.id
-                        ? v.id === "PAID"
-                          ? "rgba(52,211,153,0.35)"
-                          : v.id === "UNPAID"
-                            ? "rgba(248,113,113,0.35)"
-                            : "rgba(255,255,255,0.15)"
-                        : "rgba(255,255,255,0.08)"
-                    }`,
-                  }}
-                >
-                  {v.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <p className="label mb-1.5">TDS</p>
-            <div className="flex gap-1.5">
-              {(
-                [
-                  { id: "ALL", label: "All" },
-                  { id: "YES", label: "With TDS" },
-                  { id: "NO", label: "No TDS" },
-                ] as const
-              ).map((v) => (
-                <button
-                  key={v.id}
-                  type="button"
-                  onClick={() => setTds(v.id)}
-                  className="text-[0.65rem] font-bold px-2.5 py-1 rounded-lg transition-all"
-                  style={{
-                    background:
-                      tds === v.id ? "rgba(139,92,246,0.15)" : "rgba(255,255,255,0.02)",
-                    color: tds === v.id ? "#a78bfa" : "rgba(255,255,255,0.4)",
-                    border: `1px solid ${
-                      tds === v.id ? "rgba(139,92,246,0.35)" : "rgba(255,255,255,0.08)"
-                    }`,
-                  }}
-                >
-                  {v.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="rounded-xl overflow-x-auto" style={{ border: "1px solid var(--border)" }}>
-        <table className="data">
+        <table className="data" style={{ fontSize: "0.8rem" }}>
           <thead>
-            <tr style={{ background: "rgba(255,255,255,0.02)" }}>
-              <th>Employee</th>
-              <th>Period</th>
-              <th>Department</th>
-              <th>Status</th>
-              <th>Gross</th>
-              <th>TDS</th>
-              <th>Deductions</th>
-              <th>Net Pay</th>
-              <th>Actions</th>
+            <tr style={{ background: "rgba(255,255,255,0.03)" }}>
+              {["Employee", "Period", "Dept", "Status", "Gross", "TDS", "Net", "Actions"].map(
+                (h) => (
+                  <th
+                    key={h}
+                    style={{
+                      position: "sticky",
+                      top: 0,
+                      zIndex: 1,
+                      background: "rgba(14, 16, 24, 0.95)",
+                      backdropFilter: "blur(8px)",
+                      padding: "0.5rem 0.75rem",
+                    }}
+                  >
+                    {h}
+                  </th>
+                ),
+              )}
             </tr>
           </thead>
           <tbody>
             {filtered.map((s) => {
               const period = `${monthName(s.month)} ${s.year}`;
-              const isPaid = s.paymentStatus === "PAID";
+              const status = statusOverrides[s.id] ?? s.paymentStatus;
+              const isPaid = status === "PAID";
               const downloadName = `Salary_${s.employeeCode || s.employeeName.replace(/\s+/g, "_")}_${s.year}_${String(s.month).padStart(2, "0")}.pdf`;
               return (
                 <tr
                   key={s.id}
                   style={isPaid ? { background: "rgba(16,185,129,0.03)" } : undefined}
                 >
-                  <td>
-                    <p className="font-medium text-sm">{s.employeeName}</p>
-                    <p className="text-xs mt-0.5" style={{ color: "rgba(255,255,255,0.4)" }}>
+                  <td style={{ padding: "0.45rem 0.75rem" }}>
+                    <p className="font-medium leading-tight" style={{ fontSize: "0.82rem" }}>
+                      {s.employeeName}
+                    </p>
+                    <p
+                      className="truncate max-w-[180px] leading-tight"
+                      style={{ color: "rgba(255,255,255,0.4)", fontSize: "0.68rem" }}
+                    >
                       {[s.employeeCode, s.designation].filter(Boolean).join(" · ") || "—"}
                     </p>
-                    {(s.emailOfficial || s.phone) && (
-                      <p
-                        className="text-xs mt-0.5 truncate max-w-[220px]"
-                        style={{ color: "rgba(255,255,255,0.35)" }}
-                      >
-                        {[s.emailOfficial, s.phone].filter(Boolean).join(" · ")}
-                      </p>
-                    )}
                   </td>
-                  <td style={{ color: "rgba(255,255,255,0.72)", fontSize: "0.82rem" }}>
+                  <td style={{ padding: "0.45rem 0.75rem", color: "rgba(255,255,255,0.72)" }}>
                     {period}
                   </td>
-                  <td style={{ color: "rgba(255,255,255,0.65)", fontSize: "0.82rem" }}>
+                  <td style={{ padding: "0.45rem 0.75rem", color: "rgba(255,255,255,0.55)" }}>
                     {s.department || "—"}
                   </td>
-                  <td>
-                    <SalarySlipStatusCell slipId={s.id} initialStatus={s.paymentStatus} />
+                  <td style={{ padding: "0.35rem 0.75rem" }}>
+                    <SalarySlipStatusCell
+                      slipId={s.id}
+                      initialStatus={status}
+                      onStatusChange={(next) =>
+                        setStatusOverrides((prev) => ({ ...prev, [s.id]: next }))
+                      }
+                    />
                   </td>
-                  <td className="tabular-nums text-sm" style={{ color: "rgba(255,255,255,0.72)" }}>
+                  <td
+                    className="tabular-nums"
+                    style={{ padding: "0.45rem 0.75rem", color: "rgba(255,255,255,0.72)" }}
+                  >
                     {formatINR(s.gross)}
                   </td>
-                  <td className="tabular-nums text-sm" style={{ color: "rgba(255,255,255,0.72)" }}>
+                  <td
+                    className="tabular-nums"
+                    style={{ padding: "0.45rem 0.75rem", color: "rgba(255,255,255,0.72)" }}
+                  >
                     {s.tds > 0 ? formatINR(s.tds) : "—"}
                   </td>
-                  <td className="tabular-nums text-sm" style={{ color: "rgba(255,255,255,0.72)" }}>
-                    {formatINR(s.totalDeduct)}
-                  </td>
-                  <td>
+                  <td style={{ padding: "0.45rem 0.75rem" }}>
                     <span className="tabular-nums font-semibold" style={{ color: "#34d399" }}>
                       {formatINR(s.netPay)}
                     </span>
                   </td>
-                  <td>
+                  <td style={{ padding: "0.35rem 0.75rem" }}>
                     <div className="flex items-center gap-1 flex-wrap">
                       {s.filePath && (
                         <>
                           <Link
-                            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all hover:opacity-80"
+                            className="px-1.5 py-0.5 rounded text-[0.65rem] font-medium hover:opacity-80"
                             style={{
                               background: "rgba(99,102,241,0.08)",
                               border: "1px solid rgba(99,102,241,0.2)",
@@ -403,12 +437,11 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
                             }}
                             href={`/api/files/${s.filePath}`}
                             target="_blank"
-                            title="View PDF"
                           >
                             View
                           </Link>
                           <Link
-                            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all hover:opacity-80"
+                            className="px-1.5 py-0.5 rounded text-[0.65rem] font-medium hover:opacity-80"
                             style={{
                               background: "rgba(240,180,41,0.08)",
                               border: "1px solid rgba(240,180,41,0.2)",
@@ -416,7 +449,6 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
                             }}
                             href={`/api/files/${s.filePath}`}
                             download={downloadName}
-                            title="Download PDF"
                           >
                             PDF
                           </Link>
@@ -424,15 +456,14 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
                       )}
                       {isPaid ? (
                         <span
-                          className="text-[0.6rem] px-2 py-1 rounded-lg font-semibold"
+                          className="text-[0.55rem] px-1.5 py-0.5 rounded font-semibold"
                           style={{
                             background: "rgba(16,185,129,0.08)",
                             border: "1px solid rgba(52,211,153,0.2)",
                             color: "#6ee7b7",
                           }}
-                          title="Paid slips are view-only"
                         >
-                          View only
+                          Locked
                         </span>
                       ) : (
                         <>
@@ -455,7 +486,7 @@ export function SalarySlipDatabase({ slips }: { slips: SalarySlipDbRow[] }) {
             })}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={9} className="text-center py-12">
+                <td colSpan={8} className="text-center py-10">
                   <p style={{ color: "rgba(255,255,255,0.4)" }}>
                     {slips.length === 0
                       ? "No salary slips yet — generate slips above."
