@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { importInvoice } from "@/actions/invoices";
+import { importInvoice, checkInvoiceNumberExists } from "@/actions/invoices";
 
 type Line = { description: string; hsn: string; quantity: number; rate: number; amount: number };
 
@@ -27,7 +27,16 @@ type Extracted = {
   confidence?: number;
 };
 
-type ItemStatus = "queued" | "uploading" | "extracting" | "ready" | "error" | "saving" | "saved";
+type ItemStatus = "queued" | "uploading" | "extracting" | "checking" | "conflict" | "ready" | "error" | "saving" | "saved";
+
+type ConflictInfo = {
+  existingNumber: string;
+  existingBuyer: string;
+  existingDate: string;
+  existingTotal: number;
+  existingStatus: string | null;
+  isImported: boolean;
+};
 
 type InvoiceItem = {
   id: string;
@@ -39,6 +48,7 @@ type InvoiceItem = {
   extracted?: Extracted;
   form: Extracted;
   expanded: boolean;
+  conflict?: ConflictInfo;
 };
 
 const PAYMENT_STATUSES = ["UNPAID", "PAID", "PARTIAL", "OVERDUE"];
@@ -69,6 +79,8 @@ const STATUS_ICON: Record<ItemStatus, React.ReactNode> = {
   queued:     <span style={{ color: "var(--text-dim)" }}>·</span>,
   uploading:  <Spinner />,
   extracting: <Spinner color="#818cf8" />,
+  checking:   <Spinner color="#fbbf24" />,
+  conflict:   <span style={{ color: "#fbbf24" }}>⚠</span>,
   ready:      <span style={{ color: "#34d399" }}>✓</span>,
   error:      <span style={{ color: "#f87171" }}>✕</span>,
   saving:     <Spinner color="#fbbf24" />,
@@ -78,6 +90,8 @@ const STATUS_LABEL: Record<ItemStatus, string> = {
   queued:     "Queued",
   uploading:  "Uploading…",
   extracting: "Claude reading…",
+  checking:   "Checking duplicates…",
+  conflict:   "Duplicate detected",
   ready:      "Ready",
   error:      "Error",
   saving:     "Saving…",
@@ -123,6 +137,7 @@ export function InvoiceImporter({ onSaved }: { onSaved: (nums: string[]) => void
 
       // Extract with Claude
       updateItem(item.id, { status: "extracting" });
+      let extracted: Extracted | null = null;
       try {
         const exFd = new FormData();
         exFd.append("file", item.file);
@@ -137,17 +152,48 @@ export function InvoiceImporter({ onSaved }: { onSaved: (nums: string[]) => void
             form: makeForm(blank),
             error: exData.error || "AI extraction failed — fill in manually.",
           });
-        } else {
-          updateItem(item.id, {
-            status: "ready",
-            extracted: exData.data,
-            form: makeForm(exData.data),
-            expanded: false,
-          });
+          continue;
         }
+        extracted = exData.data;
       } catch (e) {
         updateItem(item.id, { status: "error", error: e instanceof Error ? e.message : "Extraction failed" });
+        continue;
       }
+
+      // Duplicate check
+      const extractedNum = extracted.invoiceNumber?.trim();
+      if (extractedNum) {
+        updateItem(item.id, { status: "checking" });
+        try {
+          const check = await checkInvoiceNumberExists(extractedNum);
+          if (check.exists) {
+            updateItem(item.id, {
+              status: "conflict",
+              extracted,
+              form: makeForm(extracted),
+              expanded: true,
+              conflict: {
+                existingNumber: check.invoice!.number,
+                existingBuyer: check.invoice!.buyerName,
+                existingDate: check.invoice!.invoiceDate,
+                existingTotal: check.invoice!.grandTotal,
+                existingStatus: check.invoice!.paymentStatus,
+                isImported: check.invoice!.isImported,
+              },
+            });
+            continue;
+          }
+        } catch {
+          // Non-fatal — proceed as normal if check fails
+        }
+      }
+
+      updateItem(item.id, {
+        status: "ready",
+        extracted,
+        form: makeForm(extracted),
+        expanded: false,
+      });
     }
 
     processingRef.current = false;
@@ -182,6 +228,22 @@ export function InvoiceImporter({ onSaved }: { onSaved: (nums: string[]) => void
     setDragOver(false);
     void handleFiles(e.dataTransfer.files);
   }, [handleFiles]);
+
+  // "Save with new number" — clears the conflict and lets importInvoice auto-assign
+  function resolveConflictAsNew(id: string) {
+    setItems((prev) =>
+      prev.map((it) =>
+        it.id === id
+          ? { ...it, status: "ready", conflict: undefined, form: { ...it.form, invoiceNumber: "" }, expanded: true }
+          : it,
+      ),
+    );
+  }
+
+  // "Discard" — remove from queue (it's a duplicate upload)
+  function resolveConflictDiscard(id: string) {
+    setItems((prev) => prev.filter((it) => it.id !== id));
+  }
 
   async function saveItem(id: string) {
     const item = items.find((i) => i.id === id);
@@ -237,9 +299,10 @@ export function InvoiceImporter({ onSaved }: { onSaved: (nums: string[]) => void
     }
   }
 
-  const readyCount  = items.filter((i) => i.status === "ready").length;
-  const savedCount  = items.filter((i) => i.status === "saved").length;
-  const workingCount = items.filter((i) => i.status === "uploading" || i.status === "extracting").length;
+  const readyCount   = items.filter((i) => i.status === "ready").length;
+  const conflictCount = items.filter((i) => i.status === "conflict").length;
+  const savedCount   = items.filter((i) => i.status === "saved").length;
+  const workingCount = items.filter((i) => ["uploading","extracting","checking"].includes(i.status)).length;
 
   const showDropZone = items.length === 0;
 
@@ -299,6 +362,7 @@ export function InvoiceImporter({ onSaved }: { onSaved: (nums: string[]) => void
           </p>
           <div className="ml-auto flex items-center gap-3 text-xs" style={{ color: "var(--text-dim)" }}>
             {workingCount > 0 && <span style={{ color: "#818cf8" }}>{workingCount} processing…</span>}
+            {conflictCount > 0 && <span style={{ color: "#fbbf24" }}>⚠ {conflictCount} duplicate{conflictCount > 1 ? "s" : ""}</span>}
             {readyCount > 0 && <span style={{ color: "#34d399" }}>{readyCount} ready</span>}
             {savedCount > 0 && <span>✅ {savedCount} saved</span>}
           </div>
@@ -328,7 +392,7 @@ export function InvoiceImporter({ onSaved }: { onSaved: (nums: string[]) => void
               className="flex items-center gap-3 px-4 py-3 cursor-pointer select-none"
               style={{ borderBottom: item.expanded ? "1px solid var(--border)" : "none" }}
               onClick={() => {
-                if (item.status === "ready" || item.status === "error")
+                if (["ready", "error", "conflict"].includes(item.status))
                   updateItem(item.id, { expanded: !item.expanded });
               }}
             >
@@ -382,7 +446,13 @@ export function InvoiceImporter({ onSaved }: { onSaved: (nums: string[]) => void
                     Save
                   </button>
                 )}
-                {(item.status === "ready" || item.status === "error") && (
+                {item.status === "conflict" && (
+                  <span className="text-xs px-2.5 py-1 rounded-lg font-semibold"
+                    style={{ background: "rgba(251,191,36,0.1)", border: "1px solid rgba(251,191,36,0.25)", color: "#fbbf24" }}>
+                    Resolve ↓
+                  </span>
+                )}
+                {(["ready", "error", "conflict"].includes(item.status)) && (
                   <motion.span
                     animate={{ rotate: item.expanded ? 180 : 0 }}
                     transition={{ duration: 0.2 }}
@@ -419,7 +489,49 @@ export function InvoiceImporter({ onSaved }: { onSaved: (nums: string[]) => void
                   style={{ overflow: "hidden" }}
                 >
                   <div className="p-4 space-y-4">
-                    {item.error && (
+                    {/* Conflict resolution banner */}
+                    {item.status === "conflict" && item.conflict && (
+                      <div className="rounded-xl p-4 space-y-3"
+                        style={{ background: "rgba(251,191,36,0.06)", border: "1px solid rgba(251,191,36,0.3)" }}>
+                        <div className="flex items-start gap-2">
+                          <span className="text-lg leading-none">⚠</span>
+                          <div>
+                            <p className="text-sm font-semibold" style={{ color: "#fbbf24" }}>
+                              Invoice {item.conflict.existingNumber} already exists in the database
+                            </p>
+                            <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
+                              Existing: <strong>{item.conflict.existingBuyer}</strong> · {item.conflict.existingDate} ·{" "}
+                              ₹{item.conflict.existingTotal.toLocaleString("en-IN")}
+                              {item.conflict.existingStatus ? ` · ${item.conflict.existingStatus}` : ""}
+                              {item.conflict.isImported ? " · Imported" : " · Generated"}
+                            </p>
+                          </div>
+                        </div>
+                        <p className="text-xs font-medium" style={{ color: "rgba(255,255,255,0.7)" }}>
+                          Is this the same invoice re-uploaded by mistake, or a different invoice that happens to have the same number?
+                        </p>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => resolveConflictDiscard(item.id)}
+                            className="text-xs px-3 py-1.5 rounded-lg font-semibold transition-all"
+                            style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)", color: "#f87171" }}
+                          >
+                            ✕ Discard — same invoice, duplicate upload
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => resolveConflictAsNew(item.id)}
+                            className="text-xs px-3 py-1.5 rounded-lg font-semibold transition-all"
+                            style={{ background: "rgba(99,102,241,0.12)", border: "1px solid rgba(99,102,241,0.25)", color: "#818cf8" }}
+                          >
+                            ✎ Save as new number — different invoice
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {item.error && item.status !== "conflict" && (
                       <div className="px-3 py-2 rounded-lg text-xs" style={{ background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.2)", color: "#fbbf24" }}>
                         ⚠ {item.error}
                       </div>

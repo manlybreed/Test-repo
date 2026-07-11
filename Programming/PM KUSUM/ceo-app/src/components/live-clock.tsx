@@ -25,14 +25,14 @@ export function LiveClock() {
 
   return (
     <div className="flex flex-col items-end leading-none gap-0.5">
-      <span className="text-[0.58rem] tracking-[0.14em] uppercase font-medium"
-        style={{ color: "var(--text-dim)" }}>
+      <span className="text-[0.6rem] tracking-[0.12em] uppercase font-semibold"
+        style={{ color: "rgba(255,255,255,0.6)" }}>
         {dayName}, {date}
       </span>
-      <span className="text-sm font-semibold tabular-nums"
-        style={{ color: "var(--text-muted)" }}>
+      <span className="text-sm font-bold tabular-nums"
+        style={{ color: "rgba(255,255,255,0.9)" }}>
         {h12}:{minutes}
-        <span className="text-[0.65rem] ml-0.5 font-normal" style={{ color: "var(--text-dim)" }}>{ampm}</span>
+        <span className="text-[0.7rem] ml-0.5 font-semibold" style={{ color: "rgba(255,255,255,0.55)" }}>{ampm}</span>
       </span>
     </div>
   );

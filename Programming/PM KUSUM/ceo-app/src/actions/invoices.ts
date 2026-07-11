@@ -234,6 +234,33 @@ export async function importInvoice(input: ImportInvoiceInput) {
   return { id: invoice.id, number: invoice.number, grandTotal: invoice.grandTotal };
 }
 
+export async function checkInvoiceNumberExists(number: string) {
+  await requireCeo();
+  const inv = await prisma.invoice.findUnique({
+    where: { number: number.trim() },
+    select: {
+      number: true,
+      buyerName: true,
+      invoiceDate: true,
+      grandTotal: true,
+      paymentStatus: true,
+      isImported: true,
+    },
+  });
+  if (!inv) return { exists: false as const };
+  return {
+    exists: true as const,
+    invoice: {
+      number: inv.number,
+      buyerName: inv.buyerName,
+      invoiceDate: inv.invoiceDate.toISOString().slice(0, 10),
+      grandTotal: inv.grandTotal,
+      paymentStatus: inv.paymentStatus,
+      isImported: inv.isImported,
+    },
+  };
+}
+
 export async function updateInvoicePayment(input: {
   id: string;
   paymentStatus: string;
