@@ -200,6 +200,7 @@ model Employee {
   tdsPercent      Float        @default(0)  // TDS rate % applied on gross
   otherDeduct     Float        @default(0)
   joinDate        DateTime?
+  dateOfBirth     DateTime?
   photoPath       String?
   panDocPath      String?
   aadhaarDocPath  String?

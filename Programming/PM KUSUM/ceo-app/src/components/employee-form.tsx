@@ -35,6 +35,7 @@ export type EmployeeFormData = {
   tdsPercent: string;
   otherDeduct: string;
   joinDate: string;
+  dateOfBirth: string;
   notes: string;
 };
 
@@ -66,6 +67,7 @@ const EMPTY: EmployeeFormData = {
   tdsPercent: "0",
   otherDeduct: "0",
   joinDate: "",
+  dateOfBirth: "",
   notes: "",
 };
 
@@ -100,6 +102,7 @@ export type EmployeeEditSeed = {
   tdsPercent: number;
   otherDeduct: number;
   joinDate: string | null;
+  dateOfBirth: string | null;
   notes: string | null;
   photoPath: string | null;
   panDocPath: string | null;
@@ -138,6 +141,7 @@ function seedToForm(e: EmployeeEditSeed): EmployeeFormData {
     tdsPercent: String(e.tdsPercent),
     otherDeduct: String(e.otherDeduct),
     joinDate: e.joinDate ?? "",
+    dateOfBirth: e.dateOfBirth ?? "",
     notes: e.notes ?? "",
   };
 }
@@ -391,6 +395,7 @@ export function EmployeeForm({
         tdsPercent: n("tdsPercent") || n("tds") || f.tdsPercent,
         otherDeduct: n("otherDeduct") || f.otherDeduct,
         joinDate: str("joinDate") || f.joinDate,
+        dateOfBirth: str("dateOfBirth") || str("dob") || f.dateOfBirth,
         notes: [str("notes"), f.notes].filter(Boolean).join(" · "),
       }));
       setDetected(
@@ -438,6 +443,7 @@ export function EmployeeForm({
       tdsPercent: num(form.tdsPercent),
       otherDeduct: num(form.otherDeduct),
       joinDate: form.joinDate || undefined,
+      dateOfBirth: form.dateOfBirth || undefined,
       photoPath: paths.photo,
       panDocPath: paths.pan,
       aadhaarDocPath: paths.aadhaar,
@@ -766,6 +772,10 @@ export function EmployeeForm({
               <div>
                 <label className="label">UAN</label>
                 <input className="input font-mono" value={form.uan} onChange={(e) => setField("uan", e.target.value)} />
+              </div>
+              <div>
+                <label className="label">Date of birth</label>
+                <input className="input" type="date" value={form.dateOfBirth} onChange={(e) => setField("dateOfBirth", e.target.value)} />
               </div>
               <div>
                 <label className="label">Join date</label>

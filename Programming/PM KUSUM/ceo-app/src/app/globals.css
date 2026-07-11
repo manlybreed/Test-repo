@@ -103,7 +103,13 @@ input, textarea, select, button { font: inherit; }
   box-shadow: 0 0 0 3px var(--accent-dim);
 }
 .input::placeholder { color: var(--text-dim); }
-select.input option { background: var(--bg-panel); }
+select.input {
+  color-scheme: dark;
+}
+select.input option {
+  background: rgba(18, 22, 34, 0.92);
+  color: rgba(255, 255, 255, 0.9);
+}
 
 /* ── Labels ─────────────────────────────────────────────────────── */
 .label {

@@ -136,11 +136,13 @@ export function InvoiceForm({
           />
           {acOpen && acResults.length > 0 && (
             <div
-              className="absolute top-full left-0 right-0 z-[60] rounded-xl overflow-hidden shadow-2xl mt-1"
+              className="absolute top-full left-0 right-0 z-[60] rounded-xl overflow-hidden mt-1"
               style={{
-                background: "#141821",
+                background: "rgba(18, 22, 34, 0.72)",
+                backdropFilter: "blur(20px)",
+                WebkitBackdropFilter: "blur(20px)",
                 border: "1px solid rgba(255,255,255,0.12)",
-                boxShadow: "0 16px 40px rgba(0,0,0,0.55)",
+                boxShadow: "0 16px 40px rgba(0,0,0,0.45)",
               }}
             >
               {acResults.slice(0, 8).map((s) => (
@@ -150,7 +152,7 @@ export function InvoiceForm({
                   className="w-full text-left px-4 py-2.5 transition-colors"
                   style={{ background: "transparent" }}
                   onMouseEnter={(e) => {
-                    e.currentTarget.style.background = "rgba(99,102,241,0.12)";
+                    e.currentTarget.style.background = "rgba(99,102,241,0.18)";
                   }}
                   onMouseLeave={(e) => {
                     e.currentTarget.style.background = "transparent";

@@ -35,6 +35,7 @@ export default async function EmployeesPage() {
     tdsPercent: e.tdsPercent,
     otherDeduct: e.otherDeduct,
     joinDate: e.joinDate ? e.joinDate.toISOString().slice(0, 10) : null,
+    dateOfBirth: e.dateOfBirth ? e.dateOfBirth.toISOString().slice(0, 10) : null,
     notes: e.notes,
     photoPath: e.photoPath,
     panDocPath: e.panDocPath,

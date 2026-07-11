@@ -57,6 +57,7 @@ Return ONLY JSON (no markdown):
   "tdsPercent": <number or null — TDS rate as percent if shown, else null>,
   "otherDeduct": <number or null>,
   "joinDate": "YYYY-MM-DD or null",
+  "dateOfBirth": "YYYY-MM-DD from Aadhaar / documents if present, else null",
   "documentsDetected": ["PAN"|"AADHAAR"|...],
   "notes": "brief note of ambiguities",
   "confidence": 0.0-1.0

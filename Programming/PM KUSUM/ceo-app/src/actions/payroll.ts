@@ -52,6 +52,7 @@ export type EmployeeInput = {
   tdsPercent?: number;
   otherDeduct?: number;
   joinDate?: string;
+  dateOfBirth?: string;
   photoPath?: string;
   panDocPath?: string;
   aadhaarDocPath?: string;
@@ -110,6 +111,7 @@ export async function upsertEmployee(input: EmployeeInput) {
     tdsPercent: input.tdsPercent ?? 0,
     otherDeduct: input.otherDeduct ?? 0,
     joinDate: input.joinDate ? new Date(input.joinDate) : null,
+    dateOfBirth: input.dateOfBirth ? new Date(input.dateOfBirth) : null,
     photoPath: input.photoPath || null,
     panDocPath: input.panDocPath || null,
     aadhaarDocPath: input.aadhaarDocPath || null,
