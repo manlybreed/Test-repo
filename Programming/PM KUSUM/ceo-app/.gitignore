@@ -46,3 +46,8 @@ next-env.d.ts
 !/storage/agreements/.gitkeep
 !/storage/invoices/.gitkeep
 !/storage/salary-slips/.gitkeep
+
+# macOS desktop shell / packaging
+/macos/.build/
+/dist/
+

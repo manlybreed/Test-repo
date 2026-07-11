@@ -365,3 +365,17 @@ table.data tbody tr:hover td { background: rgba(255,255,255,0.025); }
   padding: 1px 5px;
   font-family: inherit;
 }
+
+/* ── Desktop (Mac WKWebView) performance tweaks ─────────────────── */
+html[data-desktop="1"] {
+  overscroll-behavior: none;
+}
+html[data-desktop="1"] * {
+  scrollbar-width: thin;
+}
+@media (prefers-reduced-motion: no-preference) {
+  html[data-desktop="1"] .glow-accent {
+    animation: none;
+  }
+}
+

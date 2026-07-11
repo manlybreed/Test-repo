@@ -60,3 +60,18 @@ Generated files land in `storage/` and download via `/api/files/...`.
 - `npm run build` / `npm start` — production
 - `npm run db:push` — sync Prisma schema
 - `npm run db:seed` — CEO user, company GST profile, sample client/employee
+- `npm run desktop:dev` — native Mac window against `npm run dev`
+- `npm run desktop:build` — complete `.app` + DMG (embedded Next standalone)
+- `npm run desktop:dmg` — recreate DMG from an already-built `.app`
+- `npm run desktop:open` — open the built `.app`
+
+## Mac desktop app
+
+Native Objective-C + WKWebView shell for Apple Silicon / macOS 26. See [`macos/README.md`](macos/README.md).
+
+```bash
+npm run desktop:build
+open dist/macos/BluRidge-CEO-macOS26-arm64.dmg
+```
+
+Requires Postgres (Docker) matching `.env`. The DMG embeds the Next.js server; it will not open without `Contents/Resources/ceo-app/server.js`.
