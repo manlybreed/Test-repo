@@ -58,10 +58,46 @@ export function normalizeGstEntity(v?: string | null): GstEntity {
   return v === "RAJ" ? "RAJ" : "DEL";
 }
 
-/** Map BluRidge seller GSTIN → DEL / RAJ (client-safe) */
+/** 15-char GSTIN body (no separators). Matches even when glued to GST/INGST prefixes. */
+const GSTIN_BODY_RE = /[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][A-Z0-9]Z[A-Z0-9]/gi;
+
+/**
+ * Pull a 15-char GSTIN out of messy OCR / labels like "IN GST08AANCB9956E1Z5",
+ * "GSTIN: 08-AANC-B9956-E1Z5", etc.
+ */
+export function normalizeGstinCandidate(raw?: string | null): string | null {
+  if (!raw?.trim()) return null;
+  const compact = raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const m = compact.match(GSTIN_BODY_RE);
+  return m?.[0] ?? null;
+}
+
+/** All GSTIN-shaped tokens in free text (deduped, uppercase). */
+export function extractGstinsFromText(text: string | null | undefined): string[] {
+  if (!text?.trim()) return [];
+  const compact = text.toUpperCase().replace(/[^A-Z0-9]+/g, "");
+  // Also scan original with loose separators so we don't lose spaced GSTINs
+  const spaced = text.toUpperCase();
+  const found = new Set<string>();
+  for (const src of [compact, spaced.replace(/[^A-Z0-9]/g, "")]) {
+    for (const m of src.matchAll(GSTIN_BODY_RE)) {
+      found.add(m[0]);
+    }
+  }
+  // Direct pass on original with optional separators between chars
+  const loose =
+    /[0-9]{2}[\s\-]*[A-Z]{5}[\s\-]*[0-9]{4}[\s\-]*[A-Z][\s\-]*[A-Z0-9][\s\-]*Z[\s\-]*[A-Z0-9]/gi;
+  for (const m of spaced.matchAll(loose)) {
+    const n = normalizeGstinCandidate(m[0]);
+    if (n) found.add(n);
+  }
+  return [...found];
+}
+
+/** Map BluRidge GSTIN → DEL / RAJ (client-safe). Accepts messy OCR strings. */
 export function gstEntityFromSellerGstin(gstin?: string | null): GstEntity | null {
-  if (!gstin?.trim()) return null;
-  const normalized = gstin.trim().toUpperCase();
+  const normalized = normalizeGstinCandidate(gstin);
+  if (!normalized) return null;
   if (normalized === GST_ENTITIES.DEL.gstin.toUpperCase()) return "DEL";
   if (normalized === GST_ENTITIES.RAJ.gstin.toUpperCase()) return "RAJ";
   return null;

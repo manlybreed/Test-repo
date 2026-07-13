@@ -8,6 +8,7 @@ import { amountInWordsINR } from "@/lib/utils";
 import { renderInvoicePdf } from "@/lib/docgen/invoice";
 import { getSellerProfile, normalizeGstEntity, shouldUseIgst } from "@/lib/gst-entities";
 import { classifyInvoiceGstEntity } from "@/lib/ai/classify-gst-entity";
+import { invoiceNumbersMatch } from "@/lib/upload";
 
 export type InvoiceLineInput = {
   description: string;
@@ -189,8 +190,18 @@ export async function importInvoice(input: ImportInvoiceInput) {
     // Use provided number, but fall back to auto-generated if it conflicts or is blank
     let number = input.invoiceNumber?.trim();
     if (number) {
-      const exists = await tx.invoice.findUnique({ where: { number }, select: { id: true } });
-      if (exists) number = undefined; // conflict — generate new one
+      const existsExact = await tx.invoice.findUnique({ where: { number }, select: { id: true } });
+      if (existsExact) number = undefined;
+      else {
+        const recent = await tx.invoice.findMany({
+          select: { number: true },
+          orderBy: { createdAt: "desc" },
+          take: 500,
+        });
+        if (recent.some((r) => invoiceNumbersMatch(r.number, number!))) {
+          number = undefined;
+        }
+      }
     }
     if (!number) {
       const seq = await tx.invoiceSequence.upsert({
@@ -246,17 +257,34 @@ export async function importInvoice(input: ImportInvoiceInput) {
 
 export async function checkInvoiceNumberExists(number: string) {
   await requireCeo();
-  const inv = await prisma.invoice.findUnique({
-    where: { number: number.trim() },
-    select: {
-      number: true,
-      buyerName: true,
-      invoiceDate: true,
-      grandTotal: true,
-      paymentStatus: true,
-      isImported: true,
-    },
+  const trimmed = number.trim();
+  if (!trimmed) return { exists: false as const };
+
+  const select = {
+    number: true,
+    buyerName: true,
+    invoiceDate: true,
+    grandTotal: true,
+    paymentStatus: true,
+    isImported: true,
+  } as const;
+
+  // Exact match first (unique index)
+  let inv = await prisma.invoice.findUnique({
+    where: { number: trimmed },
+    select,
   });
+
+  // Normalized match (INV-09 vs INV 09 / #INV-09)
+  if (!inv) {
+    const candidates = await prisma.invoice.findMany({
+      select,
+      orderBy: { createdAt: "desc" },
+      take: 500,
+    });
+    inv = candidates.find((c) => invoiceNumbersMatch(c.number, trimmed)) ?? null;
+  }
+
   if (!inv) return { exists: false as const };
   return {
     exists: true as const,

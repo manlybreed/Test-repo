@@ -47,6 +47,10 @@ next-env.d.ts
 !/storage/invoices/.gitkeep
 !/storage/salary-slips/.gitkeep
 
+# disclosure forms
+/storage/disclosures/*
+!/storage/disclosures/.gitkeep
+
 # macOS desktop shell / packaging
 /macos/.build/
 /dist/

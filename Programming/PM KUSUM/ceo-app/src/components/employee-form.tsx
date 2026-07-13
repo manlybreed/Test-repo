@@ -6,6 +6,7 @@ import { createEmployee, nextEmployeeCode, upsertEmployee } from "@/actions/payr
 import { employeeSalaryTotals } from "@/lib/employee-salary";
 import { formatAadhaar } from "@/lib/indian-states";
 import { ConfirmModifyDialog } from "@/components/confirm-dialogs";
+import { UPLOAD_ACCEPT, UPLOAD_ACCEPT_IMAGES } from "@/lib/upload";
 
 export type EmployeeFormData = {
   name: string;
@@ -234,7 +235,29 @@ export function EmployeeForm({
   const [pending, start] = useTransition();
   const [savedName, setSavedName] = useState("");
   const [confirmModify, setConfirmModify] = useState(false);
+  const [photoBusy, setPhotoBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const photoRef = useRef<HTMLInputElement>(null);
+
+  async function uploadPhoto(file: File) {
+    setError("");
+    setPhotoBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("kind", "photo");
+      const res = await fetch("/api/employees/upload", { method: "POST", body: fd });
+      const data = (await res.json()) as { filePath?: string; error?: string };
+      if (!res.ok || !data.filePath) {
+        throw new Error(data.error || "Photo upload failed");
+      }
+      setPaths((p) => ({ ...p, photo: data.filePath! }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Photo upload failed");
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (editing) {
@@ -261,7 +284,10 @@ export function EmployeeForm({
 
   const addFiles = useCallback((fileList: FileList | File[]) => {
     const incoming = Array.from(fileList).filter((f) =>
-      ["image/jpeg", "image/png", "image/webp", "application/pdf"].includes(f.type),
+      ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf"].includes(
+        f.type,
+      ) ||
+        /\.(jpe?g|png|webp|heic|heif|pdf)$/i.test(f.name),
     );
     if (!incoming.length) {
       setError("Upload JPG, PNG, WebP, or PDF only.");
@@ -533,6 +559,75 @@ export function EmployeeForm({
         </div>
       )}
 
+      {/* Photo — always available on create (manual) and edit */}
+      {(isEdit || mode === "manual") && (
+        <div
+          className="rounded-xl p-4 flex items-center gap-4"
+          style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.08)" }}
+        >
+          <div
+            className="w-16 h-16 rounded-xl overflow-hidden shrink-0 flex items-center justify-center"
+            style={{ background: "rgba(99,102,241,0.12)", border: "1px solid rgba(99,102,241,0.25)" }}
+          >
+            {paths.photo ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={`/${paths.photo}`} alt="Employee" className="w-full h-full object-cover" />
+            ) : (
+              <span className="text-xs" style={{ color: "#a5b4fc" }}>
+                No photo
+              </span>
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium">Employee photo</p>
+            <p className="text-xs mt-0.5" style={{ color: "var(--text-dim)" }}>
+              JPG, PNG, WebP, or HEIC from iPhone — replace anytime when editing
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              disabled={photoBusy || pending}
+              onClick={() => photoRef.current?.click()}
+              className="text-xs px-3 py-1.5 rounded-lg font-medium disabled:opacity-40"
+              style={{
+                background: "rgba(99,102,241,0.15)",
+                border: "1px solid rgba(99,102,241,0.3)",
+                color: "#a5b4fc",
+              }}
+            >
+              {photoBusy ? "Uploading…" : paths.photo ? "Change photo" : "Add photo"}
+            </button>
+            {paths.photo && (
+              <button
+                type="button"
+                disabled={photoBusy || pending}
+                onClick={() => setPaths((p) => {
+                  const next = { ...p };
+                  delete next.photo;
+                  return next;
+                })}
+                className="text-xs px-2 py-1.5 rounded-lg"
+                style={{ color: "#f87171" }}
+              >
+                Remove
+              </button>
+            )}
+          </div>
+          <input
+            ref={photoRef}
+            type="file"
+            accept={UPLOAD_ACCEPT_IMAGES}
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void uploadPhoto(f);
+              e.target.value = "";
+            }}
+          />
+        </div>
+      )}
+
       {!isEdit && (
       <div
         className="flex gap-2 p-1 rounded-xl w-fit"
@@ -588,7 +683,7 @@ export function EmployeeForm({
               ref={fileRef}
               type="file"
               multiple
-              accept="image/jpeg,image/png,image/webp,application/pdf"
+              accept={UPLOAD_ACCEPT}
               className="hidden"
               onChange={(e) => {
                 if (e.target.files?.length) addFiles(e.target.files);

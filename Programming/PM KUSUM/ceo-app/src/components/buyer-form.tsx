@@ -4,6 +4,7 @@ import { useCallback, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/actions/clients";
 import { panFromGstin, stateFromGstin } from "@/lib/indian-states";
+import { UPLOAD_ACCEPT } from "@/lib/upload";
 
 export type BuyerFormData = {
   name: string;
@@ -267,7 +268,7 @@ export function BuyerForm({ onCreated }: { onCreated?: () => void }) {
               ref={fileRef}
               type="file"
               multiple
-              accept="image/jpeg,image/png,image/webp,application/pdf"
+              accept={UPLOAD_ACCEPT}
               className="hidden"
               onChange={(e) => {
                 if (e.target.files?.length) addFiles(e.target.files);

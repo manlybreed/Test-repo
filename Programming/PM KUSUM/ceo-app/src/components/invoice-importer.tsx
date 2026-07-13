@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { importInvoice, checkInvoiceNumberExists } from "@/actions/invoices";
 import { GstEntitySelect } from "@/components/gst-entity-select";
 import { gstEntityFromSellerGstin, type GstEntity } from "@/lib/gst-entities";
+import { UPLOAD_ACCEPT } from "@/lib/upload";
 
 type Line = { description: string; hsn: string; quantity: number; rate: number; amount: number };
 
@@ -333,7 +334,7 @@ export function InvoiceImporter({ onSaved }: { onSaved: (nums: string[]) => void
             background: dragOver ? "rgba(99,102,241,0.06)" : "transparent",
           }}
         >
-          <input ref={fileRef} type="file" accept="image/*,.pdf" className="hidden" multiple
+          <input ref={fileRef} type="file" accept={UPLOAD_ACCEPT} className="hidden" multiple
             onChange={(e) => { if (e.target.files?.length) void handleFiles(e.target.files); e.target.value = ""; }} />
           <div className="w-12 h-12 rounded-xl flex items-center justify-center"
             style={{ background: "rgba(99,102,241,0.12)", color: "#818cf8" }}>
@@ -361,7 +362,7 @@ export function InvoiceImporter({ onSaved }: { onSaved: (nums: string[]) => void
             background: dragOver ? "rgba(99,102,241,0.06)" : "transparent",
           }}
         >
-          <input ref={fileRef} type="file" accept="image/*,.pdf" className="hidden" multiple
+          <input ref={fileRef} type="file" accept={UPLOAD_ACCEPT} className="hidden" multiple
             onChange={(e) => { if (e.target.files?.length) void handleFiles(e.target.files); e.target.value = ""; }} />
           <div className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0"
             style={{ background: "rgba(99,102,241,0.15)", color: "#818cf8" }}>

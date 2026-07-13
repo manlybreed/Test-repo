@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { auth } from "@/lib/auth";
+import { prepareUploadFile } from "@/lib/upload";
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_FILES = 10;
@@ -115,23 +116,18 @@ export async function POST(req: NextRequest) {
       text: `There are ${files.length} file(s). Classify each by FILE_INDEX, then extract merged employee data.`,
     });
 
-    files.forEach((file, index) => {
+    files.forEach((file) => {
       if (file.size > MAX_FILE_BYTES) {
         throw new Error(`${file.name} is too large (max 20 MB).`);
-      }
-      const mediaType = (file.type || "application/pdf") as MediaType;
-      const isImage = mediaType.startsWith("image/");
-      const isPdf = mediaType === "application/pdf";
-      if (!isImage && !isPdf) {
-        throw new Error(`Unsupported type: ${file.name}. Upload JPG, PNG, WebP, or PDF.`);
       }
     });
 
     for (let index = 0; index < files.length; index++) {
       const file = files[index];
-      const mediaType = (file.type || "application/pdf") as MediaType;
+      const prepared = await prepareUploadFile(file);
+      const mediaType = prepared.mime as "image/jpeg" | "image/png" | "image/webp" | "application/pdf";
       const isImage = mediaType.startsWith("image/");
-      const base64 = Buffer.from(await file.arrayBuffer()).toString("base64");
+      const base64 = prepared.buffer.toString("base64");
 
       contentParts.push({
         type: "text",

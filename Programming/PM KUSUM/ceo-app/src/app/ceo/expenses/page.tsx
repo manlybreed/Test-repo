@@ -1,5 +1,6 @@
 import { listExpenses, getExpenseSummary } from "@/actions/expenses";
 import { getCategoryById, EXPENSE_CATEGORIES } from "@/lib/expense-categories";
+import { displayBilledToName } from "@/lib/billed-to";
 import { ExpensesClient } from "./client";
 
 export default async function ExpensesPage({
@@ -97,6 +98,13 @@ export default async function ExpensesPage({
           needsReview: e.needsReview,
           gstAmount:   e.gstAmount ? Number(e.gstAmount) : undefined,
           gstEntity:   e.gstEntity ?? null,
+          billedTo:    e.billedTo ?? undefined,
+          billedToCanonical:
+            displayBilledToName(
+              e.billedToParty?.canonicalName || e.billedTo || "",
+            ) || null,
+          ourGstMentioned: e.ourGstMentioned ?? null,
+          billedGstin: e.billedGstin ?? undefined,
           notes:       e.notes ?? undefined,
         }))}
         activeFilter={sp.cat}

@@ -1,7 +1,12 @@
 import { PrismaClient } from "@prisma/client";
 
-/** Bump when Prisma schema fields change so the next.js global singleton is recreated in dev. */
-const PRISMA_SCHEMA_STAMP = "salary-payment-v2";
+/**
+ * Bump when Prisma schema models/fields change so the Next.js global
+ * singleton is dropped. Also validates that expected delegates exist —
+ * a process that loaded @prisma/client before `prisma generate` will
+ * still construct a client missing new models until the server restarts.
+ */
+const PRISMA_SCHEMA_STAMP = "billed-to-party-v2";
 
 const globalForPrisma = globalThis as unknown as {
   prisma?: PrismaClient;
@@ -14,19 +19,38 @@ function createClient() {
   });
 }
 
-function getClient() {
+function clientHasModel(client: PrismaClient, model: string): boolean {
+  return typeof (client as unknown as Record<string, unknown>)[model] === "object";
+}
+
+function getClient(): PrismaClient {
+  const cached = globalForPrisma.prisma;
   if (
-    globalForPrisma.prisma &&
-    globalForPrisma.prismaSchemaStamp === PRISMA_SCHEMA_STAMP
+    cached &&
+    globalForPrisma.prismaSchemaStamp === PRISMA_SCHEMA_STAMP &&
+    clientHasModel(cached, "kusumPlant")
   ) {
-    return globalForPrisma.prisma;
+    return cached;
   }
-  // Drop stale cached client after schema changes (e.g. dateOfBirth added)
-  void globalForPrisma.prisma?.$disconnect().catch(() => undefined);
+
+  void cached?.$disconnect().catch(() => undefined);
   const client = createClient();
+
+  if (!clientHasModel(client, "kusumPlant")) {
+    throw new Error(
+      "Prisma client is missing KusumPlant — restart the Next.js dev server after running `npx prisma generate`.",
+    );
+  }
+
   globalForPrisma.prisma = client;
   globalForPrisma.prismaSchemaStamp = PRISMA_SCHEMA_STAMP;
   return client;
 }
 
-export const prisma = getClient();
+export const prisma = new Proxy({} as PrismaClient, {
+  get(_target, prop, receiver) {
+    const client = getClient();
+    const value = Reflect.get(client, prop, receiver);
+    return typeof value === "function" ? value.bind(client) : value;
+  },
+});

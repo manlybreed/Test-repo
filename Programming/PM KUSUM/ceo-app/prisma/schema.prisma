@@ -295,21 +295,70 @@ model InvoiceSequence {
 }
 
 model Expense {
-  id          String   @id @default(cuid())
-  date        DateTime
-  vendor      String
-  amount      Decimal  @db.Decimal(12, 2)
-  category    String
-  subCategory String?
-  description String?
-  paymentMode String?
-  gstAmount   Decimal? @db.Decimal(12, 2)
-  gstEntity   String?  // DEL | RAJ — BluRidge GST under which vendor invoice was booked
-  invoiceNo   String?
-  filePath    String?
-  rawExtract  String?
-  notes       String?
-  needsReview Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id               String   @id @default(cuid())
+  date             DateTime
+  vendor           String
+  amount           Decimal  @db.Decimal(12, 2)
+  category         String
+  subCategory      String?
+  description      String?
+  paymentMode      String?
+  gstAmount        Decimal? @db.Decimal(12, 2)
+  gstEntity        String?  // DEL | RAJ — BluRidge GST under which vendor invoice was booked
+  invoiceNo        String?
+  invoiceNoNorm    String?  // normalized invoice number for de-duplication
+  billedTo         String?  // raw "Billed to" text from the invoice
+  billedToPartyId  String?
+  billedToParty    BilledToParty? @relation(fields: [billedToPartyId], references: [id], onDelete: SetNull)
+  ourGstMentioned  Boolean? // whether a BluRidge GSTIN appears on the bill
+  billedGstin      String?  // BluRidge GSTIN found on the bill (if any)
+  contentHash      String?  // sha256 of stored file — catches identical re-uploads
+  filePath         String?
+  rawExtract       String?
+  notes            String?
+  needsReview      Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([invoiceNoNorm])
+  @@index([contentHash])
+  @@index([billedToPartyId])
+}
+
+/// Canonical bill-to party (deduped across expense receipts)
+model BilledToParty {
+  id            String          @id @default(cuid())
+  canonicalName String
+  normalized    String          @unique
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  aliases       BilledToAlias[]
+  expenses      Expense[]
+}
+
+model BilledToAlias {
+  id        String       @id @default(cuid())
+  partyId   String
+  party     BilledToParty @relation(fields: [partyId], references: [id], onDelete: Cascade)
+  rawName   String
+  normalized String
+  createdAt DateTime     @default(now())
+
+  @@unique([partyId, normalized])
+  @@index([normalized])
+}
+
+/// PM KUSUM plant / project finance file — folder-backed KYC pack + disclosure form
+model KusumPlant {
+  id                 String   @id @default(cuid())
+  name               String
+  folderPath         String
+  status             String   @default("DRAFT") // DRAFT | EXTRACTED | FORM_READY
+  documentsFound     Int      @default(0)
+  extractSummary     String?
+  rawExtract         String?  // JSON from AI
+  disclosureFilePath String?
+  notes              String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 }

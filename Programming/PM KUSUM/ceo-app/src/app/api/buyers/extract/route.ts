@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { auth } from "@/lib/auth";
 import { panFromGstin, stateFromGstin } from "@/lib/indian-states";
+import { prepareUploadFile } from "@/lib/upload";
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_FILES = 8;
@@ -72,17 +73,20 @@ export async function POST(req: NextRequest) {
       if (file.size > MAX_FILE_BYTES) {
         return NextResponse.json({ error: `${file.name} is too large (max 20 MB).` }, { status: 413 });
       }
-      const mediaType = (file.type || "application/pdf") as MediaType;
-      const isImage = mediaType.startsWith("image/");
-      const isPdf = mediaType === "application/pdf";
-      if (!isImage && !isPdf) {
+
+      let prepared;
+      try {
+        prepared = await prepareUploadFile(file);
+      } catch (err) {
         return NextResponse.json(
-          { error: `Unsupported type: ${file.name}. Upload JPG, PNG, WebP, or PDF.` },
+          { error: err instanceof Error ? err.message : `Unsupported type: ${file.name}` },
           { status: 415 },
         );
       }
 
-      const base64 = Buffer.from(await file.arrayBuffer()).toString("base64");
+      const mediaType = prepared.mime as "image/jpeg" | "image/png" | "image/webp" | "application/pdf";
+      const isImage = mediaType.startsWith("image/");
+      const base64 = prepared.buffer.toString("base64");
       contentParts.push({ type: "text", text: `Document filename: ${file.name}` });
       if (isImage) {
         contentParts.push({

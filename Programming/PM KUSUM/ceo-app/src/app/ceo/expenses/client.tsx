@@ -24,6 +24,10 @@ type ExpenseRow = {
   needsReview: boolean;
   gstAmount?: number;
   gstEntity?: string | null;
+  billedTo?: string;
+  billedToCanonical?: string | null;
+  ourGstMentioned?: boolean | null;
+  billedGstin?: string;
   notes?: string;
 };
 
@@ -37,6 +41,9 @@ type EditForm = {
   invoiceNo: string;
   gstAmount: string;
   gstEntity: GstEntity | "";
+  billedTo: string;
+  ourGstMentioned: boolean;
+  billedGstin: string;
   notes: string;
 };
 
@@ -51,6 +58,9 @@ function toEditForm(e: ExpenseRow): EditForm {
     invoiceNo: e.invoiceNo || "",
     gstAmount: e.gstAmount != null ? String(e.gstAmount) : "",
     gstEntity: e.gstEntity === "RAJ" || e.gstEntity === "DEL" ? e.gstEntity : "DEL",
+    billedTo: e.billedTo || "",
+    ourGstMentioned: Boolean(e.ourGstMentioned),
+    billedGstin: e.billedGstin || "",
     notes: e.notes || "",
   };
 }
@@ -101,7 +111,14 @@ export function ExpensesClient({
           paymentMode: editForm.paymentMode || undefined,
           invoiceNo: editForm.invoiceNo || undefined,
           gstAmount: editForm.gstAmount ? Number(editForm.gstAmount) : undefined,
-          gstEntity: editForm.gstEntity || undefined,
+          gstEntity: editForm.ourGstMentioned
+            ? editForm.gstEntity || undefined
+            : null,
+          billedTo: editForm.billedTo || undefined,
+          ourGstMentioned: editForm.ourGstMentioned,
+          billedGstin: editForm.ourGstMentioned
+            ? editForm.billedGstin || undefined
+            : null,
           notes: editForm.notes || undefined,
           needsReview: false,
         });
@@ -176,7 +193,12 @@ export function ExpensesClient({
               >
                 <div className="px-5 pb-5 pt-0" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
                   <div className="pt-4">
-                    <ExpenseUploader onSaved={() => { setShowForm(false); router.refresh(); }} />
+                    <ExpenseUploader
+                      onSaved={(meta) => {
+                        router.refresh();
+                        if (!meta?.hasMore) setShowForm(false);
+                      }}
+                    />
                   </div>
                 </div>
               </motion.div>
@@ -218,6 +240,7 @@ export function ExpensesClient({
               <tr style={{ background: "rgba(255,255,255,0.02)" }}>
                 <th>Date</th>
                 <th>Vendor</th>
+                <th>Billed to</th>
                 <th>Category</th>
                 <th>GST</th>
                 <th>Description</th>
@@ -238,14 +261,64 @@ export function ExpensesClient({
                       <div className="flex items-center gap-2">
                         <p className="text-sm font-medium">{e.vendor}</p>
                         {e.needsReview && (
-                          <span title="Needs review" className="text-xs px-1.5 py-0.5 rounded"
-                            style={{ background: "rgba(251,191,36,0.1)", color: "#fbbf24", border: "1px solid rgba(251,191,36,0.2)", fontSize: "0.6rem" }}>
-                            ⚠
+                          <span
+                            className="relative group inline-flex items-center gap-1 text-[0.65rem] px-1.5 py-0.5 rounded-md font-semibold cursor-help"
+                            style={{
+                              background: "rgba(251,191,36,0.12)",
+                              color: "#fbbf24",
+                              border: "1px solid rgba(251,191,36,0.3)",
+                            }}
+                            aria-label="Needs review — AI was unsure about some fields"
+                          >
+                            !
+                            <span
+                              className="pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-[calc(100%+6px)] z-20 hidden group-hover:block w-48 px-2.5 py-1.5 rounded-md text-[0.65rem] font-normal leading-snug text-left"
+                              style={{
+                                background: "#1a1a22",
+                                border: "1px solid rgba(251,191,36,0.35)",
+                                color: "rgba(255,255,255,0.85)",
+                                boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+                              }}
+                            >
+                              Needs review — AI was unsure about amount, vendor, or category. Open edit to verify, then save to clear this flag.
+                            </span>
                           </span>
                         )}
                       </div>
                       {e.invoiceNo && (
                         <p className="text-xs mt-0.5" style={{ color: "var(--text-dim)" }}>#{e.invoiceNo}</p>
+                      )}
+                      {e.ourGstMentioned && (
+                        <p className="text-[0.65rem] mt-0.5" style={{ color: "#34d399" }}>
+                          Our GST{e.billedGstin ? `: ${e.billedGstin}` : ""}
+                        </p>
+                      )}
+                      {e.ourGstMentioned === false && (
+                        <p className="text-[0.65rem] mt-0.5" style={{ color: "var(--text-dim)" }}>
+                          Our GST not on bill
+                        </p>
+                      )}
+                    </td>
+                    <td style={{ maxWidth: 180 }}>
+                      {e.billedToCanonical || e.billedTo ? (
+                        <div>
+                          <p className="text-sm font-medium truncate" title={e.billedToCanonical || e.billedTo}>
+                            {e.billedToCanonical || e.billedTo}
+                          </p>
+                          {e.billedToCanonical &&
+                            e.billedTo &&
+                            e.billedToCanonical !== e.billedTo && (
+                              <p
+                                className="text-[0.65rem] mt-0.5 truncate"
+                                style={{ color: "var(--text-dim)" }}
+                                title={e.billedTo}
+                              >
+                                as “{e.billedTo}”
+                              </p>
+                            )}
+                        </div>
+                      ) : (
+                        <span style={{ color: "var(--text-dim)" }}>—</span>
                       )}
                     </td>
                     <td>
@@ -256,7 +329,17 @@ export function ExpensesClient({
                       </span>
                     </td>
                     <td>
-                      <GstEntityBadge value={e.gstEntity} />
+                      {e.ourGstMentioned ? (
+                        <GstEntityBadge value={e.gstEntity} />
+                      ) : (
+                        <span
+                          className="text-xs"
+                          style={{ color: "var(--text-dim)" }}
+                          title="BluRidge GSTIN was not printed on the bill"
+                        >
+                          Not on bill
+                        </span>
+                      )}
                     </td>
                     <td style={{ color: "var(--text-muted)", fontSize: "0.82rem", maxWidth: 180 }}>
                       <p className="truncate">{e.description || "—"}</p>
@@ -318,7 +401,7 @@ export function ExpensesClient({
               })}
               {expenses.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="text-center py-14">
+                  <td colSpan={9} className="text-center py-14">
                     <p className="text-2xl mb-2">🧾</p>
                     <p style={{ color: "var(--text-dim)" }}>No expenses yet — upload your first bill above.</p>
                   </td>
@@ -383,6 +466,39 @@ export function ExpensesClient({
                 <input className="input" value={editForm.invoiceNo}
                   onChange={(e) => setEditForm({ ...editForm, invoiceNo: e.target.value })} />
               </div>
+              <div className="col-span-2">
+                <label className="label">Billed to</label>
+                <input className="input" value={editForm.billedTo}
+                  onChange={(e) => setEditForm({ ...editForm, billedTo: e.target.value })} />
+              </div>
+              <div>
+                <label className="label">Our GST on bill?</label>
+                <select
+                  className="input"
+                  value={editForm.ourGstMentioned ? "yes" : "no"}
+                  onChange={(e) => {
+                    const yes = e.target.value === "yes";
+                    setEditForm({
+                      ...editForm,
+                      ourGstMentioned: yes,
+                      ...(yes ? {} : { billedGstin: "", gstEntity: "" }),
+                    });
+                  }}
+                >
+                  <option value="no">No — company name only / not mentioned</option>
+                  <option value="yes">Yes — BluRidge GSTIN printed</option>
+                </select>
+              </div>
+              <div>
+                <label className="label">BluRidge GSTIN</label>
+                <input
+                  className="input"
+                  value={editForm.billedGstin}
+                  onChange={(e) => setEditForm({ ...editForm, billedGstin: e.target.value })}
+                  disabled={!editForm.ourGstMentioned}
+                  placeholder={editForm.ourGstMentioned ? "07… / 08…" : "Not on bill"}
+                />
+              </div>
               <div>
                 <label className="label">GST Amount (₹)</label>
                 <input className="input" type="number" step="0.01" value={editForm.gstAmount}
@@ -399,9 +515,22 @@ export function ExpensesClient({
                 </select>
               </div>
               <div className="col-span-2">
-                <label className="label">Booked under BluRidge GST</label>
+                <label className="label">BluRidge GST on bill</label>
                 <div className="mt-1">
-                  <GstEntityBadge value={editForm.gstEntity || null} />
+                  {editForm.ourGstMentioned ? (
+                    <GstEntityBadge value={editForm.gstEntity || null} />
+                  ) : (
+                    <p
+                      className="text-sm px-3 py-2.5 rounded-lg"
+                      style={{
+                        background: "rgba(255,255,255,0.03)",
+                        border: "1px solid rgba(255,255,255,0.08)",
+                        color: "var(--text-dim)",
+                      }}
+                    >
+                      Not on bill — company name only (or neither)
+                    </p>
+                  )}
                 </div>
               </div>
               <div className="col-span-2">

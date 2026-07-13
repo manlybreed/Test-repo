@@ -2,9 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { writeFile, mkdir } from "fs/promises";
 import path from "path";
 import { auth } from "@/lib/auth";
-
-const ALLOWED = new Set(["image/jpeg", "image/png", "image/webp", "application/pdf"]);
-const MAX_FILE_BYTES = 20 * 1024 * 1024;
+import { prepareUploadFile, uploadErrorResponse } from "@/lib/upload";
 
 export async function POST(req: NextRequest) {
   const session = await auth();
@@ -17,27 +15,25 @@ export async function POST(req: NextRequest) {
     const file = formData.get("file") as File | null;
     const kind = (formData.get("kind") as string) || "misc";
     if (!file) return NextResponse.json({ error: "No file" }, { status: 400 });
-    if (!ALLOWED.has(file.type)) {
-      return NextResponse.json({ error: "Upload JPG, PNG, WebP, or PDF." }, { status: 415 });
-    }
-    if (file.size > MAX_FILE_BYTES) {
-      return NextResponse.json({ error: "File too large (max 20 MB)." }, { status: 413 });
-    }
 
-    const ext = file.name.split(".").pop()?.toLowerCase() || "pdf";
+    const prepared = await prepareUploadFile(file);
     const safeKind = kind.replace(/[^a-z0-9_-]/gi, "").toLowerCase() || "misc";
-    const safeName = `emp_${safeKind}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.${ext}`;
+    const safeName = `emp_${safeKind}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.${prepared.ext}`;
     const dir = path.join(process.cwd(), "public", "uploads", "employees");
     await mkdir(dir, { recursive: true });
-    await writeFile(path.join(dir, safeName), Buffer.from(await file.arrayBuffer()));
+    await writeFile(path.join(dir, safeName), prepared.buffer);
 
     return NextResponse.json({
       filePath: `uploads/employees/${safeName}`,
       fileName: file.name,
       kind: safeKind,
+      mime: prepared.mime,
+      convertedFromHeic: prepared.convertedFromHeic,
+      contentHash: prepared.contentHash,
     });
   } catch (err) {
     console.error("[/api/employees/upload]", err);
-    return NextResponse.json({ error: "Upload failed" }, { status: 500 });
+    const { status, error } = uploadErrorResponse(err);
+    return NextResponse.json({ error }, { status });
   }
 }

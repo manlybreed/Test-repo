@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { auth } from "@/lib/auth";
+import { prepareUploadFile, uploadErrorResponse } from "@/lib/upload";
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
@@ -69,16 +70,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "File too large (max 20 MB)" }, { status: 413 });
     }
 
-    const bytes = await file.arrayBuffer();
-    const base64 = Buffer.from(bytes).toString("base64");
-    const mediaType = file.type as "image/jpeg" | "image/png" | "image/webp" | "application/pdf";
+    const prepared = await prepareUploadFile(file);
+    const base64 = prepared.buffer.toString("base64");
+    const mediaType = prepared.mime as "image/jpeg" | "image/png" | "image/webp" | "application/pdf";
 
     const isImage = mediaType.startsWith("image/");
     const isPdf = mediaType === "application/pdf";
 
     if (!isImage && !isPdf) {
       return NextResponse.json(
-        { error: "Unsupported file type. Upload JPG, PNG, WebP, or PDF." },
+        { error: "Unsupported file type. Upload JPG, PNG, WebP, HEIC, or PDF." },
         { status: 415 },
       );
     }
@@ -116,6 +117,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, data: extracted });
   } catch (err) {
     console.error("[/api/invoices/extract]", err);
+    const { status, error } = uploadErrorResponse(err);
+    if (status !== 500) return NextResponse.json({ error }, { status });
     return NextResponse.json({ error: "Extraction failed. Please try again." }, { status: 500 });
   }
 }
