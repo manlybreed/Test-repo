@@ -67,7 +67,7 @@ function GridOverlay() {
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("ceo@thebluridge.com");
+  const [email, setEmail] = useState("akshay@thebluridge.com");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);

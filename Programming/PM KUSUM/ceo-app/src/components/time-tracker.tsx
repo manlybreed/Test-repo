@@ -3,7 +3,8 @@
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { createTask, startPomodoro, stopActiveSession, updateTaskStatus, logManualTime } from "@/actions/time";
+import { createTask, startPomodoro, stopActiveSession, updateTaskStatus, updateTask, deleteTask, logManualTime } from "@/actions/time";
+import { ConfirmDeleteDialog } from "@/components/confirm-dialogs";
 
 type Task = {
   id: string;
@@ -81,6 +82,9 @@ export function TimeTracker({
   const [clientTag, setClientTag] = useState("");
   const [elapsed, setElapsed] = useState(0);
   const [pomodoroMin, setPomodoroMin] = useState(25);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [deleting, setDeleting] = useState<Task | null>(null);
 
   useEffect(() => {
     if (!active) { setElapsed(0); return; }
@@ -242,7 +246,28 @@ export function TimeTracker({
                   const logged = t.sessions.reduce((s, x) => s + (x.durationSec || 0), 0);
                   return (
                     <tr key={t.id}>
-                      <td className="font-medium">{t.title}</td>
+                      <td className="font-medium">
+                        {editingId === t.id ? (
+                          <input
+                            className="input text-sm py-1"
+                            value={editTitle}
+                            autoFocus
+                            onChange={(e) => setEditTitle(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                start(async () => {
+                                  await updateTask(t.id, { title: editTitle });
+                                  setEditingId(null);
+                                  router.refresh();
+                                });
+                              }
+                              if (e.key === "Escape") setEditingId(null);
+                            }}
+                          />
+                        ) : (
+                          t.title
+                        )}
+                      </td>
                       <td className="text-sm" style={{ color: "var(--text-muted)" }}>
                         {[t.projectTag, t.clientTag].filter(Boolean).join(" · ") || "—"}
                       </td>
@@ -264,7 +289,35 @@ export function TimeTracker({
                           <option value="DONE">Done</option>
                         </select>
                       </td>
-                      <td className="space-x-2 whitespace-nowrap">
+                      <td className="space-x-1 whitespace-nowrap">
+                        {editingId === t.id ? (
+                          <button
+                            type="button"
+                            className="btn btn-ghost text-xs"
+                            disabled={pending}
+                            onClick={() =>
+                              start(async () => {
+                                await updateTask(t.id, { title: editTitle });
+                                setEditingId(null);
+                                router.refresh();
+                              })
+                            }
+                          >
+                            Save
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="btn btn-ghost text-xs"
+                            disabled={pending}
+                            onClick={() => {
+                              setEditingId(t.id);
+                              setEditTitle(t.title);
+                            }}
+                          >
+                            Edit
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="btn btn-ghost text-xs"
@@ -280,6 +333,15 @@ export function TimeTracker({
                           onClick={() => start(async () => { await logManualTime({ taskId: t.id, durationMin: 15 }); router.refresh(); })}
                         >
                           +15m
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-ghost text-xs"
+                          style={{ color: "#f87171" }}
+                          disabled={pending}
+                          onClick={() => setDeleting(t)}
+                        >
+                          Del
                         </button>
                       </td>
                     </tr>
@@ -310,6 +372,17 @@ export function TimeTracker({
                       <td className="tabular-nums">
                         {fmt(t.sessions.reduce((s, x) => s + (x.durationSec || 0), 0))}
                       </td>
+                      <td>
+                        <button
+                          type="button"
+                          className="btn btn-ghost text-xs"
+                          style={{ color: "#f87171" }}
+                          disabled={pending}
+                          onClick={() => setDeleting(t)}
+                        >
+                          Del
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -318,6 +391,23 @@ export function TimeTracker({
           </details>
         )}
       </section>
+
+      <ConfirmDeleteDialog
+        open={!!deleting}
+        title="Delete task"
+        itemLabel={deleting?.title}
+        description="Logged time sessions for this task will also be removed if cascaded."
+        pending={pending}
+        onCancel={() => setDeleting(null)}
+        onConfirm={() => {
+          if (!deleting) return;
+          start(async () => {
+            await deleteTask(deleting.id);
+            setDeleting(null);
+            router.refresh();
+          });
+        }}
+      />
     </div>
   );
 }

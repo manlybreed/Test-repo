@@ -6,7 +6,17 @@ import { PrismaClient } from "@prisma/client";
  * a process that loaded @prisma/client before `prisma generate` will
  * still construct a client missing new models until the server restarts.
  */
-const PRISMA_SCHEMA_STAMP = "billed-to-party-v2";
+const PRISMA_SCHEMA_STAMP = "client-poc-v2";
+
+const REQUIRED_MODELS = [
+  "kusumPlant",
+  "docTypeCatalog",
+  "plantParty",
+  "plantDocRequirement",
+  "plantFileComment",
+  "plantTask",
+  "appSetting",
+] as const;
 
 const globalForPrisma = globalThis as unknown as {
   prisma?: PrismaClient;
@@ -23,22 +33,26 @@ function clientHasModel(client: PrismaClient, model: string): boolean {
   return typeof (client as unknown as Record<string, unknown>)[model] === "object";
 }
 
+function missingModels(client: PrismaClient): string[] {
+  return REQUIRED_MODELS.filter((m) => !clientHasModel(client, m));
+}
+
 function getClient(): PrismaClient {
   const cached = globalForPrisma.prisma;
   if (
     cached &&
     globalForPrisma.prismaSchemaStamp === PRISMA_SCHEMA_STAMP &&
-    clientHasModel(cached, "kusumPlant")
+    missingModels(cached).length === 0
   ) {
     return cached;
   }
 
   void cached?.$disconnect().catch(() => undefined);
   const client = createClient();
-
-  if (!clientHasModel(client, "kusumPlant")) {
+  const missing = missingModels(client);
+  if (missing.length) {
     throw new Error(
-      "Prisma client is missing KusumPlant — restart the Next.js dev server after running `npx prisma generate`.",
+      `Prisma client is missing: ${missing.join(", ")}. Stop the Next.js dev server, run \`npx prisma generate\`, then start it again.`,
     );
   }
 

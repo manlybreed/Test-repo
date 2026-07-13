@@ -78,6 +78,8 @@ model Client {
   pan          String?
   email        String?
   phone        String?
+  /// Point of contact name
+  pocName      String?
   notes        String?
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
@@ -352,13 +354,148 @@ model BilledToAlias {
 model KusumPlant {
   id                 String   @id @default(cuid())
   name               String
-  folderPath         String
+  /// Filename prefix e.g. "Solarseed Agri"
+  plantShort         String?
+  folderPath         String   @unique
   status             String   @default("DRAFT") // DRAFT | EXTRACTED | FORM_READY
   documentsFound     Int      @default(0)
   extractSummary     String?
   rawExtract         String?  // JSON from AI
   disclosureFilePath String?
   notes              String?
+  /// Portfolio fields shown on the plants table
+  capacityMw         String?
+  tehsil             String?
+  district           String?
+  dprName            String?
+  epcName            String?
+  tariff             String?
+  bankName           String?
+  /// Success fee % (finance owner only)
+  feePercent         Float?
+  /// Sanctioned loan amount INR (finance owner only)
+  sanctionAmount     Float?
+  /// Quoted / expected interest rate %
+  interestRate       Float?
+  /// DOCUMENTATION | MAIL | FIELD_VISIT | CMA | SANCTION | DISBURSEMENT
+  financeStage       String   @default("DOCUMENTATION")
+  docsCompleteAt     DateTime?
+  mailSentAt         DateTime?
+  fieldVisitAt       DateTime?
+  cmaAt              DateTime?
+  sanctionAt         DateTime?
+  disbursementAt     DateTime?
+  sanctionLetterPath String?
+  /// ACTIVE | INACTIVE
+  activeStatus       String   @default("ACTIVE")
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
+
+  parties      PlantParty[]
+  requirements PlantDocRequirement[]
+  fileComments PlantFileComment[]
+  tasks        PlantTask[]
+}
+
+/// Director / promoter under a plant (maps to Directors KYC/<folderName>/)
+model PlantParty {
+  id         String   @id @default(cuid())
+  plantId    String
+  plant      KusumPlant @relation(fields: [plantId], references: [id], onDelete: Cascade)
+  name       String
+  role       String   @default("DIRECTOR") // DIRECTOR | PROMOTER
+  folderName String
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  requirements PlantDocRequirement[]
+
+  @@index([plantId])
+  @@unique([plantId, folderName])
+}
+
+/// Global checklist template (SPV / Directors / Plant / Land / …)
+model DocTypeCatalog {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  docGroup    String   // SPV | DIRECTORS | PLANT | LAND | EPC | DPR | MISC | THIRD_PARTY
+  label       String
+  description String?
+  scope       String   @default("PLANT") // PLANT | PARTY
+  required    Boolean  @default(true)
+  folderHint  String
+  /// JSON string array of filename keywords
+  matchHints  String   @default("[]")
+  namePattern String   @default("{plantShort}-{label}")
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  requirements PlantDocRequirement[]
+}
+
+/// Per-plant (and optional per-party) checklist row
+model PlantDocRequirement {
+  id               String    @id @default(cuid())
+  plantId          String
+  plant            KusumPlant @relation(fields: [plantId], references: [id], onDelete: Cascade)
+  catalogId        String
+  catalog          DocTypeCatalog @relation(fields: [catalogId], references: [id], onDelete: Cascade)
+  partyId          String?
+  party            PlantParty? @relation(fields: [partyId], references: [id], onDelete: Cascade)
+  received         Boolean   @default(false)
+  receivedAt       DateTime?
+  fileRelativePath String?
+  source           String?   // IMPORT | UPLOAD | MANUAL
+  notes            String?
+  /// REQUIRED | OPTIONAL | NA — NA means not needed for this plant
+  applicability    String    @default("REQUIRED")
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([plantId, catalogId, partyId])
+  @@index([plantId])
+  @@index([catalogId])
+}
+
+/// Per-file comment on a plant folder file (keyed by relative path)
+model PlantFileComment {
+  id           String     @id @default(cuid())
+  plantId      String
+  plant        KusumPlant @relation(fields: [plantId], references: [id], onDelete: Cascade)
+  relativePath String
+  comment      String     @default("")
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@unique([plantId, relativePath])
+  @@index([plantId])
+}
+
+/// Tasks tied to a PM KUSUM plant / project
+model PlantTask {
+  id           String     @id @default(cuid())
+  plantId      String
+  plant        KusumPlant @relation(fields: [plantId], references: [id], onDelete: Cascade)
+  title        String
+  description  String?
+  status       TaskStatus @default(TODO)
+  /// LOW | MEDIUM | HIGH | CRITICAL
+  urgency      String     @default("MEDIUM")
+  reminderAt   DateTime?
+  /// GENTLE | NORMAL | URGENT
+  reminderTone String     @default("NORMAL")
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@index([plantId])
+  @@index([reminderAt])
+}
+
+/// Simple key/value app settings (e.g. kusumPlantsRoot)
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
 }

@@ -10,7 +10,7 @@ export async function ensureDir(dir: string) {
 }
 
 export async function writeStorageFile(
-  category: "agreements" | "invoices" | "salary-slips",
+  category: "agreements" | "invoices" | "salary-slips" | "disclosures" | "sanctions",
   filename: string,
   data: Buffer | Uint8Array,
 ): Promise<string> {

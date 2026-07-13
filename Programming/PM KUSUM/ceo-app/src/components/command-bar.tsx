@@ -13,6 +13,7 @@ type ResultState =
 
 const QUICK_CMDS = [
   { label: "New Agreement", icon: "◈", query: "create new agreement" },
+  { label: "Add Plant",     icon: "▣", query: "open pm kusum projects" },
   { label: "New Invoice",   icon: "◇", query: "create new invoice" },
   { label: "Add Employee",  icon: "◉", query: "add new employee" },
   { label: "Start Timer",   icon: "◎", query: "start pomodoro timer" },
@@ -84,8 +85,12 @@ export function CommandBar({ open, onClose }: { open: boolean; onClose: () => vo
 
   function detectNavIntent(q: string): string | null {
     const lower = q.toLowerCase();
-    if (/\b(agreement|agreements)\b/.test(lower) && /\b(go|open|show|list|view|nav)\b/.test(lower))
-      return "/ceo/agreements";
+    if (/\b(agreement|agreements)\b/.test(lower) && /\b(go|open|show|list|view|nav)\b/.test(lower)) {
+      // Owner-only route — skip auto-nav for everyone from this shortcut
+      return null;
+    }
+    if (/\b(project|projects|plant|kusum)\b/.test(lower) && /\b(go|open|show|list|view|nav|add)\b/.test(lower))
+      return "/ceo/projects";
     if (/\b(invoice|invoices)\b/.test(lower) && /\b(go|open|show|list|view|nav)\b/.test(lower))
       return "/ceo/invoices";
     if (/\b(payroll|salary|employee)\b/.test(lower) && /\b(go|open|show|list|view|nav)\b/.test(lower))

@@ -34,6 +34,7 @@ const ICONS = {
   time:       "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z",
   expense:    "M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z",
   buyers:     "M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75",
+  projects:   "M3 21h18M5 21V7l7-4 7 4v14M9 21v-6h6v6",
   bell:       "M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9",
   ai:         "M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z",
   search:     "M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z",
@@ -52,8 +53,10 @@ const NAV_SECTIONS = [
   {
     label: "Documents",
     items: [
-      { href: "/ceo/clients",    label: "Buyers",      icon: "buyers" },
-      { href: "/ceo/agreements", label: "Agreements",  icon: "agreement" },
+      { href: "/ceo/clients",    label: "Clients",     icon: "buyers" },
+      { href: "/ceo/projects",   label: "PM KUSUM Projects", icon: "projects" },
+      { href: "/ceo/financing",  label: "PM KUSUM Financing", icon: "invoice" },
+      { href: "/ceo/agreements", label: "Agreements",  icon: "agreement", ownerOnly: true },
       { href: "/ceo/invoices",   label: "Invoices",    icon: "invoice" },
       { href: "/ceo/expenses",   label: "Expenses",    icon: "expense" },
     ],
@@ -71,9 +74,11 @@ const NAV_SECTIONS = [
 export function CeoShell({
   children,
   userName,
+  canAccessAgreements = false,
 }: {
   children: React.ReactNode;
   userName?: string | null;
+  canAccessAgreements?: boolean;
 }) {
   const pathname = usePathname();
   const [cmdOpen, setCmdOpen] = useState(false);
@@ -166,10 +171,18 @@ export function CeoShell({
                       transition={{ duration: 0.2, ease: "easeInOut" }}
                       style={{ overflow: "hidden" }}
                     >
-                      {section.items.map((item) => {
-                        const active = item.exact
-                          ? pathname === item.href
-                          : pathname === item.href || pathname.startsWith(item.href + "/");
+                      {section.items
+                        .filter(
+                          (item) =>
+                            !("ownerOnly" in item && item.ownerOnly) ||
+                            canAccessAgreements,
+                        )
+                        .map((item) => {
+                        const active =
+                          "exact" in item && item.exact
+                            ? pathname === item.href
+                            : pathname === item.href ||
+                              pathname.startsWith(item.href + "/");
                         return (
                           <Link key={item.href} href={item.href} className="block relative mb-0.5">
                             {active && (

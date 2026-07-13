@@ -247,6 +247,13 @@ export async function runCeoTool(name: string, input: any): Promise<string> {
   try {
     switch (name) {
       case "create_agreement": {
+        const { currentUserIsFinanceOwner } = await import("@/lib/session");
+        if (!(await currentUserIsFinanceOwner())) {
+          return JSON.stringify({
+            ok: false,
+            error: "Agreements are restricted to the finance owner.",
+          });
+        }
         const res = await createAgreement(input);
         return JSON.stringify({
           ok: true,
@@ -395,6 +402,13 @@ export async function runCeoTool(name: string, input: any): Promise<string> {
         return JSON.stringify({ ok: true, id: c.id, name: c.name });
       }
       case "list_agreements": {
+        const { currentUserIsFinanceOwner } = await import("@/lib/session");
+        if (!(await currentUserIsFinanceOwner())) {
+          return JSON.stringify({
+            ok: false,
+            error: "Agreements are restricted to the finance owner.",
+          });
+        }
         const rows = await listAgreements();
         const filtered = input.status
           ? rows.filter((r) => r.status === input.status)

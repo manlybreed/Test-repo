@@ -30,9 +30,9 @@
   --gold-dim:      rgba(240, 180, 41, 0.12);
 
   /* ── Text ────────────────────────────────────────────────────── */
-  --text:          #e4e8f2;
-  --text-muted:    #7a85a3;
-  --text-dim:      #3d4460;
+  --text:          #e8ecf6;
+  --text-muted:    #a8b0c7;
+  --text-dim:      #8b93ad;
 
   /* ── Semantic ────────────────────────────────────────────────── */
   --success:       #10b981;
@@ -378,4 +378,133 @@ html[data-desktop="1"] * {
     animation: none;
   }
 }
+
+/* ── Plant checklist action toolbar ─────────────────────────────── */
+.kusum-act-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.4rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.kusum-act-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+}
+
+.kusum-act-select {
+  width: 100%;
+  appearance: none;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0.4rem 1.75rem 0.4rem 0.65rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background-color: rgba(255, 255, 255, 0.04);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239aa3b8' d='M3 4.5L6 8l3-3.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.55rem center;
+  background-size: 12px;
+  color: #d4daf0;
+  cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+
+.kusum-act-select:hover:not(:disabled) {
+  border-color: rgba(129, 140, 248, 0.45);
+  background-color: rgba(99, 102, 241, 0.12);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+}
+
+.kusum-act-select:focus-visible {
+  outline: none;
+  border-color: rgba(129, 140, 248, 0.65);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.22);
+}
+
+.kusum-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  flex: 1 1 auto;
+  min-width: 4.25rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0.45rem 0.7rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+  color: #c7d2fe;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    transform 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.kusum-act:hover:not(:disabled) {
+  background: rgba(99, 102, 241, 0.18);
+  border-color: rgba(129, 140, 248, 0.5);
+  color: #eef2ff;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.28);
+}
+
+.kusum-act:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+.kusum-act:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.28);
+}
+
+.kusum-act:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.kusum-act-danger {
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.3);
+}
+
+.kusum-act-danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.16);
+  border-color: rgba(248, 113, 113, 0.55);
+  color: #fecaca;
+  box-shadow: 0 6px 16px rgba(239, 68, 68, 0.18);
+}
+
+.kusum-act-primary {
+  color: #a5f3fc;
+  border-color: rgba(34, 211, 238, 0.28);
+}
+
+.kusum-act-primary:hover:not(:disabled) {
+  background: rgba(34, 211, 238, 0.14);
+  border-color: rgba(34, 211, 238, 0.5);
+  color: #ecfeff;
+}
+
+.kusum-row-hover {
+  transition: background-color 160ms ease;
+}
+
+.kusum-row-hover:hover {
+  background: rgba(255, 255, 255, 0.035);
+}
+
 

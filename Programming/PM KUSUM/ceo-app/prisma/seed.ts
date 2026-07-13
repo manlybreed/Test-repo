@@ -5,14 +5,14 @@ import { PrismaClient } from "@prisma/client";
 const prisma = new PrismaClient();
 
 async function main() {
-  const email = process.env.CEO_EMAIL || "ceo@thebluridge.com";
   const password = process.env.CEO_PASSWORD || "bluridge-ceo";
   const passwordHash = await bcrypt.hash(password, 10);
 
+  // Finance owner (agreements + plant fees)
   await prisma.user.upsert({
-    where: { email },
+    where: { email: "akshay@thebluridge.com" },
     create: {
-      email,
+      email: "akshay@thebluridge.com",
       name: "Akshay Royal",
       passwordHash,
       role: "CEO",
@@ -22,6 +22,22 @@ async function main() {
       name: "Akshay Royal",
     },
   });
+
+  const email = process.env.CEO_EMAIL || "ceo@thebluridge.com";
+  if (email.toLowerCase() !== "akshay@thebluridge.com") {
+    await prisma.user.upsert({
+      where: { email },
+      create: {
+        email,
+        name: "BluRidge Ops",
+        passwordHash,
+        role: "CEO",
+      },
+      update: {
+        passwordHash,
+      },
+    });
+  }
 
   const existingCompany = await prisma.companyProfile.findFirst();
   if (!existingCompany) {
@@ -100,7 +116,8 @@ async function main() {
   }
 
   console.log("Seed complete.");
-  console.log(`CEO login: ${email} / ${password}`);
+  console.log(`Finance owner: akshay@thebluridge.com / ${password}`);
+  console.log(`Ops login: ${email} / ${password}`);
 }
 
 main()

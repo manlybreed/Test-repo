@@ -29,6 +29,50 @@ export async function createTask(input: {
   return task;
 }
 
+export async function updateTask(
+  id: string,
+  input: {
+    title?: string;
+    description?: string;
+    projectTag?: string;
+    clientTag?: string;
+    estimateMin?: number | null;
+    status?: "TODO" | "IN_PROGRESS" | "DONE";
+  },
+) {
+  await requireCeo();
+  if (input.title !== undefined && !input.title.trim()) {
+    throw new Error("Title is required");
+  }
+  await prisma.task.update({
+    where: { id },
+    data: {
+      ...(input.title !== undefined ? { title: input.title.trim() } : {}),
+      ...(input.description !== undefined
+        ? { description: input.description || null }
+        : {}),
+      ...(input.projectTag !== undefined
+        ? { projectTag: input.projectTag || null }
+        : {}),
+      ...(input.clientTag !== undefined
+        ? { clientTag: input.clientTag || null }
+        : {}),
+      ...(input.estimateMin !== undefined
+        ? { estimateMin: input.estimateMin }
+        : {}),
+      ...(input.status !== undefined ? { status: input.status } : {}),
+    },
+  });
+  revalidatePath("/ceo/time");
+}
+
+export async function deleteTask(id: string) {
+  await requireCeo();
+  await prisma.task.delete({ where: { id } });
+  revalidatePath("/ceo/time");
+  return { ok: true };
+}
+
 export async function updateTaskStatus(
   id: string,
   status: "TODO" | "IN_PROGRESS" | "DONE",

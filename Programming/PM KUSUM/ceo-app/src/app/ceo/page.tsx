@@ -3,13 +3,14 @@ import { prisma } from "@/lib/prisma";
 import { formatINR } from "@/lib/utils";
 import { DailyQuote } from "@/components/daily-quote";
 import { GreetingHeader } from "@/components/greeting-header";
-import { requireCeo } from "@/lib/session";
+import { requireCeo, currentUserIsFinanceOwner } from "@/lib/session";
 
 export default async function CeoOverviewPage() {
   const session = await requireCeo();
+  const financeOwner = await currentUserIsFinanceOwner();
   const [agreements, invoices, employees, openTasks, invoiceAgg] =
     await Promise.all([
-      prisma.agreement.count(),
+      financeOwner ? prisma.agreement.count() : Promise.resolve(0),
       prisma.invoice.count(),
       prisma.employee.count({ where: { active: true } }),
       prisma.task.count({ where: { status: { not: "DONE" } } }),
@@ -17,19 +18,23 @@ export default async function CeoOverviewPage() {
     ]);
 
   const metrics = [
-    {
-      label: "Agreements",
-      value: String(agreements),
-      href: "/ceo/agreements",
-      hint: "PM KUSUM mandates",
-      accent: "rgba(99,102,241,0.15)",
-      iconColor: "#818cf8",
-      icon: (
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-        </svg>
-      ),
-    },
+    ...(financeOwner
+      ? [
+          {
+            label: "Agreements",
+            value: String(agreements),
+            href: "/ceo/agreements",
+            hint: "PM KUSUM mandates",
+            accent: "rgba(99,102,241,0.15)",
+            iconColor: "#818cf8",
+            icon: (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+              </svg>
+            ),
+          },
+        ]
+      : []),
     {
       label: "Total billed",
       value: invoiceAgg._sum.grandTotal ? formatINR(invoiceAgg._sum.grandTotal) : `${invoices}`,
@@ -151,7 +156,16 @@ export default async function CeoOverviewPage() {
       {/* Quick actions */}
       <div className="grid sm:grid-cols-3 gap-3">
         {[
-          { label: "New agreement", href: "/ceo/agreements", sub: "DOCX via template", color: "#818cf8" },
+          ...(financeOwner
+            ? [
+                {
+                  label: "New agreement",
+                  href: "/ceo/agreements",
+                  sub: "DOCX via template",
+                  color: "#818cf8",
+                },
+              ]
+            : []),
           { label: "New invoice",   href: "/ceo/invoices",   sub: "GST PDF",            color: "#fbbf24" },
           { label: "Salary slips",  href: "/ceo/payroll",    sub: "Monthly payroll run", color: "#34d399" },
         ].map((a) => (

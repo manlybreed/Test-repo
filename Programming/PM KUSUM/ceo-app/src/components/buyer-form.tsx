@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/actions/clients";
+import { createClient, updateClient } from "@/actions/clients";
 import { panFromGstin, stateFromGstin } from "@/lib/indian-states";
 import { UPLOAD_ACCEPT } from "@/lib/upload";
+import { ConfirmModifyDialog } from "@/components/confirm-dialogs";
 
 export type BuyerFormData = {
   name: string;
@@ -18,7 +19,25 @@ export type BuyerFormData = {
   pan: string;
   email: string;
   phone: string;
+  pocName: string;
   notes: string;
+};
+
+export type ClientEditSeed = {
+  id: string;
+  name: string;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  stateCode?: string | null;
+  pincode?: string | null;
+  gstin?: string | null;
+  pan?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  pocName?: string | null;
+  notes?: string | null;
 };
 
 const EMPTY: BuyerFormData = {
@@ -33,8 +52,27 @@ const EMPTY: BuyerFormData = {
   pan: "",
   email: "",
   phone: "",
+  pocName: "",
   notes: "",
 };
+
+function seedToForm(s: ClientEditSeed): BuyerFormData {
+  return {
+    name: s.name || "",
+    addressLine1: s.addressLine1 || "",
+    addressLine2: s.addressLine2 || "",
+    city: s.city || "",
+    state: s.state || "",
+    stateCode: s.stateCode || "",
+    pincode: s.pincode || "",
+    gstin: s.gstin || "",
+    pan: s.pan || "",
+    email: s.email || "",
+    phone: s.phone || "",
+    pocName: s.pocName || "",
+    notes: s.notes || "",
+  };
+}
 
 type DocItem = {
   id: string;
@@ -46,10 +84,35 @@ type DocItem = {
 
 type Mode = "manual" | "documents";
 
-export function BuyerForm({ onCreated }: { onCreated?: () => void }) {
+export function BuyerForm({
+  onCreated,
+  embedded = false,
+  editing = null,
+  onCancelEdit,
+}: {
+  onCreated?: (client: {
+    id: string;
+    name: string;
+    addressLine1: string | null;
+    city: string | null;
+    state: string | null;
+    gstin: string | null;
+    pan: string | null;
+    phone: string | null;
+    pocName: string | null;
+    email: string | null;
+  }) => void;
+  /** When true, avoid nested <form> (e.g. inside agreement wizard). */
+  embedded?: boolean;
+  editing?: ClientEditSeed | null;
+  onCancelEdit?: () => void;
+}) {
   const router = useRouter();
-  const [mode, setMode] = useState<Mode>("documents");
-  const [form, setForm] = useState<BuyerFormData>(EMPTY);
+  const isEdit = Boolean(editing?.id);
+  const [mode, setMode] = useState<Mode>(isEdit ? "manual" : "documents");
+  const [form, setForm] = useState<BuyerFormData>(
+    editing ? seedToForm(editing) : EMPTY,
+  );
   const [docs, setDocs] = useState<DocItem[]>([]);
   const [extracting, setExtracting] = useState(false);
   const [detected, setDetected] = useState<string[]>([]);
@@ -57,7 +120,17 @@ export function BuyerForm({ onCreated }: { onCreated?: () => void }) {
   const [error, setError] = useState("");
   const [pending, start] = useTransition();
   const [savedName, setSavedName] = useState("");
+  const [confirmModify, setConfirmModify] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) {
+      setForm(seedToForm(editing));
+      setMode("manual");
+    } else {
+      setForm(EMPTY);
+    }
+  }, [editing]);
 
   function setField<K extends keyof BuyerFormData>(key: K, value: BuyerFormData[K]) {
     setForm((f) => {
@@ -164,6 +237,7 @@ export function BuyerForm({ onCreated }: { onCreated?: () => void }) {
         pan: str("pan").toUpperCase(),
         email: str("email"),
         phone: str("phone"),
+        pocName: str("pocName") || str("contactName") || str("contactPerson"),
         notes: [str("cin") ? `CIN: ${str("cin")}` : "", str("notes"), str("tradeName") ? `Trade: ${str("tradeName")}` : ""]
           .filter(Boolean)
           .join(" · "),
@@ -178,16 +252,25 @@ export function BuyerForm({ onCreated }: { onCreated?: () => void }) {
     }
   }
 
-  function submit(e: React.FormEvent) {
-    e.preventDefault();
+  function submit(e?: React.FormEvent) {
+    e?.preventDefault();
     setError("");
     if (!form.name.trim()) {
-      setError("Legal / buyer name is required.");
+      setError("Legal / client name is required.");
       return;
     }
+    if (isEdit) {
+      setConfirmModify(true);
+      return;
+    }
+    void saveClient();
+  }
+
+  async function saveClient() {
+    setConfirmModify(false);
     start(async () => {
       try {
-        const client = await createClient({
+        const payload = {
           name: form.name,
           addressLine1: form.addressLine1 || undefined,
           addressLine2: form.addressLine2 || undefined,
@@ -199,24 +282,47 @@ export function BuyerForm({ onCreated }: { onCreated?: () => void }) {
           pan: form.pan || undefined,
           email: form.email || undefined,
           phone: form.phone || undefined,
+          pocName: form.pocName || undefined,
           notes: form.notes || undefined,
-        });
+        };
+        const client =
+          isEdit && editing?.id
+            ? await updateClient(editing.id, payload)
+            : await createClient(payload);
         setSavedName(client.name);
-        setForm(EMPTY);
-        setDocs([]);
-        setDetected([]);
-        setConfidence(null);
-        onCreated?.();
+        if (!isEdit) {
+          setForm(EMPTY);
+          setDocs([]);
+          setDetected([]);
+          setConfidence(null);
+        }
+        onCreated?.(client);
+        onCancelEdit?.();
         router.refresh();
         setTimeout(() => setSavedName(""), 2500);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to save buyer");
+        setError(err instanceof Error ? err.message : "Failed to save client");
       }
     });
   }
 
   return (
     <div className="space-y-5">
+      {isEdit && (
+        <div className="flex items-center justify-between gap-2 text-xs">
+          <span style={{ color: "#a5b4fc" }}>Editing {editing?.name}</span>
+          {onCancelEdit && (
+            <button
+              type="button"
+              className="btn btn-ghost text-xs py-1"
+              onClick={onCancelEdit}
+            >
+              Cancel
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Mode switch */}
       <div className="flex gap-2 p-1 rounded-xl w-fit" style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" }}>
         {(
@@ -316,7 +422,9 @@ export function BuyerForm({ onCreated }: { onCreated?: () => void }) {
       )}
 
       {(mode === "manual" || form.name) && (
-        <form onSubmit={submit} className="space-y-4">
+        (() => {
+          const fields = (
+            <>
           {(detected.length > 0 || confidence != null) && (
             <div
               className="flex flex-wrap items-center gap-2 text-[0.65rem] px-3 py-2 rounded-lg"
@@ -341,7 +449,7 @@ export function BuyerForm({ onCreated }: { onCreated?: () => void }) {
 
           <div className="grid sm:grid-cols-2 gap-3">
             <div className="sm:col-span-2">
-              <label className="label">Legal / buyer name *</label>
+              <label className="label">Legal / client name *</label>
               <input className="input" required value={form.name} onChange={(e) => setField("name", e.target.value)} />
             </div>
             <div>
@@ -392,8 +500,22 @@ export function BuyerForm({ onCreated }: { onCreated?: () => void }) {
               <input className="input" type="email" value={form.email} onChange={(e) => setField("email", e.target.value)} />
             </div>
             <div>
-              <label className="label">Phone</label>
-              <input className="input" value={form.phone} onChange={(e) => setField("phone", e.target.value)} />
+              <label className="label">PoC name</label>
+              <input
+                className="input"
+                value={form.pocName}
+                onChange={(e) => setField("pocName", e.target.value)}
+                placeholder="Primary contact person"
+              />
+            </div>
+            <div>
+              <label className="label">PoC contact number</label>
+              <input
+                className="input"
+                value={form.phone}
+                onChange={(e) => setField("phone", e.target.value)}
+                placeholder="10-digit mobile"
+              />
             </div>
             <div className="sm:col-span-2">
               <label className="label">Notes</label>
@@ -401,10 +523,24 @@ export function BuyerForm({ onCreated }: { onCreated?: () => void }) {
             </div>
           </div>
 
-          <button type="submit" className="btn btn-primary" disabled={pending}>
-            {pending ? "Saving…" : "Save buyer"}
+          <button
+            type={embedded ? "button" : "submit"}
+            className="btn btn-primary"
+            disabled={pending}
+            onClick={embedded ? () => submit() : undefined}
+          >
+            {pending ? "Saving…" : isEdit ? "Save changes" : "Save client"}
           </button>
-        </form>
+            </>
+          );
+          return embedded ? (
+            <div className="space-y-4">{fields}</div>
+          ) : (
+            <form onSubmit={submit} className="space-y-4">
+              {fields}
+            </form>
+          );
+        })()
       )}
 
       {error && (
@@ -417,6 +553,15 @@ export function BuyerForm({ onCreated }: { onCreated?: () => void }) {
           ✓ Saved {savedName}
         </p>
       )}
+
+      <ConfirmModifyDialog
+        open={confirmModify}
+        title="Save client changes?"
+        description={`Update ${editing?.name || "this client"}? Linked agreements keep their existing DOCX snapshots.`}
+        pending={pending}
+        onCancel={() => setConfirmModify(false)}
+        onConfirm={() => void saveClient()}
+      />
     </div>
   );
 }

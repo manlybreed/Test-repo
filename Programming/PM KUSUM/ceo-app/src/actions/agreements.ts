@@ -2,8 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { requireCeoAction as requireCeo } from "@/lib/session";
-import { writeStorageFile } from "@/lib/storage";
+import { requireFinanceOwnerAction as requireCeo } from "@/lib/session";
+import { writeStorageFile, deleteStorageFile } from "@/lib/storage";
 import { renderAgreementDocx } from "@/lib/docgen/agreement";
 
 export type CreateAgreementInput = {
@@ -110,6 +110,152 @@ export async function listAgreements() {
     orderBy: { createdAt: "desc" },
     include: { versions: { orderBy: { version: "desc" }, take: 1 } },
   });
+}
+
+export async function updateAgreement(id: string, input: CreateAgreementInput) {
+  await requireCeo();
+  if (!input.clientName?.trim()) throw new Error("Client name is required");
+
+  const existing = await prisma.agreement.findUniqueOrThrow({
+    where: { id },
+    include: { versions: { orderBy: { version: "desc" }, take: 1 } },
+  });
+
+  const effectiveDate = input.effectiveDate
+    ? new Date(input.effectiveDate)
+    : existing.effectiveDate;
+
+  const payload = {
+    clientName: input.clientName.trim(),
+    clientAddress: input.clientAddress || null,
+    clientGstin: input.clientGstin || null,
+    clientPan: input.clientPan || null,
+    spvName: input.spvName || null,
+    plantCount: input.plantCount ?? existing.plantCount,
+    tokenFeePerPlant: input.tokenFeePerPlant ?? existing.tokenFeePerPlant,
+    successFeePct: input.successFeePct ?? existing.successFeePct,
+    gstPct: input.gstPct ?? existing.gstPct,
+    designatedLender: input.designatedLender || null,
+    effectiveDate,
+    status: input.status ?? existing.status,
+    clientId: input.clientId || existing.clientId,
+    inputsJson: { ...input, effectiveDate: effectiveDate.toISOString() },
+  };
+
+  const docx = await renderAgreementDocx({
+    ...input,
+    clientName: input.clientName.trim(),
+    effectiveDate,
+  });
+
+  const slug = input.clientName
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_|_$/g, "")
+    .slice(0, 40);
+  const nextVersion = (existing.versions[0]?.version ?? 0) + 1;
+  const filename = `Agreement_${slug}_${id.slice(-6)}_v${nextVersion}.docx`;
+  const filePath = await writeStorageFile("agreements", filename, docx);
+
+  const agreement = await prisma.agreement.update({
+    where: { id },
+    data: { ...payload, filePath },
+  });
+
+  await prisma.agreementVersion.create({
+    data: {
+      agreementId: id,
+      version: nextVersion,
+      filePath,
+      inputsJson: input,
+    },
+  });
+
+  // Keep prior DOCX files on disk via version history; only swap current pointer.
+  revalidatePath("/ceo/agreements");
+  revalidatePath("/ceo");
+  revalidatePath("/ceo/clients");
+  return { id: agreement.id, filePath, clientName: agreement.clientName };
+}
+
+export async function deleteAgreement(id: string) {
+  await requireCeo();
+  const agreement = await prisma.agreement.findUniqueOrThrow({
+    where: { id },
+    include: { versions: { select: { filePath: true } } },
+  });
+  const paths = new Set<string>();
+  if (agreement.filePath) paths.add(agreement.filePath);
+  for (const v of agreement.versions) {
+    if (v.filePath) paths.add(v.filePath);
+  }
+  await prisma.agreement.delete({ where: { id } });
+  for (const p of paths) {
+    await deleteStorageFile(p);
+  }
+  revalidatePath("/ceo/agreements");
+  revalidatePath("/ceo");
+  revalidatePath("/ceo/clients");
+  return { ok: true };
+}
+
+export async function getAgreementForEdit(id: string) {
+  await requireCeo();
+  return prisma.agreement.findUnique({
+    where: { id },
+    include: { versions: { orderBy: { version: "desc" }, take: 1 } },
+  });
+}
+
+export async function uploadAgreementFile(formData: FormData) {
+  await requireCeo();
+  const agreementId = String(formData.get("agreementId") || "");
+  const file = formData.get("file") as File | null;
+  if (!agreementId) throw new Error("Agreement id required");
+  if (!file || file.size === 0) throw new Error("File required");
+
+  const existing = await prisma.agreement.findUniqueOrThrow({
+    where: { id: agreementId },
+    include: { versions: { orderBy: { version: "desc" }, take: 1 } },
+  });
+
+  const buf = Buffer.from(await file.arrayBuffer());
+  const ext = (file.name.split(".").pop() || "docx").toLowerCase();
+  const allowed = new Set(["pdf", "docx", "doc"]);
+  if (!allowed.has(ext)) {
+    throw new Error("Upload a PDF or Word file (.pdf, .docx, .doc)");
+  }
+
+  const slug = existing.clientName
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_|_$/g, "")
+    .slice(0, 40);
+  const nextVersion = (existing.versions[0]?.version ?? 0) + 1;
+  const filename = `Agreement_${slug}_${agreementId.slice(-6)}_v${nextVersion}_upload.${ext}`;
+  const filePath = await writeStorageFile("agreements", filename, buf);
+
+  await prisma.agreement.update({
+    where: { id: agreementId },
+    data: { filePath },
+  });
+
+  await prisma.agreementVersion.create({
+    data: {
+      agreementId,
+      version: nextVersion,
+      filePath,
+      inputsJson: {
+        uploaded: true,
+        originalName: file.name,
+        uploadedAt: new Date().toISOString(),
+        previousInputs: existing.inputsJson ?? null,
+      },
+    },
+  });
+
+  revalidatePath("/ceo/agreements");
+  revalidatePath("/ceo");
+  revalidatePath("/ceo/clients");
+  return { id: agreementId, filePath, version: nextVersion };
 }
 
 export async function finalizeAgreement(id: string) {

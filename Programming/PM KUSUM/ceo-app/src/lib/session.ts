@@ -1,5 +1,9 @@
 import { auth } from "@/lib/auth";
 import { redirect } from "next/navigation";
+import {
+  assertFinanceOwnerEmail,
+  isFinanceOwnerEmail,
+} from "@/lib/access";
 
 /**
  * For use in Server Components and Layouts only.
@@ -23,4 +27,25 @@ export async function requireCeoAction() {
     throw new Error("Session expired — please refresh the page and log in again.");
   }
   return session;
+}
+
+/** Server Components: agreements + plant fee data. */
+export async function requireFinanceOwner() {
+  const session = await requireCeo();
+  if (!isFinanceOwnerEmail(session.user?.email)) {
+    redirect("/ceo");
+  }
+  return session;
+}
+
+/** Server Actions: agreements + plant fee mutations/reads. */
+export async function requireFinanceOwnerAction() {
+  const session = await requireCeoAction();
+  assertFinanceOwnerEmail(session.user?.email);
+  return session;
+}
+
+export async function currentUserIsFinanceOwner(): Promise<boolean> {
+  const session = await auth();
+  return isFinanceOwnerEmail(session?.user?.email);
 }

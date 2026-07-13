@@ -2,10 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs/promises";
 import path from "path";
 import { auth } from "@/lib/auth";
+import { isFinanceOwnerEmail } from "@/lib/access";
 import { resolveStoragePath } from "@/lib/storage";
 
 const MIME: Record<string, string> = {
   ".pdf": "application/pdf",
+  ".doc": "application/msword",
   ".docx":
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ".png": "image/png",
@@ -23,6 +25,13 @@ export async function GET(
 
   const { path: parts } = await ctx.params;
   const relative = parts.join("/");
+
+  if (
+    relative.split(/[\\/]/)[0] === "agreements" &&
+    !isFinanceOwnerEmail(session.user.email)
+  ) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
   try {
     const full = resolveStoragePath(relative);
