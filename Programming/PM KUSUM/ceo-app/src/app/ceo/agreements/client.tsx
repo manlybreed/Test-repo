@@ -265,7 +265,7 @@ export function AgreementsWorkspace({
                   <button
                     key={m.id}
                     type="button"
-                    className="text-xs font-semibold px-3.5 py-1.5 rounded-lg transition-all"
+                    className="text-xs font-semibold px-3.5 py-1.5 rounded-lg transition-all cursor-pointer"
                     style={{
                       background:
                         mode === m.id ? "rgba(99,102,241,0.18)" : "transparent",

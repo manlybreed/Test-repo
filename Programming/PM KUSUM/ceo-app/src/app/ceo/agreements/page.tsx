@@ -29,19 +29,28 @@ export default async function AgreementsPage({
     agreementCount: c.agreementCount,
   }));
 
-  const agreementRows = agreements.map((a) => ({
-    id: a.id,
-    clientId: a.clientId,
-    clientName: a.clientName,
-    spvName: a.spvName,
-    tokenFeePerPlant: a.tokenFeePerPlant,
-    plantCount: a.plantCount,
-    successFeePct: a.successFeePct,
-    effectiveDate: a.effectiveDate.toISOString(),
-    status: a.status,
-    filePath: a.filePath,
-    inputsJson: a.inputsJson,
-  }));
+  const agreementRows = agreements.map((a) => {
+    const inputs =
+      a.inputsJson && typeof a.inputsJson === "object"
+        ? (a.inputsJson as Record<string, unknown>)
+        : {};
+    const legacyUploaded = inputs.uploaded === true || inputs.isImported === true;
+    return {
+      id: a.id,
+      clientId: a.clientId,
+      clientName: a.clientName,
+      spvName: a.spvName,
+      tokenFeePerPlant: a.tokenFeePerPlant,
+      plantCount: a.plantCount,
+      successFeePct: a.successFeePct,
+      effectiveDate: a.effectiveDate.toISOString(),
+      status: a.status,
+      filePath: a.filePath,
+      isImported: a.isImported || legacyUploaded,
+      notes: a.notes,
+      inputsJson: a.inputsJson,
+    };
+  });
 
   return (
     <AgreementsWorkspace

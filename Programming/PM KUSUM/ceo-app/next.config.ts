@@ -9,6 +9,10 @@ const nextConfig: NextConfig = {
   },
   experimental: {
     optimizePackageImports: ["lucide-react", "framer-motion", "date-fns"],
+    // Agreement / signed PDF uploads go through Server Actions (default 1 MB).
+    serverActions: {
+      bodySizeLimit: "20mb",
+    },
   },
 };
 

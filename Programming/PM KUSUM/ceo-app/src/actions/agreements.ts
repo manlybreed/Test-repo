@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { requireFinanceOwnerAction as requireCeo } from "@/lib/session";
 import { writeStorageFile, deleteStorageFile } from "@/lib/storage";
 import { renderAgreementDocx } from "@/lib/docgen/agreement";
+import { inferAgreementFeesFromFile } from "@/lib/agreements/infer-fees";
 
 export type CreateAgreementInput = {
   clientId?: string;
@@ -225,6 +226,27 @@ export async function uploadAgreementFile(formData: FormData) {
     throw new Error("Upload a PDF or Word file (.pdf, .docx, .doc)");
   }
 
+  let inferred;
+  try {
+    inferred = await inferAgreementFeesFromFile({
+      buffer: buf,
+      ext,
+      fileName: file.name,
+    });
+  } catch (err) {
+    console.error("[uploadAgreementFile] fee inference failed", err);
+    inferred = {
+      tokenFeePerPlant: null,
+      successFeePct: null,
+      plantCount: null,
+      tokenFeeCandidates: [] as number[],
+      successFeeCandidates: [] as number[],
+      notes:
+        "Fee inference failed — fees left unchanged. Re-upload or edit manually.",
+      rawExtract: null,
+    };
+  }
+
   const slug = existing.clientName
     .replace(/[^a-zA-Z0-9]+/g, "_")
     .replace(/^_|_$/g, "")
@@ -233,9 +255,34 @@ export async function uploadAgreementFile(formData: FormData) {
   const filename = `Agreement_${slug}_${agreementId.slice(-6)}_v${nextVersion}_upload.${ext}`;
   const filePath = await writeStorageFile("agreements", filename, buf);
 
+  const priorInputs =
+    existing.inputsJson && typeof existing.inputsJson === "object"
+      ? (existing.inputsJson as Record<string, unknown>)
+      : {};
+
   await prisma.agreement.update({
     where: { id: agreementId },
-    data: { filePath },
+    data: {
+      filePath,
+      isImported: true,
+      tokenFeePerPlant:
+        inferred.tokenFeePerPlant ?? existing.tokenFeePerPlant,
+      successFeePct: inferred.successFeePct ?? existing.successFeePct,
+      plantCount: inferred.plantCount ?? existing.plantCount,
+      notes: inferred.notes ?? existing.notes,
+      inputsJson: {
+        ...priorInputs,
+        uploaded: true,
+        isImported: true,
+        originalName: file.name,
+        uploadedAt: new Date().toISOString(),
+        feeInference: {
+          tokenFeeCandidates: inferred.tokenFeeCandidates,
+          successFeeCandidates: inferred.successFeeCandidates,
+          rawExtract: inferred.rawExtract,
+        },
+      },
+    },
   });
 
   await prisma.agreementVersion.create({
@@ -245,8 +292,17 @@ export async function uploadAgreementFile(formData: FormData) {
       filePath,
       inputsJson: {
         uploaded: true,
+        isImported: true,
         originalName: file.name,
         uploadedAt: new Date().toISOString(),
+        feeInference: {
+          tokenFeePerPlant: inferred.tokenFeePerPlant,
+          successFeePct: inferred.successFeePct,
+          plantCount: inferred.plantCount,
+          notes: inferred.notes,
+          tokenFeeCandidates: inferred.tokenFeeCandidates,
+          successFeeCandidates: inferred.successFeeCandidates,
+        },
         previousInputs: existing.inputsJson ?? null,
       },
     },
@@ -295,6 +351,33 @@ export async function createAgreementFromUpload(formData: FormData) {
     ? new Date(effectiveDateRaw)
     : new Date();
 
+  const buf = Buffer.from(await file.arrayBuffer());
+  let inferred;
+  try {
+    inferred = await inferAgreementFeesFromFile({
+      buffer: buf,
+      ext,
+      fileName: file.name,
+    });
+  } catch (err) {
+    console.error("[createAgreementFromUpload] fee inference failed", err);
+    inferred = {
+      tokenFeePerPlant: null,
+      successFeePct: null,
+      plantCount: null,
+      tokenFeeCandidates: [] as number[],
+      successFeeCandidates: [] as number[],
+      notes: "Fee inference failed — set fees manually via Edit.",
+      rawExtract: null,
+    };
+  }
+
+  const plantCount = inferred.plantCount && inferred.plantCount > 0
+    ? inferred.plantCount
+    : 1;
+  const tokenFeePerPlant = inferred.tokenFeePerPlant ?? 0;
+  const successFeePct = inferred.successFeePct ?? 0;
+
   const agreement = await prisma.agreement.create({
     data: {
       clientId,
@@ -305,12 +388,15 @@ export async function createAgreementFromUpload(formData: FormData) {
       spvName,
       effectiveDate,
       status,
-      plantCount: 1,
-      tokenFeePerPlant: 0,
-      successFeePct: 0,
+      isImported: true,
+      notes: inferred.notes,
+      plantCount,
+      tokenFeePerPlant,
+      successFeePct,
       gstPct: 18,
       inputsJson: {
         uploaded: true,
+        isImported: true,
         originalName: file.name,
         uploadedAt: new Date().toISOString(),
         clientId,
@@ -318,11 +404,18 @@ export async function createAgreementFromUpload(formData: FormData) {
         spvName,
         effectiveDate: effectiveDate.toISOString(),
         status,
+        tokenFeePerPlant,
+        successFeePct,
+        plantCount,
+        feeInference: {
+          tokenFeeCandidates: inferred.tokenFeeCandidates,
+          successFeeCandidates: inferred.successFeeCandidates,
+          rawExtract: inferred.rawExtract,
+        },
       },
     },
   });
 
-  const buf = Buffer.from(await file.arrayBuffer());
   const slug = clientName
     .replace(/[^a-zA-Z0-9]+/g, "_")
     .replace(/^_|_$/g, "")
@@ -342,8 +435,17 @@ export async function createAgreementFromUpload(formData: FormData) {
       filePath,
       inputsJson: {
         uploaded: true,
+        isImported: true,
         originalName: file.name,
         uploadedAt: new Date().toISOString(),
+        feeInference: {
+          tokenFeePerPlant,
+          successFeePct,
+          plantCount,
+          notes: inferred.notes,
+          tokenFeeCandidates: inferred.tokenFeeCandidates,
+          successFeeCandidates: inferred.successFeeCandidates,
+        },
       },
     },
   });
@@ -351,7 +453,14 @@ export async function createAgreementFromUpload(formData: FormData) {
   revalidatePath("/ceo/agreements");
   revalidatePath("/ceo");
   revalidatePath("/ceo/clients");
-  return { id: agreement.id, filePath, clientName };
+  return {
+    id: agreement.id,
+    filePath,
+    clientName,
+    tokenFeePerPlant,
+    successFeePct,
+    notes: inferred.notes,
+  };
 }
 
 export async function finalizeAgreement(id: string) {

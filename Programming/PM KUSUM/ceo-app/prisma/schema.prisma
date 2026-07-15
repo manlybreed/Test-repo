@@ -110,6 +110,8 @@ model Agreement {
   termMonths      Int                 @default(9)
   tailMonths      Int                 @default(24)
   status          AgreementStatus     @default(DRAFT)
+  isImported      Boolean             @default(false)
+  notes           String?
   inputsJson      Json?
   filePath        String?
   createdAt       DateTime            @default(now())

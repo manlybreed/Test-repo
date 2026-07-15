@@ -23,6 +23,8 @@ export type AgreementListItem = {
   effectiveDate: string | Date;
   status: string;
   filePath: string | null;
+  isImported?: boolean;
+  notes?: string | null;
   inputsJson?: unknown;
 };
 
@@ -91,6 +93,8 @@ function AgreementUploadButton({
   onUploading: (run: () => Promise<void>) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [localBusy, setLocalBusy] = useState(false);
+  const busy = pending || localBusy;
 
   return (
     <>
@@ -102,12 +106,17 @@ function AgreementUploadButton({
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (!file) return;
+          setLocalBusy(true);
           onUploading(async () => {
-            const fd = new FormData();
-            fd.set("agreementId", agreementId);
-            fd.set("file", file);
-            await uploadAgreementFile(fd);
-            if (inputRef.current) inputRef.current.value = "";
+            try {
+              const fd = new FormData();
+              fd.set("agreementId", agreementId);
+              fd.set("file", file);
+              await uploadAgreementFile(fd);
+            } finally {
+              setLocalBusy(false);
+              if (inputRef.current) inputRef.current.value = "";
+            }
           });
         }}
       />
@@ -118,12 +127,14 @@ function AgreementUploadButton({
           background: "rgba(16,185,129,0.1)",
           border: "1px solid rgba(52,211,153,0.3)",
           color: "#6ee7b7",
+          cursor: busy ? "wait" : "pointer",
+          opacity: busy ? 0.65 : 1,
         }}
-        disabled={pending}
-        title="Upload signed / final agreement (PDF or Word)"
+        disabled={busy}
+        title="Upload signed / final agreement (PDF or Word) — marks as imported and infers fees"
         onClick={() => inputRef.current?.click()}
       >
-        Upload
+        {localBusy ? "Uploading…" : "Upload"}
       </button>
     </>
   );
@@ -214,7 +225,32 @@ export function AgreementLibrary({
                   : a.effectiveDate;
               return (
                 <tr key={a.id}>
-                  <td className="font-medium">{a.clientName}</td>
+                  <td>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="font-medium">{a.clientName}</span>
+                      {a.isImported && (
+                        <span
+                          className="text-[0.55rem] px-1.5 py-0.5 rounded font-semibold"
+                          style={{
+                            background: "rgba(99,102,241,0.12)",
+                            color: "#818cf8",
+                            border: "1px solid rgba(99,102,241,0.2)",
+                          }}
+                        >
+                          IMPORTED
+                        </span>
+                      )}
+                    </div>
+                    {a.notes && (
+                      <p
+                        className="text-xs mt-0.5 max-w-[260px] leading-snug"
+                        style={{ color: "rgba(255,255,255,0.4)" }}
+                        title={a.notes}
+                      >
+                        {a.notes}
+                      </p>
+                    )}
+                  </td>
                   <td style={{ color: "var(--text-muted)", fontSize: "0.82rem" }}>
                     {a.spvName || "—"}
                   </td>

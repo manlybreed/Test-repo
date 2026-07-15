@@ -6,7 +6,7 @@ import { PrismaClient } from "@prisma/client";
  * a process that loaded @prisma/client before `prisma generate` will
  * still construct a client missing new models until the server restarts.
  */
-const PRISMA_SCHEMA_STAMP = "client-poc-v2";
+const PRISMA_SCHEMA_STAMP = "agreement-import-v1";
 
 const REQUIRED_MODELS = [
   "kusumPlant",
