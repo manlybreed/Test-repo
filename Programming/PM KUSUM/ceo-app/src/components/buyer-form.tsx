@@ -76,13 +76,48 @@ function seedToForm(s: ClientEditSeed): BuyerFormData {
 
 type DocItem = {
   id: string;
-  file: File;
+  name: string;
+  mime?: string;
+  size: number;
+  /** Base64 payload read immediately on select — File handles go stale in some browsers. */
+  dataBase64?: string;
   filePath?: string;
-  status: "queued" | "uploading" | "ready" | "error";
+  status: "reading" | "queued" | "uploading" | "ready" | "error";
   error?: string;
 };
 
 type Mode = "manual" | "documents";
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () =>
+      reject(
+        reader.error ||
+          new Error(
+            `Could not read ${file.name}. Re-add the file from Browse / Drop.`,
+          ),
+      );
+    reader.readAsDataURL(file);
+  });
+}
+
+function isAllowedDoc(f: File) {
+  const t = (f.type || "").toLowerCase();
+  const n = f.name.toLowerCase();
+  if (["image/jpeg", "image/png", "image/webp", "application/pdf"].includes(t)) {
+    return true;
+  }
+  if (!t || t === "application/octet-stream") {
+    return /\.(pdf|jpe?g|png|webp)$/i.test(n);
+  }
+  return false;
+}
 
 export function BuyerForm({
   onCreated,
@@ -151,47 +186,113 @@ export function BuyerForm({
   }
 
   const addFiles = useCallback((fileList: FileList | File[]) => {
-    const incoming = Array.from(fileList).filter((f) =>
-      ["image/jpeg", "image/png", "image/webp", "application/pdf"].includes(f.type),
-    );
+    const incoming = Array.from(fileList).filter(isAllowedDoc);
     if (!incoming.length) {
       setError("Upload JPG, PNG, WebP, or PDF only.");
       return;
     }
     setError("");
-    setDocs((prev) => [
-      ...prev,
-      ...incoming.map((file) => ({
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        file,
-        status: "queued" as const,
-      })),
-    ]);
+
+    const placeholders: DocItem[] = incoming.map((file) => ({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: file.name,
+      mime: file.type || undefined,
+      size: file.size,
+      status: "reading",
+    }));
+    setDocs((prev) => [...prev, ...placeholders]);
+
+    // Capture bytes immediately — waiting until Extract often fails with
+    // "permission problems… after a reference to a file was acquired".
+    void (async () => {
+      for (let i = 0; i < incoming.length; i++) {
+        const file = incoming[i]!;
+        const id = placeholders[i]!.id;
+        try {
+          const dataBase64 = await readFileAsBase64(file);
+          setDocs((prev) =>
+            prev.map((d) =>
+              d.id === id
+                ? { ...d, dataBase64, status: "queued", error: undefined }
+                : d,
+            ),
+          );
+        } catch (err) {
+          setDocs((prev) =>
+            prev.map((d) =>
+              d.id === id
+                ? {
+                    ...d,
+                    status: "error",
+                    error:
+                      err instanceof Error
+                        ? err.message
+                        : "Could not read file — remove and add it again",
+                  }
+                : d,
+            ),
+          );
+        }
+      }
+    })();
   }, []);
 
-  async function uploadAll(items: DocItem[]): Promise<DocItem[]> {
-    const out: DocItem[] = [];
-    for (const item of items) {
-      if (item.filePath && item.status === "ready") {
-        out.push(item);
-        continue;
-      }
-      setDocs((prev) => prev.map((d) => (d.id === item.id ? { ...d, status: "uploading" } : d)));
-      const fd = new FormData();
-      fd.append("file", item.file);
-      const res = await fetch("/api/buyers/upload", { method: "POST", body: fd });
-      const data = (await res.json()) as { filePath?: string; error?: string };
-      if (!data.filePath) {
-        const failed = { ...item, status: "error" as const, error: data.error || "Upload failed" };
-        setDocs((prev) => prev.map((d) => (d.id === item.id ? failed : d)));
-        out.push(failed);
-        continue;
-      }
-      const ready = { ...item, status: "ready" as const, filePath: data.filePath };
-      setDocs((prev) => prev.map((d) => (d.id === item.id ? ready : d)));
-      out.push(ready);
+  async function uploadOne(item: DocItem): Promise<DocItem> {
+    if (item.filePath && item.status === "ready") return item;
+    if (!item.dataBase64) {
+      const failed = {
+        ...item,
+        status: "error" as const,
+        error: "File data missing — remove and add again",
+      };
+      setDocs((prev) => prev.map((d) => (d.id === item.id ? failed : d)));
+      return failed;
     }
-    return out;
+    setDocs((prev) =>
+      prev.map((d) =>
+        d.id === item.id ? { ...d, status: "uploading", error: undefined } : d,
+      ),
+    );
+    try {
+      const payload = {
+        name: item.name,
+        mime: item.mime,
+        data: item.dataBase64,
+      };
+      const res = await fetch("/api/buyers/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        filePath?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.filePath) {
+        const failed = {
+          ...item,
+          status: "error" as const,
+          error: data.error || `Upload failed (${res.status})`,
+        };
+        setDocs((prev) => prev.map((d) => (d.id === item.id ? failed : d)));
+        return failed;
+      }
+      const ready = {
+        ...item,
+        status: "ready" as const,
+        filePath: data.filePath,
+      };
+      setDocs((prev) => prev.map((d) => (d.id === item.id ? ready : d)));
+      return ready;
+    } catch (err) {
+      const failed = {
+        ...item,
+        status: "error" as const,
+        error: err instanceof Error ? err.message : "Upload failed",
+      };
+      setDocs((prev) => prev.map((d) => (d.id === item.id ? failed : d)));
+      return failed;
+    }
   }
 
   async function extractFromDocs() {
@@ -199,32 +300,48 @@ export function BuyerForm({
       setError("Add at least one document (COI, PAN, GST, etc.).");
       return;
     }
+    if (docs.some((d) => d.status === "reading")) {
+      setError("Still reading files — wait a moment, then try Extract again.");
+      return;
+    }
+    const readable = docs.filter((d) => d.dataBase64 && d.status !== "error");
+    if (readable.length === 0) {
+      setError(
+        "No readable documents. Remove the files and add them again with Browse / Drop.",
+      );
+      return;
+    }
     setError("");
     setExtracting(true);
     try {
-      const uploaded = await uploadAll(docs);
-      const ok = uploaded.filter((d) => d.status === "ready");
-      if (ok.length === 0) {
-        setError("All uploads failed.");
-        return;
-      }
-
-      const fd = new FormData();
-      for (const d of ok) fd.append("files", d.file);
-      const res = await fetch("/api/buyers/extract", { method: "POST", body: fd });
-      const data = (await res.json()) as {
+      const files = readable.map((d) => ({
+        name: d.name,
+        mime: d.mime,
+        data: d.dataBase64!,
+      }));
+      const res = await fetch("/api/buyers/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
         data?: Record<string, unknown>;
         error?: string;
       };
-      if (!data.ok || !data.data) {
-        setError(data.error || "AI extraction failed — fill the form manually.");
-        setMode("manual");
+      if (!res.ok || !data.ok || !data.data) {
+        setError(
+          data.error ||
+            `AI extraction failed (${res.status}). Fill the form manually or try again.`,
+        );
         return;
       }
 
+      void Promise.allSettled(readable.map((d) => uploadOne(d)));
+
       const d = data.data;
-      const str = (k: string) => (typeof d[k] === "string" ? (d[k] as string) : "") || "";
+      const str = (k: string) =>
+        (typeof d[k] === "string" ? (d[k] as string) : "") || "";
       setForm({
         name: str("name"),
         addressLine1: str("addressLine1"),
@@ -238,15 +355,31 @@ export function BuyerForm({
         email: str("email"),
         phone: str("phone"),
         pocName: str("pocName") || str("contactName") || str("contactPerson"),
-        notes: [str("cin") ? `CIN: ${str("cin")}` : "", str("notes"), str("tradeName") ? `Trade: ${str("tradeName")}` : ""]
+        notes: [
+          str("cin") ? `CIN: ${str("cin")}` : "",
+          str("notes"),
+          str("tradeName") ? `Trade: ${str("tradeName")}` : "",
+        ]
           .filter(Boolean)
           .join(" · "),
       });
-      setDetected(Array.isArray(d.documentsDetected) ? (d.documentsDetected as string[]) : []);
+      setDetected(
+        Array.isArray(d.documentsDetected)
+          ? (d.documentsDetected as string[])
+          : [],
+      );
       setConfidence(typeof d.confidence === "number" ? d.confidence : null);
-      setMode("manual"); // show editable confirm form
-    } catch {
-      setError("Extraction failed — check connection and try again.");
+      setMode("manual");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "";
+      setError(
+        /failed to fetch|networkerror|load failed/i.test(msg)
+          ? "Could not reach the extract API. Wait a second and try again."
+          : /permission|could not be read|not readable/i.test(msg)
+            ? "Browser lost access to a file. Remove the docs and add them again, then Extract."
+            : msg ||
+              "Extraction failed. Please try again or enter details manually.",
+      );
     } finally {
       setExtracting(false);
     }
@@ -391,16 +524,31 @@ export function BuyerForm({
                   className="flex items-center justify-between gap-3 rounded-lg px-3 py-2 text-xs"
                   style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}
                 >
-                  <span className="truncate font-medium">{d.file.name}</span>
+                  <span className="truncate font-medium">{d.name}</span>
                   <div className="flex items-center gap-2 shrink-0">
-                    <span style={{ color: d.status === "error" ? "#f87171" : "rgba(255,255,255,0.35)" }}>
-                      {d.status === "uploading" ? "Uploading…" : d.status === "error" ? d.error : `${(d.file.size / 1024).toFixed(0)} KB`}
+                    <span
+                      style={{
+                        color:
+                          d.status === "error"
+                            ? "#f87171"
+                            : "rgba(255,255,255,0.35)",
+                      }}
+                    >
+                      {d.status === "reading"
+                        ? "Reading…"
+                        : d.status === "uploading"
+                          ? "Uploading…"
+                          : d.status === "error"
+                            ? d.error
+                            : `${(d.size / 1024).toFixed(0)} KB`}
                     </span>
                     <button
                       type="button"
                       className="text-[0.65rem]"
                       style={{ color: "#f87171" }}
-                      onClick={() => setDocs((prev) => prev.filter((x) => x.id !== d.id))}
+                      onClick={() =>
+                        setDocs((prev) => prev.filter((x) => x.id !== d.id))
+                      }
                     >
                       Remove
                     </button>
@@ -413,7 +561,12 @@ export function BuyerForm({
           <button
             type="button"
             className="btn btn-primary"
-            disabled={extracting || docs.length === 0}
+            disabled={
+              extracting ||
+              docs.length === 0 ||
+              docs.some((d) => d.status === "reading") ||
+              !docs.some((d) => d.dataBase64)
+            }
             onClick={extractFromDocs}
           >
             {extracting ? "Reading documents…" : "Extract with AI"}

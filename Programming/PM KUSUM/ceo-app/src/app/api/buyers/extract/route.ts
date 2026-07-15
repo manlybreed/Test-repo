@@ -4,6 +4,9 @@ import { auth } from "@/lib/auth";
 import { panFromGstin, stateFromGstin } from "@/lib/indian-states";
 import { prepareUploadFile } from "@/lib/upload";
 
+export const runtime = "nodejs";
+export const maxDuration = 120;
+
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_FILES = 8;
 
@@ -44,7 +47,83 @@ Rules:
 - All amounts / IDs uppercase where appropriate (GSTIN, PAN).
 - If a field is not visible, use null — do not invent.`;
 
-type MediaType = "image/jpeg" | "image/png" | "image/webp" | "application/pdf";
+type MediaMime = "image/jpeg" | "image/png" | "image/webp" | "application/pdf";
+
+type IncomingFile = {
+  name: string;
+  mime?: string;
+  data: string; // base64
+};
+
+function sniffMime(buf: Buffer, name: string, hinted?: string): MediaMime | null {
+  const hint = (hinted || "").toLowerCase();
+  if (
+    hint === "image/jpeg" ||
+    hint === "image/png" ||
+    hint === "image/webp" ||
+    hint === "application/pdf"
+  ) {
+    return hint;
+  }
+  if (buf.length >= 4 && buf.toString("ascii", 0, 4) === "%PDF") return "application/pdf";
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (
+    buf.length >= 8 &&
+    buf[0] === 0x89 &&
+    buf[1] === 0x50 &&
+    buf[2] === 0x4e &&
+    buf[3] === 0x47
+  ) {
+    return "image/png";
+  }
+  if (
+    buf.length >= 12 &&
+    buf.toString("ascii", 0, 4) === "RIFF" &&
+    buf.toString("ascii", 8, 12) === "WEBP"
+  ) {
+    return "image/webp";
+  }
+  const lower = name.toLowerCase();
+  if (lower.endsWith(".pdf")) return "application/pdf";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".webp")) return "image/webp";
+  return null;
+}
+
+async function parseIncoming(req: NextRequest): Promise<IncomingFile[]> {
+  const contentType = req.headers.get("content-type") || "";
+
+  // Preferred: JSON body — avoids multipart boundary bugs in some Next/Turbopack setups.
+  if (contentType.includes("application/json")) {
+    const body = (await req.json()) as { files?: IncomingFile[] };
+    if (!Array.isArray(body.files) || body.files.length === 0) {
+      throw Object.assign(new Error("No files provided"), { status: 400 });
+    }
+    return body.files;
+  }
+
+  // Fallback: multipart (legacy)
+  const formData = await req.formData();
+  const files = formData
+    .getAll("files")
+    .filter((f): f is File => f instanceof File && f.size > 0);
+  if (files.length === 0) {
+    throw Object.assign(new Error("No files provided"), { status: 400 });
+  }
+  const out: IncomingFile[] = [];
+  for (const file of files) {
+    const prepared = await prepareUploadFile(file);
+    out.push({
+      name: file.name,
+      mime: prepared.mime,
+      data: prepared.buffer.toString("base64"),
+    });
+  }
+  return out;
+}
 
 export async function POST(req: NextRequest) {
   const session = await auth();
@@ -52,55 +131,71 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   if (!process.env.ANTHROPIC_API_KEY) {
-    return NextResponse.json({ error: "ANTHROPIC_API_KEY not configured." }, { status: 503 });
+    return NextResponse.json(
+      { error: "ANTHROPIC_API_KEY not configured." },
+      { status: 503 },
+    );
   }
 
   try {
-    const formData = await req.formData();
-    const files = formData.getAll("files").filter((f): f is File => f instanceof File && f.size > 0);
-
-    if (files.length === 0) {
-      return NextResponse.json({ error: "No files provided" }, { status: 400 });
-    }
-    if (files.length > MAX_FILES) {
-      return NextResponse.json({ error: `Max ${MAX_FILES} documents at once.` }, { status: 400 });
+    const incoming = await parseIncoming(req);
+    if (incoming.length > MAX_FILES) {
+      return NextResponse.json(
+        { error: `Max ${MAX_FILES} documents at once.` },
+        { status: 400 },
+      );
     }
 
-    type ContentBlock = Anthropic.ImageBlockParam | Anthropic.DocumentBlockParam | Anthropic.TextBlockParam;
+    type ContentBlock =
+      | Anthropic.ImageBlockParam
+      | Anthropic.DocumentBlockParam
+      | Anthropic.TextBlockParam;
     const contentParts: ContentBlock[] = [];
 
-    for (const file of files) {
-      if (file.size > MAX_FILE_BYTES) {
-        return NextResponse.json({ error: `${file.name} is too large (max 20 MB).` }, { status: 413 });
-      }
-
-      let prepared;
-      try {
-        prepared = await prepareUploadFile(file);
-      } catch (err) {
+    for (const file of incoming) {
+      const buffer = Buffer.from(file.data, "base64");
+      if (!buffer.length) {
         return NextResponse.json(
-          { error: err instanceof Error ? err.message : `Unsupported type: ${file.name}` },
+          { error: `${file.name || "File"} is empty.` },
+          { status: 400 },
+        );
+      }
+      if (buffer.length > MAX_FILE_BYTES) {
+        return NextResponse.json(
+          { error: `${file.name || "File"} is too large (max 20 MB).` },
+          { status: 413 },
+        );
+      }
+      const mime = sniffMime(buffer, file.name || "doc", file.mime);
+      if (!mime) {
+        return NextResponse.json(
+          { error: `Unsupported type: ${file.name || "file"}` },
           { status: 415 },
         );
       }
 
-      const mediaType = prepared.mime as "image/jpeg" | "image/png" | "image/webp" | "application/pdf";
-      const isImage = mediaType.startsWith("image/");
-      const base64 = prepared.buffer.toString("base64");
-      contentParts.push({ type: "text", text: `Document filename: ${file.name}` });
-      if (isImage) {
+      const base64 = buffer.toString("base64");
+      contentParts.push({
+        type: "text",
+        text: `Document filename: ${file.name || "document"}`,
+      });
+      if (mime.startsWith("image/")) {
         contentParts.push({
           type: "image",
           source: {
             type: "base64",
-            media_type: mediaType as "image/jpeg" | "image/png" | "image/webp",
+            media_type: mime as "image/jpeg" | "image/png" | "image/webp",
             data: base64,
           },
         });
       } else {
         contentParts.push({
           type: "document",
-          source: { type: "base64", media_type: "application/pdf", data: base64 },
+          source: {
+            type: "base64",
+            media_type: "application/pdf",
+            data: base64,
+          },
         } as Anthropic.DocumentBlockParam);
       }
     }
@@ -110,16 +205,30 @@ export async function POST(req: NextRequest) {
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const msg = await client.messages.create({
       model: "claude-sonnet-4-6",
-      max_tokens: 1024,
+      max_tokens: 1600,
       messages: [{ role: "user", content: contentParts }],
     });
 
-    const raw = msg.content[0]?.type === "text" ? msg.content[0].text.trim() : "{}";
-    const json = raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
-    const extracted = JSON.parse(json) as Record<string, unknown>;
+    const raw =
+      msg.content[0]?.type === "text" ? msg.content[0].text.trim() : "{}";
+    const json = raw
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/```\s*$/, "")
+      .trim();
+    let extracted: Record<string, unknown>;
+    try {
+      extracted = JSON.parse(json) as Record<string, unknown>;
+    } catch {
+      return NextResponse.json(
+        { error: "AI returned unreadable data. Try again or fill manually." },
+        { status: 502 },
+      );
+    }
 
-    // Enrich from GSTIN when AI omitted PAN / state
-    const gstin = typeof extracted.gstin === "string" ? extracted.gstin.trim().toUpperCase() : null;
+    const gstin =
+      typeof extracted.gstin === "string"
+        ? extracted.gstin.trim().toUpperCase()
+        : null;
     if (gstin) {
       extracted.gstin = gstin;
       if (!extracted.pan) {
@@ -141,6 +250,24 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, data: extracted });
   } catch (err) {
     console.error("[/api/buyers/extract]", err);
-    return NextResponse.json({ error: "Extraction failed. Please try again." }, { status: 500 });
+    const message =
+      err instanceof Error && err.message
+        ? err.message
+        : "Extraction failed. Please try again.";
+    const status =
+      err && typeof err === "object" && "status" in err
+        ? Number((err as { status: number }).status) || 500
+        : 500;
+    // FormData boundary failures often surface as generic fetch errors on the client
+    if (/FormData|boundary|aborted|ECONNRESET/i.test(message)) {
+      return NextResponse.json(
+        {
+          error:
+            "Could not read the uploaded documents. Refresh the page and try Extract again.",
+        },
+        { status: 400 },
+      );
+    }
+    return NextResponse.json({ error: message }, { status });
   }
 }
