@@ -30,9 +30,9 @@ import {
 } from "@/actions/plant-registry";
 import { resolvePlantProfile } from "@/lib/projects/plant-profile";
 import {
-  formatFeePercent,
+  formatFeeDisplay,
   formatSanctionInput,
-  parseFeePercentInput,
+  parseFeeInput,
   parseSanctionInput,
   type FinanceStage,
 } from "@/lib/projects/finance-pipeline";
@@ -309,7 +309,7 @@ export function PlantRegistryPanel({
             tariff: p.tariff || "",
             bankName: p.bankName || "",
             activeStatus: p.activeStatus,
-            feePercent: formatFeePercent(detail.feePercent),
+            feePercent: formatFeeDisplay(detail.feePercent, detail.feeFlat),
             sanctionAmount: formatSanctionInput(detail.sanctionAmount),
           });
           setFinance({
@@ -756,22 +756,29 @@ export function PlantRegistryPanel({
         {canSeeFees && (
           <>
             <label className="block min-w-0">
-              <span className="label">Fee %</span>
+              <span className="label">Fee</span>
               <input
                 className="input text-xs py-1.5"
                 value={profile.feePercent}
-                placeholder="e.g. 1%"
+                placeholder="1.25% or ₹5,50,000"
+                title="Percent of sanction (1.25%) or flat INR (550000)"
                 onChange={(e) =>
                   setProfile((p) => ({ ...p, feePercent: e.target.value }))
                 }
                 onBlur={() => {
-                  const feePercent = parseFeePercentInput(profile.feePercent);
-                  if (feePercent !== null && Number.isNaN(feePercent)) return;
+                  const parsed = parseFeeInput(profile.feePercent);
+                  if (parsed === "invalid") return;
                   setProfile((p) => ({
                     ...p,
-                    feePercent: formatFeePercent(feePercent),
+                    feePercent: formatFeeDisplay(
+                      parsed.feePercent,
+                      parsed.feeFlat,
+                    ),
                   }));
-                  void updatePlantProfile(plantId, { feePercent }).catch((err) =>
+                  void updatePlantProfile(plantId, {
+                    feePercent: parsed.feePercent,
+                    feeFlat: parsed.feeFlat,
+                  }).catch((err) =>
                     setError(err instanceof Error ? err.message : "Save failed"),
                   );
                 }}

@@ -223,7 +223,7 @@ export function FinancingClient({ initial }: { initial: Dashboard }) {
                 <h2 className="text-lg font-semibold">{v.label}</h2>
                 <p className="text-xs mt-1 max-w-xl" style={{ color: "var(--text-muted)" }}>
                   Deals required = target income ÷ avg payout. Avg payout = estimated
-                  sanction × fee %. Sanction estimate uses tariff × capacity from the
+                  sanction × fee (% or flat). Sanction estimate uses tariff × capacity from the
                   portfolio (bank sanction scales with PPA revenue and plant size).
                 </p>
               </div>
@@ -277,11 +277,24 @@ export function FinancingClient({ initial }: { initial: Dashboard }) {
                     }
                   />
                   <StatCard
-                    label="Avg fee %"
+                    label="Avg fee"
                     value={
-                      a.avgFeePercent != null
-                        ? `${fmtNum(a.avgFeePercent)}%`
-                        : "—"
+                      a.avgFeeFlat != null && !(a.avgFeePercent != null)
+                        ? formatINR(Math.round(a.avgFeeFlat))
+                        : a.avgFeePercent != null && !(a.avgFeeFlat != null)
+                          ? `${fmtNum(a.avgFeePercent)}%`
+                          : a.avgFeePercent != null && a.avgFeeFlat != null
+                            ? `${fmtNum(a.avgFeePercent)}% · ${formatINR(Math.round(a.avgFeeFlat))}`
+                            : "—"
+                    }
+                    sub={
+                      a.sample.withFeeFlat > 0 && a.sample.withFeePercent > 0
+                        ? "Mix of % and flat"
+                        : a.sample.withFeeFlat > 0
+                          ? "Flat fee deals"
+                          : a.sample.withFeePercent > 0
+                            ? "% of sanction"
+                            : undefined
                     }
                   />
                   <StatCard
@@ -330,7 +343,7 @@ export function FinancingClient({ initial }: { initial: Dashboard }) {
                     sub={
                       plan.dealsRemaining != null
                         ? `${plan.dealsDone} done · ${plan.dealsRemaining} left`
-                        : "Add fee % and sanctions on plants"
+                        : "Add fee (% or flat ₹) and sanctions on plants"
                     }
                     accent="#a5b4fc"
                   />

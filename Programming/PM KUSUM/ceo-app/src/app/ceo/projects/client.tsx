@@ -15,9 +15,9 @@ import { PlantRegistryPanel } from "@/components/plant-registry-panel";
 import { ChecklistTemplateEditor } from "@/components/checklist-template-editor";
 import { formatINR } from "@/lib/utils";
 import {
-  formatFeePercent,
+  formatFeeDisplay,
   formatSanctionInput,
-  parseFeePercentInput,
+  parseFeeInput,
   parseSanctionInput,
   type FinanceStage,
 } from "@/lib/projects/finance-pipeline";
@@ -45,6 +45,7 @@ type PlantItem = {
   bankName?: string | null;
   activeStatus?: "ACTIVE" | "INACTIVE";
   feePercent?: number | null;
+  feeFlat?: number | null;
   sanctionAmount?: number | null;
   feeAmount?: number | null;
   financeStage?: FinanceStage;
@@ -1175,7 +1176,7 @@ export function ProjectsClient({
                 <th>Pipeline</th>
                 {canSeeFees && (
                   <>
-                    <th>Fee %</th>
+                    <th>Fee</th>
                     <th>Sanction</th>
                     <th>Fee amt</th>
                   </>
@@ -1243,16 +1244,23 @@ export function ProjectsClient({
                           onClick={(e) => e.stopPropagation()}
                         >
                           <input
-                            className="input text-xs py-1 w-[4.5rem]"
-                            key={`fee-${p.id}-${p.feePercent ?? "x"}`}
-                            defaultValue={formatFeePercent(p.feePercent)}
-                            placeholder="%"
+                            className="input text-xs py-1 w-[7.5rem]"
+                            key={`fee-${p.id}-${p.feePercent ?? "x"}-${p.feeFlat ?? "f"}`}
+                            defaultValue={formatFeeDisplay(p.feePercent, p.feeFlat)}
+                            placeholder="1.25% or ₹5.5L"
+                            title="Enter % (e.g. 1.25%) or flat ₹ (e.g. 550000 / ₹5,50,000)"
                             onBlur={(e) => {
-                              const feePercent = parseFeePercentInput(e.target.value);
-                              if (feePercent !== null && Number.isNaN(feePercent)) return;
-                              e.target.value = formatFeePercent(feePercent);
+                              const parsed = parseFeeInput(e.target.value);
+                              if (parsed === "invalid") return;
+                              e.target.value = formatFeeDisplay(
+                                parsed.feePercent,
+                                parsed.feeFlat,
+                              );
                               start(async () => {
-                                await updatePlantProfile(p.id, { feePercent });
+                                await updatePlantProfile(p.id, {
+                                  feePercent: parsed.feePercent,
+                                  feeFlat: parsed.feeFlat,
+                                });
                                 router.refresh();
                               });
                             }}

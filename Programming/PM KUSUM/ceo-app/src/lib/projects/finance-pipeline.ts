@@ -67,9 +67,20 @@ export function formatFeePercent(v?: number | null): string {
   return `${v}%`;
 }
 
-export function formatSanctionInput(v?: number | null): string {
+export function formatFeeFlat(v?: number | null): string {
   if (v == null || Number.isNaN(v)) return "";
   return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(v);
+}
+
+/** Display fee as % or flat ₹ depending on what is set. */
+export function formatFeeDisplay(
+  feePercent?: number | null,
+  feeFlat?: number | null,
+): string {
+  if (feeFlat != null && feeFlat > 0) {
+    return `₹${formatFeeFlat(feeFlat)}`;
+  }
+  return formatFeePercent(feePercent);
 }
 
 export function parseFeePercentInput(raw: string): number | null {
@@ -77,6 +88,81 @@ export function parseFeePercentInput(raw: string): number | null {
   if (!t) return null;
   const n = Number(t);
   return Number.isFinite(n) ? n : NaN;
+}
+
+/**
+ * Parse a flexible fee field: "1.25%", "1.25", "₹5,50,000", "550000".
+ * Empty string clears both. Returns "invalid" when the value cannot be parsed.
+ */
+export function parseFeeInput(
+  raw: string,
+): { feePercent: number | null; feeFlat: number | null } | "invalid" {
+  const t = raw.trim();
+  if (!t) return { feePercent: null, feeFlat: null };
+
+  if (/%/.test(t)) {
+    const n = Number(t.replace(/%/g, "").replace(/,/g, "").trim());
+    if (!Number.isFinite(n) || n < 0) return "invalid";
+    return { feePercent: n, feeFlat: null };
+  }
+
+  const hasCurrencyHint = /₹|rs\.?|inr/i.test(t);
+  const normalized = t
+    .replace(/₹/gi, "")
+    .replace(/\brs\.?\b/gi, "")
+    .replace(/\binr\b/gi, "")
+    .replace(/,/g, "")
+    .replace(/\s+/g, "")
+    .trim();
+
+  // 5.5L / 5.5Lac / 2Cr
+  const lakh = normalized.match(/^([\d.]+)\s*(l|lac|lakh)s?$/i);
+  if (lakh) {
+    const n = Number(lakh[1]) * 100_000;
+    if (!Number.isFinite(n) || n <= 0) return "invalid";
+    return { feePercent: null, feeFlat: n };
+  }
+  const cr = normalized.match(/^([\d.]+)\s*(cr|crore)s?$/i);
+  if (cr) {
+    const n = Number(cr[1]) * 10_000_000;
+    if (!Number.isFinite(n) || n <= 0) return "invalid";
+    return { feePercent: null, feeFlat: n };
+  }
+
+  const n = Number(normalized);
+  if (!Number.isFinite(n) || n < 0) return "invalid";
+
+  // Small numbers without currency → treat as percent (typical 0.5–5%).
+  if (!hasCurrencyHint && n > 0 && n < 50) {
+    return { feePercent: n, feeFlat: null };
+  }
+  return { feePercent: null, feeFlat: n };
+}
+
+/** Resolved success-fee payout for one plant (flat preferred). */
+export function resolveFeePayout(input: {
+  feePercent?: number | null;
+  feeFlat?: number | null;
+  sanctionAmount?: number | null;
+}): number | null {
+  if (input.feeFlat != null && Number.isFinite(input.feeFlat) && input.feeFlat > 0) {
+    return input.feeFlat;
+  }
+  if (
+    input.feePercent != null &&
+    Number.isFinite(input.feePercent) &&
+    input.sanctionAmount != null &&
+    Number.isFinite(input.sanctionAmount) &&
+    input.sanctionAmount > 0
+  ) {
+    return (input.sanctionAmount * input.feePercent) / 100;
+  }
+  return null;
+}
+
+export function formatSanctionInput(v?: number | null): string {
+  if (v == null || Number.isNaN(v)) return "";
+  return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(v);
 }
 
 export function parseSanctionInput(raw: string): number | null {
@@ -96,12 +182,16 @@ export type PlantFinanceInputs = {
   tariff?: string | null;
   sanctionAmount?: number | null;
   feePercent?: number | null;
+  feeFlat?: number | null;
 };
 
 export type VerticalAverages = {
   avgCapacityMw: number | null;
   avgTariff: number | null;
+  /** Mean fee % among plants that use %-based fees. */
   avgFeePercent: number | null;
+  /** Mean flat fee among plants that use flat fees. */
+  avgFeeFlat: number | null;
   /** Observed mean sanction from plants that have one. */
   avgSanctionObserved: number | null;
   /**
@@ -113,12 +203,14 @@ export type VerticalAverages = {
   /** Sanction used for deal math (estimated preferred). */
   avgSanction: number | null;
   avgFundPerMw: number | null;
-  /** Fee payout per deal = avgSanction × avgFee% / 100 */
+  /** Mean resolved payout per deal (flat or sanction×%). */
   avgPayout: number | null;
   sample: {
     plants: number;
     withSanction: number;
     withFee: number;
+    withFeePercent: number;
+    withFeeFlat: number;
     withTariff: number;
     withCapacity: number;
   };
@@ -143,9 +235,22 @@ export function computeVerticalAverages(
   const tariffs = plants
     .map((p) => parseTariff(p.tariff))
     .filter((n): n is number => n != null);
-  const fees = plants
+  const feesPct = plants
+    .filter((p) => !(p.feeFlat != null && p.feeFlat > 0))
     .map((p) => p.feePercent)
     .filter((n): n is number => n != null && Number.isFinite(n));
+  const feesFlat = plants
+    .map((p) => p.feeFlat)
+    .filter((n): n is number => n != null && Number.isFinite(n) && n > 0);
+  const payouts = plants
+    .map((p) =>
+      resolveFeePayout({
+        feePercent: p.feePercent,
+        feeFlat: p.feeFlat,
+        sanctionAmount: p.sanctionAmount,
+      }),
+    )
+    .filter((n): n is number => n != null);
   const sanctions = plants
     .map((p) => p.sanctionAmount)
     .filter((n): n is number => n != null && Number.isFinite(n) && n > 0);
@@ -166,7 +271,8 @@ export function computeVerticalAverages(
 
   const avgCapacityMw = mean(capacities);
   const avgTariff = mean(tariffs);
-  const avgFeePercent = mean(fees);
+  const avgFeePercent = mean(feesPct);
+  const avgFeeFlat = mean(feesFlat);
   const avgSanctionObserved = mean(sanctions);
   const avgFundPerMw = mean(fundPerMwValues);
   const k = mean(sanctionPerMwTariff);
@@ -181,15 +287,21 @@ export function computeVerticalAverages(
   }
 
   const avgSanction = avgSanctionEstimated ?? avgSanctionObserved;
-  const avgPayout =
-    avgSanction != null && avgFeePercent != null
-      ? (avgSanction * avgFeePercent) / 100
-      : null;
+  // Prefer observed mean payout; if none yet, estimate from avg sanction × avg %
+  // or avg flat fee.
+  let avgPayout = mean(payouts);
+  if (avgPayout == null) {
+    if (avgFeeFlat != null) avgPayout = avgFeeFlat;
+    else if (avgSanction != null && avgFeePercent != null) {
+      avgPayout = (avgSanction * avgFeePercent) / 100;
+    }
+  }
 
   return {
     avgCapacityMw,
     avgTariff,
     avgFeePercent,
+    avgFeeFlat,
     avgSanctionObserved,
     avgSanctionEstimated,
     avgSanction,
@@ -198,7 +310,9 @@ export function computeVerticalAverages(
     sample: {
       plants: plants.length,
       withSanction: sanctions.length,
-      withFee: fees.length,
+      withFee: payouts.length || feesPct.length + feesFlat.length,
+      withFeePercent: feesPct.length,
+      withFeeFlat: feesFlat.length,
       withTariff: tariffs.length,
       withCapacity: capacities.length,
     },

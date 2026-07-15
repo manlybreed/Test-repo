@@ -374,8 +374,10 @@ model KusumPlant {
   epcName            String?
   tariff             String?
   bankName           String?
-  /// Success fee % (finance owner only)
+  /// Success fee % of sanction (finance owner only) — use when not flat
   feePercent         Float?
+  /// Flat success fee INR (finance owner only) — takes priority over feePercent
+  feeFlat            Float?
   /// Sanctioned loan amount INR (finance owner only)
   sanctionAmount     Float?
   /// Quoted / expected interest rate %

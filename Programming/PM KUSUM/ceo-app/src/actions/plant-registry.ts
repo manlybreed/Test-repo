@@ -45,6 +45,7 @@ import {
   financeStageProgress,
   fundPerMw,
   isFinanceStage,
+  resolveFeePayout,
   verticalTargetIncomeKey,
   type FinanceStage,
   type FinancingVerticalId,
@@ -517,6 +518,7 @@ export async function getPlantDetail(plantId: string) {
     ...(showFees
       ? {
           feePercent: plant.feePercent,
+          feeFlat: plant.feeFlat,
           sanctionAmount: plant.sanctionAmount,
         }
       : {}),
@@ -569,11 +571,13 @@ export async function listPlantsWithProgress() {
     const received = requiredRows.filter((r) => r.received).length;
     const profile = resolvePlantProfile(p);
     const feePercent = p.feePercent;
+    const feeFlat = p.feeFlat;
     const sanctionAmount = p.sanctionAmount;
-    const feeAmount =
-      feePercent != null && sanctionAmount != null
-        ? (sanctionAmount * feePercent) / 100
-        : null;
+    const feeAmount = resolveFeePayout({
+      feePercent,
+      feeFlat,
+      sanctionAmount,
+    });
     return {
       id: p.id,
       name: p.name,
@@ -609,6 +613,7 @@ export async function listPlantsWithProgress() {
       ...(showFees
         ? {
             feePercent,
+            feeFlat,
             sanctionAmount,
             feeAmount,
           }
@@ -629,6 +634,7 @@ export async function updatePlantProfile(
     bankName?: string | null;
     activeStatus?: "ACTIVE" | "INACTIVE";
     feePercent?: number | null;
+    feeFlat?: number | null;
     sanctionAmount?: number | null;
     interestRate?: number | null;
   },
@@ -642,12 +648,18 @@ export async function updatePlantProfile(
 
   const feePatch: {
     feePercent?: number | null;
+    feeFlat?: number | null;
     sanctionAmount?: number | null;
   } = {};
-  if (patch.feePercent !== undefined || patch.sanctionAmount !== undefined) {
+  if (
+    patch.feePercent !== undefined ||
+    patch.feeFlat !== undefined ||
+    patch.sanctionAmount !== undefined
+  ) {
     const { requireFinanceOwnerAction } = await import("@/lib/session");
     await requireFinanceOwnerAction();
     if (patch.feePercent !== undefined) feePatch.feePercent = patch.feePercent;
+    if (patch.feeFlat !== undefined) feePatch.feeFlat = patch.feeFlat;
     if (patch.sanctionAmount !== undefined) {
       feePatch.sanctionAmount = patch.sanctionAmount;
     }
@@ -1166,8 +1178,12 @@ export async function getFinancingDashboard() {
 
   const incomeEarned = showFees
     ? active.reduce((s, p) => {
-        if (p.feePercent == null || p.sanctionAmount == null) return s;
-        return s + (p.sanctionAmount * p.feePercent) / 100;
+        const payout = resolveFeePayout({
+          feePercent: p.feePercent,
+          feeFlat: p.feeFlat,
+          sanctionAmount: p.sanctionAmount,
+        });
+        return s + (payout ?? 0);
       }, 0)
     : 0;
 
@@ -1177,6 +1193,7 @@ export async function getFinancingDashboard() {
       tariff: p.tariff,
       sanctionAmount: showFees ? p.sanctionAmount : null,
       feePercent: showFees ? p.feePercent : null,
+      feeFlat: showFees ? p.feeFlat : null,
     })),
   );
 
