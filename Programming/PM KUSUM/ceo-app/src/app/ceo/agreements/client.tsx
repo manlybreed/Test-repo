@@ -10,6 +10,7 @@ import {
   AgreementLibrary,
   type AgreementListItem,
 } from "@/components/agreement-library";
+import { AgreementUploadCreate } from "@/components/agreement-upload-create";
 import { formatINR } from "@/lib/utils";
 
 type ClientOption = {
@@ -38,6 +39,7 @@ export function AgreementsWorkspace({
   createdId?: string;
 }) {
   const [editing, setEditing] = useState<AgreementEditSeed | null>(null);
+  const [mode, setMode] = useState<"generate" | "upload">("generate");
 
   const totalTokenFees = agreements.reduce(
     (s, a) => s + a.tokenFeePerPlant * a.plantCount,
@@ -53,6 +55,8 @@ export function AgreementsWorkspace({
     ? agreements.filter((a) => a.clientId === initialClientId)
     : [];
 
+  const showUpload = !editing && mode === "upload";
+
   return (
     <div>
       <header className="mb-8">
@@ -66,8 +70,8 @@ export function AgreementsWorkspace({
           <span className="grad-text">PM KUSUM Agreements</span>
         </h1>
         <p className="text-sm max-w-xl" style={{ color: "var(--text-muted)" }}>
-          Finance Advisory & Mandate agreements using the BluRidge template DOCX —
-          create, edit, or delete from the library.
+          Generate from the BluRidge template, or upload an existing signed
+          agreement — then edit, replace, or delete from the library.
         </p>
       </header>
 
@@ -179,7 +183,7 @@ export function AgreementsWorkspace({
                       className="underline"
                       style={{ color: "#a5b4fc" }}
                     >
-                      Open DOCX
+                      Open file
                     </Link>
                   )}
                 </li>
@@ -187,7 +191,8 @@ export function AgreementsWorkspace({
             })}
           </ul>
           <p className="text-xs" style={{ color: "rgba(253,230,138,0.75)" }}>
-            You can still create another below — prior agreements are not replaced.
+            You can still create or upload another below — prior agreements are
+            not replaced.
           </p>
         </div>
       )}
@@ -204,46 +209,97 @@ export function AgreementsWorkspace({
           }}
         />
         <div className="relative p-6">
-          <div className="flex items-center gap-3 mb-6">
-            <div
-              className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
-              style={{ background: "rgba(99,102,241,0.15)", color: "#818cf8" }}
-            >
-              <svg
-                width="15"
-                height="15"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-6">
+            <div className="flex items-center gap-3">
+              <div
+                className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
+                style={{ background: "rgba(99,102,241,0.15)", color: "#818cf8" }}
               >
-                <path d="M12 4v16m8-8H4" />
-              </svg>
+                <svg
+                  width="15"
+                  height="15"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M12 4v16m8-8H4" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="text-base font-semibold">
+                  {editing
+                    ? "Edit agreement"
+                    : showUpload
+                      ? "Upload agreement"
+                      : preselected && clientAgreements.length > 0
+                        ? "Create another agreement"
+                        : "New Agreement"}
+                </h2>
+                <p className="text-xs mt-0.5" style={{ color: "var(--text-dim)" }}>
+                  {editing
+                    ? "Changes regenerate a new DOCX version"
+                    : showUpload
+                      ? "Use an existing signed PDF or Word file"
+                      : "Generate DOCX from the BluRidge template"}
+                </p>
+              </div>
             </div>
-            <div>
-              <h2 className="text-base font-semibold">
-                {editing
-                  ? "Edit agreement"
-                  : preselected && clientAgreements.length > 0
-                    ? "Create another agreement"
-                    : "New Agreement"}
-              </h2>
-              <p className="text-xs mt-0.5" style={{ color: "var(--text-dim)" }}>
-                {editing
-                  ? "Changes regenerate a new DOCX version"
-                  : "Template DOCX will be generated with client details"}
-              </p>
-            </div>
+
+            {!editing && (
+              <div
+                className="flex gap-1 p-1 rounded-xl w-fit"
+                style={{
+                  background: "rgba(255,255,255,0.03)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                }}
+              >
+                {(
+                  [
+                    { id: "generate" as const, label: "Generate" },
+                    { id: "upload" as const, label: "Upload" },
+                  ] as const
+                ).map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    className="text-xs font-semibold px-3.5 py-1.5 rounded-lg transition-all"
+                    style={{
+                      background:
+                        mode === m.id ? "rgba(99,102,241,0.18)" : "transparent",
+                      color:
+                        mode === m.id ? "#a5b4fc" : "rgba(255,255,255,0.45)",
+                      border:
+                        mode === m.id
+                          ? "1px solid rgba(99,102,241,0.35)"
+                          : "1px solid transparent",
+                    }}
+                    onClick={() => setMode(m.id)}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-          <AgreementForm
-            key={editing?.id ?? initialClientId ?? "new"}
-            clients={clients}
-            initialClientId={editing ? undefined : initialClientId}
-            editing={editing}
-            onCancelEdit={() => setEditing(null)}
-          />
+
+          {editing || mode === "generate" ? (
+            <AgreementForm
+              key={editing?.id ?? `gen-${initialClientId ?? "new"}`}
+              clients={clients}
+              initialClientId={editing ? undefined : initialClientId}
+              editing={editing}
+              onCancelEdit={() => setEditing(null)}
+            />
+          ) : (
+            <AgreementUploadCreate
+              key={`upload-${initialClientId ?? "new"}`}
+              clients={clients}
+              initialClientId={initialClientId}
+            />
+          )}
         </div>
       </section>
 
@@ -252,6 +308,7 @@ export function AgreementsWorkspace({
         totalTokenFees={totalTokenFees}
         onEdit={(seed) => {
           setEditing(seed);
+          setMode("generate");
           window.scrollTo({ top: 0, behavior: "smooth" });
         }}
       />

@@ -258,6 +258,102 @@ export async function uploadAgreementFile(formData: FormData) {
   return { id: agreementId, filePath, version: nextVersion };
 }
 
+export async function createAgreementFromUpload(formData: FormData) {
+  await requireCeo();
+  const clientId = String(formData.get("clientId") || "").trim() || null;
+  const clientName = String(formData.get("clientName") || "").trim();
+  const spvName = String(formData.get("spvName") || "").trim() || null;
+  const effectiveDateRaw = String(formData.get("effectiveDate") || "").trim();
+  const statusRaw = String(formData.get("status") || "FINAL");
+  const status = statusRaw === "DRAFT" ? "DRAFT" : "FINAL";
+  const file = formData.get("file") as File | null;
+
+  if (!clientName) throw new Error("Client name is required");
+  if (!file || file.size === 0) throw new Error("Agreement file is required");
+
+  const ext = (file.name.split(".").pop() || "docx").toLowerCase();
+  const allowed = new Set(["pdf", "docx", "doc"]);
+  if (!allowed.has(ext)) {
+    throw new Error("Upload a PDF or Word file (.pdf, .docx, .doc)");
+  }
+
+  let clientAddress: string | null = null;
+  let clientGstin: string | null = null;
+  let clientPan: string | null = null;
+  if (clientId) {
+    const client = await prisma.client.findUnique({ where: { id: clientId } });
+    if (client) {
+      clientAddress = [client.addressLine1, client.city, client.state]
+        .filter(Boolean)
+        .join(", ") || null;
+      clientGstin = client.gstin;
+      clientPan = client.pan;
+    }
+  }
+
+  const effectiveDate = effectiveDateRaw
+    ? new Date(effectiveDateRaw)
+    : new Date();
+
+  const agreement = await prisma.agreement.create({
+    data: {
+      clientId,
+      clientName,
+      clientAddress,
+      clientGstin,
+      clientPan,
+      spvName,
+      effectiveDate,
+      status,
+      plantCount: 1,
+      tokenFeePerPlant: 0,
+      successFeePct: 0,
+      gstPct: 18,
+      inputsJson: {
+        uploaded: true,
+        originalName: file.name,
+        uploadedAt: new Date().toISOString(),
+        clientId,
+        clientName,
+        spvName,
+        effectiveDate: effectiveDate.toISOString(),
+        status,
+      },
+    },
+  });
+
+  const buf = Buffer.from(await file.arrayBuffer());
+  const slug = clientName
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_|_$/g, "")
+    .slice(0, 40);
+  const filename = `Agreement_${slug}_${agreement.id.slice(-6)}_upload.${ext}`;
+  const filePath = await writeStorageFile("agreements", filename, buf);
+
+  await prisma.agreement.update({
+    where: { id: agreement.id },
+    data: { filePath },
+  });
+
+  await prisma.agreementVersion.create({
+    data: {
+      agreementId: agreement.id,
+      version: 1,
+      filePath,
+      inputsJson: {
+        uploaded: true,
+        originalName: file.name,
+        uploadedAt: new Date().toISOString(),
+      },
+    },
+  });
+
+  revalidatePath("/ceo/agreements");
+  revalidatePath("/ceo");
+  revalidatePath("/ceo/clients");
+  return { id: agreement.id, filePath, clientName };
+}
+
 export async function finalizeAgreement(id: string) {
   await requireCeo();
   await prisma.agreement.update({
