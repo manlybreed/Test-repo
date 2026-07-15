@@ -1,0 +1,23 @@
+# Documents is a broad git root used for PM KUSUM / ceo-app.
+# Ignore sibling Programming projects (many have their own .git) so
+# `git add -A` — used by Cursor workspace moves — does not fail.
+
+/Programming/*
+!/Programming/PM KUSUM/
+!/Programming/PM KUSUM/**
+
+# Local / generated under PM KUSUM
+/Programming/PM KUSUM/.DS_Store
+/Programming/PM KUSUM/ceo-app/public/uploads/
+/Programming/PM KUSUM/ceo-app/storage/
+/Programming/PM KUSUM/Past invoices/
+/Programming/PM KUSUM/*.docx
+
+# Desktop / home noise at Documents root
+.DS_Store
+**/.DS_Store
+.localized
+Mitali.cer
+/Recordings/
+/public_html/
+/public_html.zip
