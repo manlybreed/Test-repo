@@ -99,6 +99,7 @@ model Agreement {
   plantCount      Int                 @default(1)
   tokenFeePerPlant Float              @default(40000)
   successFeePct   Float               @default(1)
+  successFeeFlat  Float?              // INR flat success fee when not %-based
   gstPct          Float               @default(18)
   designatedLender String?
   interestRange   String?

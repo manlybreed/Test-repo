@@ -238,9 +238,11 @@ export async function uploadAgreementFile(formData: FormData) {
     inferred = {
       tokenFeePerPlant: null,
       successFeePct: null,
+      successFeeFlat: null,
       plantCount: null,
       tokenFeeCandidates: [] as number[],
-      successFeeCandidates: [] as number[],
+      successFeePctCandidates: [] as number[],
+      successFeeFlatCandidates: [] as number[],
       notes:
         "Fee inference failed — fees left unchanged. Re-upload or edit manually.",
       rawExtract: null,
@@ -267,7 +269,11 @@ export async function uploadAgreementFile(formData: FormData) {
       isImported: true,
       tokenFeePerPlant:
         inferred.tokenFeePerPlant ?? existing.tokenFeePerPlant,
-      successFeePct: inferred.successFeePct ?? existing.successFeePct,
+      successFeePct:
+        inferred.successFeePct ??
+        (inferred.successFeeFlat != null ? 0 : existing.successFeePct),
+      successFeeFlat:
+        inferred.successFeeFlat ?? existing.successFeeFlat,
       plantCount: inferred.plantCount ?? existing.plantCount,
       notes: inferred.notes ?? existing.notes,
       inputsJson: {
@@ -278,7 +284,8 @@ export async function uploadAgreementFile(formData: FormData) {
         uploadedAt: new Date().toISOString(),
         feeInference: {
           tokenFeeCandidates: inferred.tokenFeeCandidates,
-          successFeeCandidates: inferred.successFeeCandidates,
+          successFeePctCandidates: inferred.successFeePctCandidates,
+          successFeeFlatCandidates: inferred.successFeeFlatCandidates,
           rawExtract: inferred.rawExtract,
         },
       },
@@ -298,10 +305,12 @@ export async function uploadAgreementFile(formData: FormData) {
         feeInference: {
           tokenFeePerPlant: inferred.tokenFeePerPlant,
           successFeePct: inferred.successFeePct,
+          successFeeFlat: inferred.successFeeFlat,
           plantCount: inferred.plantCount,
           notes: inferred.notes,
           tokenFeeCandidates: inferred.tokenFeeCandidates,
-          successFeeCandidates: inferred.successFeeCandidates,
+          successFeePctCandidates: inferred.successFeePctCandidates,
+          successFeeFlatCandidates: inferred.successFeeFlatCandidates,
         },
         previousInputs: existing.inputsJson ?? null,
       },
@@ -364,9 +373,11 @@ export async function createAgreementFromUpload(formData: FormData) {
     inferred = {
       tokenFeePerPlant: null,
       successFeePct: null,
+      successFeeFlat: null,
       plantCount: null,
       tokenFeeCandidates: [] as number[],
-      successFeeCandidates: [] as number[],
+      successFeePctCandidates: [] as number[],
+      successFeeFlatCandidates: [] as number[],
       notes: "Fee inference failed — set fees manually via Edit.",
       rawExtract: null,
     };
@@ -376,6 +387,7 @@ export async function createAgreementFromUpload(formData: FormData) {
     ? inferred.plantCount
     : 1;
   const tokenFeePerPlant = inferred.tokenFeePerPlant ?? 0;
+  const successFeeFlat = inferred.successFeeFlat ?? null;
   const successFeePct = inferred.successFeePct ?? 0;
 
   const agreement = await prisma.agreement.create({
@@ -393,6 +405,7 @@ export async function createAgreementFromUpload(formData: FormData) {
       plantCount,
       tokenFeePerPlant,
       successFeePct,
+      successFeeFlat,
       gstPct: 18,
       inputsJson: {
         uploaded: true,
@@ -406,10 +419,12 @@ export async function createAgreementFromUpload(formData: FormData) {
         status,
         tokenFeePerPlant,
         successFeePct,
+        successFeeFlat,
         plantCount,
         feeInference: {
           tokenFeeCandidates: inferred.tokenFeeCandidates,
-          successFeeCandidates: inferred.successFeeCandidates,
+          successFeePctCandidates: inferred.successFeePctCandidates,
+          successFeeFlatCandidates: inferred.successFeeFlatCandidates,
           rawExtract: inferred.rawExtract,
         },
       },
@@ -441,10 +456,12 @@ export async function createAgreementFromUpload(formData: FormData) {
         feeInference: {
           tokenFeePerPlant,
           successFeePct,
+          successFeeFlat,
           plantCount,
           notes: inferred.notes,
           tokenFeeCandidates: inferred.tokenFeeCandidates,
-          successFeeCandidates: inferred.successFeeCandidates,
+          successFeePctCandidates: inferred.successFeePctCandidates,
+          successFeeFlatCandidates: inferred.successFeeFlatCandidates,
         },
       },
     },
@@ -459,6 +476,7 @@ export async function createAgreementFromUpload(formData: FormData) {
     clientName,
     tokenFeePerPlant,
     successFeePct,
+    successFeeFlat,
     notes: inferred.notes,
   };
 }

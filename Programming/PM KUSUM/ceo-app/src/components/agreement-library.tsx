@@ -20,6 +20,7 @@ export type AgreementListItem = {
   tokenFeePerPlant: number;
   plantCount: number;
   successFeePct: number;
+  successFeeFlat?: number | null;
   effectiveDate: string | Date;
   status: string;
   filePath: string | null;
@@ -211,7 +212,7 @@ export function AgreementLibrary({
               <th>Client</th>
               <th>SPV</th>
               <th>Token Fee</th>
-              <th>Success %</th>
+              <th>Success Fee</th>
               <th>Date</th>
               <th>Status</th>
               <th></th>
@@ -258,7 +259,25 @@ export function AgreementLibrary({
                     {formatINR(a.tokenFeePerPlant * a.plantCount)}
                   </td>
                   <td className="tabular-nums text-sm">
-                    <span style={{ color: "#818cf8" }}>{a.successFeePct}%</span>
+                    {a.successFeeFlat && a.successFeeFlat > 0 && !(a.successFeePct > 0) ? (
+                      <span style={{ color: "#818cf8" }}>
+                        {formatINR(a.successFeeFlat)}
+                        <span
+                          className="text-[0.65rem] ml-1"
+                          style={{ color: "var(--text-dim)" }}
+                        >
+                          flat
+                        </span>
+                      </span>
+                    ) : a.successFeePct > 0 ? (
+                      <span style={{ color: "#818cf8" }}>{a.successFeePct}%</span>
+                    ) : a.successFeeFlat && a.successFeeFlat > 0 ? (
+                      <span style={{ color: "#818cf8" }}>
+                        {a.successFeePct}% · {formatINR(a.successFeeFlat)}
+                      </span>
+                    ) : (
+                      <span style={{ color: "var(--text-dim)" }}>—</span>
+                    )}
                   </td>
                   <td style={{ color: "var(--text-muted)", fontSize: "0.82rem" }}>
                     {date.toLocaleDateString("en-IN")}

@@ -43,6 +43,7 @@ export default async function AgreementsPage({
       tokenFeePerPlant: a.tokenFeePerPlant,
       plantCount: a.plantCount,
       successFeePct: a.successFeePct,
+      successFeeFlat: a.successFeeFlat,
       effectiveDate: a.effectiveDate.toISOString(),
       status: a.status,
       filePath: a.filePath,
