@@ -2,21 +2,31 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { deleteInvoice } from "@/actions/invoices";
+import {
+  convertProformaToTaxInvoice,
+  deleteInvoice,
+} from "@/actions/invoices";
 import { ConfirmDeleteDialog } from "@/components/confirm-dialogs";
+import { InvoiceRefundWizard } from "@/components/invoice-refund-wizard";
 
 export function InvoiceDeleteButton({
   invoiceId,
   invoiceNumber,
   buyerName,
+  status,
 }: {
   invoiceId: string;
   invoiceNumber: string;
   buyerName: string;
+  status?: string | null;
 }) {
   const router = useRouter();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pending, start] = useTransition();
+
+  if (status && status !== "DRAFT") {
+    return null;
+  }
 
   function onDelete() {
     start(async () => {
@@ -42,22 +52,81 @@ export function InvoiceDeleteButton({
           color: "#f87171",
           cursor: "pointer",
         }}
-        title="Delete invoice"
+        title="Delete draft only"
       >
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-          <path d="M3 6h18M19 6l-1 14H6L5 6M10 11v6M14 11v6M8 6V4h8v2"/>
-        </svg>
         Del
       </button>
       <ConfirmDeleteDialog
         open={confirmOpen}
-        title="Delete invoice"
+        title="Delete draft"
         itemLabel={`${invoiceNumber} · ${buyerName}`}
-        description="Invoice lines and payment status will be removed."
+        description="Only DRAFT documents can be deleted. Issued tax invoices must be adjusted via Credit Note."
         pending={pending}
         onCancel={() => setConfirmOpen(false)}
         onConfirm={onDelete}
       />
     </>
+  );
+}
+
+export function InvoiceConvertProformaButton({
+  invoiceId,
+  documentType,
+}: {
+  invoiceId: string;
+  documentType?: string | null;
+}) {
+  const router = useRouter();
+  const [pending, start] = useTransition();
+  if (documentType !== "PROFORMA") return null;
+
+  return (
+    <button
+      type="button"
+      className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium"
+      style={{
+        background: "rgba(129,140,248,0.12)",
+        border: "1px solid rgba(129,140,248,0.3)",
+        color: "#818cf8",
+        cursor: "pointer",
+      }}
+      disabled={pending}
+      onClick={() => {
+        start(async () => {
+          try {
+            const res = await convertProformaToTaxInvoice(invoiceId);
+            alert(`Tax invoice ${res.number} created from proforma.`);
+            router.refresh();
+          } catch (e) {
+            alert(e instanceof Error ? e.message : "Convert failed");
+          }
+        });
+      }}
+    >
+      → Tax inv
+    </button>
+  );
+}
+
+export function InvoiceRefundButton({
+  invoiceId,
+  invoiceNumber,
+  grandTotal,
+  documentType,
+  status,
+}: {
+  invoiceId: string;
+  invoiceNumber: string;
+  grandTotal: number;
+  documentType?: string | null;
+  status?: string | null;
+}) {
+  if (documentType !== "TAX_INVOICE" || status !== "ISSUED") return null;
+  return (
+    <InvoiceRefundWizard
+      invoiceId={invoiceId}
+      invoiceNumber={invoiceNumber}
+      grandTotal={grandTotal}
+    />
   );
 }

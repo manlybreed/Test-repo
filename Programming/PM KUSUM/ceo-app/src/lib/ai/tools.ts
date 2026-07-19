@@ -1,6 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createAgreement, listAgreements } from "@/actions/agreements";
-import { createInvoice, listInvoices } from "@/actions/invoices";
+import {
+  createInvoice,
+  issueRefundViaCreditNote,
+  listInvoices,
+  validateDraftAction,
+} from "@/actions/invoices";
 import {
   generateSalarySlip,
   listEmployees,
@@ -20,7 +25,7 @@ export const SYSTEM_PROMPT = `You are the BluRidge CEO Command Center assistant 
 
 You help the CEO with:
 - PM KUSUM Finance Advisory & Mandate agreements (DOCX) — use list_agreements to check existing ones
-- GST tax invoices (PDF) — ALWAYS call list_invoices to find the latest invoice number before stating it
+- GST documents (tax invoice / proforma / credit notes) — ALWAYS call list_invoices before stating numbers; never invent tax %; refunds require credit notes (use refund_via_credit_note); validate with validate_invoice_draft before create when unsure
 - Salary slips (PDF) for employees — use list_employees first
 - Tasks and Pomodoro / time tracking
 - Expense records — use list_expenses or get_expense_summary to answer expense questions
@@ -60,7 +65,8 @@ export const ceoTools: Anthropic.Tool[] = [
   },
   {
     name: "create_invoice",
-    description: "Create a GST tax invoice PDF for a buyer with line items.",
+    description:
+      "Issue a GST document (TAX_INVOICE or PROFORMA). Numbers/tax come from the engine. Requires buyerStateCode (place of supply).",
     input_schema: {
       type: "object",
       properties: {
@@ -68,9 +74,11 @@ export const ceoTools: Anthropic.Tool[] = [
         buyerAddress: { type: "string" },
         buyerGstin: { type: "string" },
         buyerState: { type: "string" },
-        buyerStateCode: { type: "string" },
+        buyerStateCode: { type: "string", description: "2-digit POS state code" },
         remarks: { type: "string" },
         invoiceDate: { type: "string" },
+        gstEntity: { type: "string", enum: ["DEL", "RAJ"] },
+        documentType: { type: "string", enum: ["TAX_INVOICE", "PROFORMA"] },
         lines: {
           type: "array",
           items: {
@@ -85,7 +93,51 @@ export const ceoTools: Anthropic.Tool[] = [
           },
         },
       },
+      required: ["buyerName", "buyerStateCode", "lines"],
+    },
+  },
+  {
+    name: "validate_invoice_draft",
+    description: "Validate a draft invoice for Rule 46 / GSTIN issues before issuing.",
+    input_schema: {
+      type: "object",
+      properties: {
+        buyerName: { type: "string" },
+        buyerGstin: { type: "string" },
+        buyerStateCode: { type: "string" },
+        gstEntity: { type: "string" },
+        documentType: { type: "string" },
+        lines: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              description: { type: "string" },
+              rate: { type: "number" },
+              quantity: { type: "number" },
+              hsn: { type: "string" },
+            },
+            required: ["description", "rate"],
+          },
+        },
+      },
       required: ["buyerName", "lines"],
+    },
+  },
+  {
+    name: "refund_via_credit_note",
+    description:
+      "GST-compliant refund: issue a Credit Note against an issued tax invoice (by id). Never deletes the original.",
+    input_schema: {
+      type: "object",
+      properties: {
+        invoiceId: { type: "string" },
+        reason: { type: "string" },
+        partialAmount: { type: "number" },
+        refundMode: { type: "string" },
+        refundReference: { type: "string" },
+      },
+      required: ["invoiceId"],
     },
   },
   {
@@ -263,19 +315,48 @@ export async function runCeoTool(name: string, input: any): Promise<string> {
         });
       }
       case "create_invoice": {
-        const res = await createInvoice(input);
+        const res = await createInvoice({
+          ...input,
+          placeOfSupplyStateCode: input.buyerStateCode,
+          placeOfSupplyState: input.buyerState,
+          documentType: input.documentType === "PROFORMA" ? "PROFORMA" : "TAX_INVOICE",
+        });
         return JSON.stringify({
           ok: true,
           number: res.number,
+          documentType: res.documentType,
           grandTotal: res.grandTotal,
-          download: `/api/files/${res.filePath}`,
+          download: res.filePath ? `/api/files/${res.filePath}` : null,
+          warnings: res.validationWarnings,
+        });
+      }
+      case "validate_invoice_draft": {
+        const res = await validateDraftAction({
+          ...input,
+          documentType:
+            input.documentType === "PROFORMA" ? "PROFORMA" : "TAX_INVOICE",
+          placeOfSupplyStateCode: input.buyerStateCode,
+          useAi: false,
+        });
+        return JSON.stringify(res);
+      }
+      case "refund_via_credit_note": {
+        const res = await issueRefundViaCreditNote(input);
+        return JSON.stringify({
+          ok: true,
+          creditNote: res.number,
+          grandTotal: res.grandTotal,
+          download: res.filePath ? `/api/files/${res.filePath}` : null,
         });
       }
       case "list_invoices": {
         const rows = await listInvoices(input.query);
         return JSON.stringify(
           rows.slice(0, 20).map((r) => ({
+            id: r.id,
             number: r.number,
+            documentType: r.documentType,
+            status: r.status,
             buyer: r.buyerName,
             total: r.grandTotal,
             date: r.invoiceDate,

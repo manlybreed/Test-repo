@@ -3,7 +3,12 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { InvoiceStatusCell } from "@/components/invoice-status-cell";
-import { InvoiceDeleteButton } from "@/components/invoice-row-actions";
+import {
+  InvoiceConvertProformaButton,
+  InvoiceDeleteButton,
+  InvoiceRefundButton,
+} from "@/components/invoice-row-actions";
+import { InvoiceEmailButton } from "@/components/invoice-email-button";
 import { GstEntityBadge } from "@/components/gst-entity-select";
 import { GstClassifyButton } from "@/components/gst-classify-button";
 import { formatINR } from "@/lib/utils";
@@ -25,6 +30,10 @@ export type InvoiceDbRow = {
   isImported: boolean;
   filePath: string | null;
   sourceFilePath: string | null;
+  documentType?: string | null;
+  status?: string | null;
+  originalNumber?: string | null;
+  clientEmail?: string | null;
 };
 
 type GstFilter = "ALL" | "DEL" | "RAJ";
@@ -349,7 +358,35 @@ export function InvoiceDatabase({ invoices }: { invoices: InvoiceDbRow[] }) {
                           IMPORTED
                         </span>
                       )}
+                      {inv.documentType && inv.documentType !== "TAX_INVOICE" && (
+                        <span
+                          className="text-[0.55rem] px-1.5 py-0.5 rounded font-semibold"
+                          style={{
+                            background: "rgba(52,211,153,0.1)",
+                            color: "#34d399",
+                            border: "1px solid rgba(52,211,153,0.25)",
+                          }}
+                        >
+                          {inv.documentType.replace("_", " ")}
+                        </span>
+                      )}
+                      {inv.status === "DRAFT" && (
+                        <span
+                          className="text-[0.55rem] px-1.5 py-0.5 rounded font-semibold"
+                          style={{
+                            background: "rgba(255,255,255,0.08)",
+                            color: "rgba(255,255,255,0.7)",
+                          }}
+                        >
+                          DRAFT
+                        </span>
+                      )}
                     </div>
+                    {inv.originalNumber && (
+                      <p className="text-[0.65rem] mt-0.5" style={{ color: "rgba(255,255,255,0.4)" }}>
+                        vs {inv.originalNumber}
+                      </p>
+                    )}
                   </td>
                   <td>
                     <p className="font-medium text-sm">{inv.buyerName}</p>
@@ -451,10 +488,30 @@ export function InvoiceDatabase({ invoices }: { invoices: InvoiceDbRow[] }) {
                           </Link>
                         </>
                       )}
+                      <InvoiceEmailButton
+                        invoiceId={inv.id}
+                        invoiceNumber={inv.number}
+                        buyerName={inv.buyerName}
+                        defaultTo={inv.clientEmail ?? ""}
+                        status={inv.status}
+                        hasPdf={Boolean(inv.filePath)}
+                      />
+                      <InvoiceConvertProformaButton
+                        invoiceId={inv.id}
+                        documentType={inv.documentType}
+                      />
+                      <InvoiceRefundButton
+                        invoiceId={inv.id}
+                        invoiceNumber={inv.number}
+                        grandTotal={inv.grandTotal}
+                        documentType={inv.documentType}
+                        status={inv.status}
+                      />
                       <InvoiceDeleteButton
                         invoiceId={inv.id}
                         invoiceNumber={inv.number}
                         buyerName={inv.buyerName}
+                        status={inv.status}
                       />
                     </div>
                   </td>

@@ -1,5 +1,7 @@
 export type GstEntity = "DEL" | "RAJ";
 
+export { isValidGstin, isGstinFormat, gstinStateCode } from "@/lib/invoice/gstin";
+
 export type SellerGstProfile = {
   code: GstEntity;
   label: string;

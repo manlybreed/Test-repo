@@ -6,12 +6,25 @@ import {
   View,
   StyleSheet,
   pdf,
+  Image,
 } from "@react-pdf/renderer";
+import path from "path";
 import { amountInWordsINR, formatINRPlain } from "@/lib/utils";
+import {
+  DOCUMENT_TITLE,
+  type InvoiceDocumentType,
+} from "@/lib/invoice/types";
 
 export type InvoicePdfInput = {
   number: string;
   date: Date;
+  documentType?: InvoiceDocumentType;
+  reverseCharge?: boolean;
+  placeOfSupplyState?: string | null;
+  placeOfSupplyStateCode?: string | null;
+  roundOff?: number;
+  originalNumber?: string | null;
+  logoPath?: string;
   seller: {
     legalName: string;
     addressLine1: string;
@@ -50,11 +63,22 @@ const s = StyleSheet.create({
     fontFamily: "Helvetica",
     color: "#111",
   },
+  brandRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+  },
   title: {
-    textAlign: "center",
-    fontSize: 14,
+    fontSize: 12,
     fontFamily: "Helvetica-Bold",
-    marginBottom: 12,
+    color: "#0a1628",
+  },
+  subtitle: {
+    textAlign: "center",
+    fontSize: 8,
+    color: "#555",
+    marginBottom: 10,
   },
   row: { flexDirection: "row" },
   box: {
@@ -86,16 +110,42 @@ const s = StyleSheet.create({
 });
 
 function InvoiceDoc({ data }: { data: InvoicePdfInput }) {
+  const docType = data.documentType ?? "TAX_INVOICE";
+  const title = DOCUMENT_TITLE[docType] ?? "Tax Invoice";
   const dateStr = data.date.toLocaleDateString("en-GB", {
     day: "numeric",
     month: "short",
     year: "2-digit",
   });
+  const posLabel =
+    data.placeOfSupplyState ||
+    data.buyer.state ||
+    "";
+  const posCode =
+    data.placeOfSupplyStateCode || data.buyer.stateCode || "";
 
   return (
     <Document>
       <Page size="A4" style={s.page}>
-        <Text style={s.title}>Tax Invoice</Text>
+        <View style={s.brandRow}>
+          {data.logoPath ? (
+            // eslint-disable-next-line jsx-a11y/alt-text -- react-pdf Image
+            <Image src={data.logoPath} style={{ width: 120, height: 37 }} />
+          ) : (
+            <View />
+          )}
+          <Text style={s.title}>{title}</Text>
+        </View>
+        {docType === "PROFORMA" ? (
+          <Text style={s.subtitle}>
+            This is not a tax invoice. For quotation / advance billing only.
+          </Text>
+        ) : null}
+        {data.originalNumber ? (
+          <Text style={s.subtitle}>
+            Against original document: {data.originalNumber}
+          </Text>
+        ) : null}
 
         <View style={[s.row, { marginBottom: 0 }]}>
           <View style={[s.box, s.half, { borderRightWidth: 0 }]}>
@@ -113,10 +163,17 @@ function InvoiceDoc({ data }: { data: InvoicePdfInput }) {
             </Text>
           </View>
           <View style={[s.box, s.half]}>
-            <Text style={s.muted}>Invoice No.</Text>
+            <Text style={s.muted}>Document No.</Text>
             <Text style={s.label}>{data.number}</Text>
             <Text style={[s.muted, { marginTop: 6 }]}>Dated</Text>
             <Text style={s.label}>{dateStr}</Text>
+            <Text style={[s.muted, { marginTop: 6 }]}>Place of Supply</Text>
+            <Text style={s.label}>
+              {posLabel}
+              {posCode ? ` (${posCode})` : ""}
+            </Text>
+            <Text style={[s.muted, { marginTop: 6 }]}>Reverse Charge</Text>
+            <Text style={s.label}>{data.reverseCharge ? "Yes" : "No"}</Text>
           </View>
         </View>
 
@@ -129,7 +186,9 @@ function InvoiceDoc({ data }: { data: InvoicePdfInput }) {
             ) : null}
             {data.buyer.gstin ? (
               <Text style={s.muted}>GSTIN/UIN: {data.buyer.gstin}</Text>
-            ) : null}
+            ) : (
+              <Text style={s.muted}>GSTIN/UIN: Unregistered</Text>
+            )}
             {data.buyer.state ? (
               <Text style={s.muted}>
                 State Name: {data.buyer.state}
@@ -194,6 +253,14 @@ function InvoiceDoc({ data }: { data: InvoicePdfInput }) {
             </View>
           </>
         )}
+        {data.roundOff != null && Math.abs(data.roundOff) >= 0.005 ? (
+          <View style={s.tableRow}>
+            <Text style={[s.cell, { width: "84%" }]}>Round Off</Text>
+            <Text style={[s.cellLast, s.right, { width: "16%" }]}>
+              {formatINRPlain(data.roundOff)}
+            </Text>
+          </View>
+        ) : null}
         <View style={[s.tableRow, { fontFamily: "Helvetica-Bold" }]}>
           <Text style={[s.cell, { width: "84%" }]}>Grand Total</Text>
           <Text style={[s.cellLast, s.right, { width: "16%" }]}>
@@ -227,7 +294,9 @@ function InvoiceDoc({ data }: { data: InvoicePdfInput }) {
         </View>
 
         <Text style={s.footer}>
-          This is a Computer Generated Invoice
+          {docType === "PROFORMA"
+            ? "Computer Generated Proforma — Not a Tax Invoice"
+            : "This is a Computer Generated Invoice"}
         </Text>
       </Page>
     </Document>
@@ -235,7 +304,10 @@ function InvoiceDoc({ data }: { data: InvoicePdfInput }) {
 }
 
 export async function renderInvoicePdf(data: InvoicePdfInput): Promise<Buffer> {
-  const instance = pdf(<InvoiceDoc data={data} />);
+  const logoPath =
+    data.logoPath ||
+    path.join(process.cwd(), "public", "brand", "logo.png");
+  const instance = pdf(<InvoiceDoc data={{ ...data, logoPath }} />);
   const blob = await instance.toBlob();
   const ab = await blob.arrayBuffer();
   return Buffer.from(ab);

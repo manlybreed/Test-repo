@@ -114,7 +114,34 @@ export async function POST(req: NextRequest) {
     const json = raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
     const extracted = JSON.parse(json);
 
-    return NextResponse.json({ ok: true, data: extracted });
+    const { validateInvoiceDraft } = await import("@/lib/invoice/validate");
+    const complianceGaps = validateInvoiceDraft({
+      documentType: "TAX_INVOICE",
+      buyerName: extracted.buyerName,
+      buyerGstin: extracted.buyerGstin,
+      buyerStateCode: extracted.buyerStateCode,
+      placeOfSupplyStateCode: extracted.buyerStateCode,
+      gstEntity: extracted.gstEntity,
+      lines: Array.isArray(extracted.lines)
+        ? extracted.lines.map(
+            (l: { description?: string; hsn?: string; quantity?: number; rate?: number }) => ({
+              description: l.description || "Imported line",
+              hsn: l.hsn || undefined,
+              quantity: l.quantity ?? 1,
+              rate: Number(l.rate ?? 0),
+            }),
+          )
+        : [],
+      remarks: extracted.remarks,
+    });
+
+    return NextResponse.json({
+      ok: true,
+      data: extracted,
+      complianceGaps,
+      note: "On save, amounts are recomputed by the BluRidge GST engine and a compliant PDF is issued.",
+    });
+
   } catch (err) {
     console.error("[/api/invoices/extract]", err);
     const { status, error } = uploadErrorResponse(err);

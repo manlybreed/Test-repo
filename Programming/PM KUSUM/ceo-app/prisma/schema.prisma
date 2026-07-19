@@ -44,25 +44,28 @@ model User {
 }
 
 model CompanyProfile {
-  id           String   @id @default(cuid())
-  legalName    String
-  tradeName    String?
-  addressLine1 String
-  addressLine2 String?
-  city         String
-  state        String
-  stateCode    String
-  pincode      String?
-  gstin        String
-  pan          String?
-  email        String?
-  phone        String?
-  bankName     String?
-  bankAccount  String?
-  bankIfsc     String?
-  hsnDefault   String   @default("998313")
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id              String   @id @default(cuid())
+  legalName       String
+  tradeName       String?
+  addressLine1    String
+  addressLine2    String?
+  city            String
+  state           String
+  stateCode       String
+  pincode         String?
+  gstin           String
+  pan             String?
+  email           String?
+  phone           String?
+  bankName        String?
+  bankAccount     String?
+  bankIfsc        String?
+  hsnDefault      String   @default("998313")
+  /// UNDER_5CR | OVER_5CR — drives e-invoice readiness messaging
+  aatoBand        String   @default("UNDER_5CR")
+  eInvoiceEnabled Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 model Client {
@@ -118,6 +121,7 @@ model Agreement {
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
   versions        AgreementVersion[]
+  invoices        Invoice[]
 }
 
 model AgreementVersion {
@@ -131,37 +135,72 @@ model AgreementVersion {
 }
 
 model Invoice {
-  id             String        @id @default(cuid())
-  number         String        @unique
-  clientId       String?
-  client         Client?       @relation(fields: [clientId], references: [id])
-  buyerName      String
-  buyerAddress   String?
-  buyerGstin     String?
-  buyerState     String?
-  buyerStateCode String?
-  invoiceDate    DateTime      @default(now())
-  dueDate        DateTime?
-  remarks        String?
-  serviceDesc    String?
-  taxableTotal   Float
-  cgstAmount     Float
-  sgstAmount     Float
-  igstAmount     Float         @default(0)
-  grandTotal     Float
-  amountInWords  String?
-  paymentStatus  String?       // PAID | UNPAID | PARTIAL | OVERDUE
-  tdsDeducted    Boolean       @default(false)
-  tdsPercent     Float?        // 5 | 10 | 20
-  tdsAmount      Float?        // legacy — unused in UI
-  gstEntity      String?       // DEL | RAJ — BluRidge GST under which invoice was raised
-  isImported     Boolean       @default(false)
-  sourceFilePath String?
-  rawExtract     String?
-  filePath       String?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  lines          InvoiceLine[]
+  id                       String        @id @default(cuid())
+  number                   String        @unique
+  /// PROFORMA | TAX_INVOICE | CREDIT_NOTE | DEBIT_NOTE | RECEIPT_VOUCHER | REFUND_VOUCHER
+  documentType             String        @default("TAX_INVOICE")
+  /// DRAFT | ISSUED | CANCELLED
+  status                   String        @default("ISSUED")
+  financialYear            String?
+  seriesCode               String?
+  sequenceNo               Int?
+  clientId                 String?
+  client                   Client?       @relation(fields: [clientId], references: [id])
+  agreementId              String?
+  agreement                Agreement?    @relation(fields: [agreementId], references: [id])
+  buyerName                String
+  buyerAddress             String?
+  buyerGstin               String?
+  buyerState               String?
+  buyerStateCode           String?
+  placeOfSupplyState       String?
+  placeOfSupplyStateCode   String?
+  reverseCharge            Boolean       @default(false)
+  roundOff                 Float         @default(0)
+  invoiceDate              DateTime      @default(now())
+  dueDate                  DateTime?
+  remarks                  String?
+  serviceDesc              String?
+  taxableTotal             Float
+  cgstAmount               Float
+  sgstAmount               Float
+  igstAmount               Float         @default(0)
+  grandTotal               Float
+  amountInWords            String?
+  paymentStatus            String?       // PAID | UNPAID | PARTIAL | OVERDUE
+  tdsDeducted              Boolean       @default(false)
+  tdsPercent               Float?        // 5 | 10 | 20
+  tdsAmount                Float?        // legacy — unused in UI
+  gstEntity                String?       // DEL | RAJ
+  isImported               Boolean       @default(false)
+  sourceFilePath           String?
+  rawExtract               String?
+  filePath                 String?
+  convertedFromId          String?
+  convertedFrom            Invoice?      @relation("InvoiceConversion", fields: [convertedFromId], references: [id])
+  convertedTo              Invoice[]     @relation("InvoiceConversion")
+  originalInvoiceId        String?
+  originalInvoice          Invoice?      @relation("InvoiceAdjustment", fields: [originalInvoiceId], references: [id])
+  adjustments              Invoice[]     @relation("InvoiceAdjustment")
+  cancelReason             String?
+  refundAmount             Float?
+  refundDate               DateTime?
+  refundMode               String?
+  refundReference          String?
+  refundReason             String?
+  irn                      String?
+  irnAckNo                 String?
+  irnAckDate               DateTime?
+  signedQr                 String?
+  /// JSON audit of AI suggestions vs issued payload
+  aiSuggestionLog          String?
+  createdAt                DateTime      @default(now())
+  updatedAt                DateTime      @updatedAt
+  lines                    InvoiceLine[]
+
+  @@index([documentType, status])
+  @@index([financialYear, seriesCode])
+  @@index([originalInvoiceId])
 }
 
 model InvoiceLine {
@@ -173,6 +212,9 @@ model InvoiceLine {
   quantity    Float   @default(1)
   rate        Float
   amount      Float
+  taxRate     Float   @default(18)
+  discount    Float   @default(0)
+  uqc         String?
   sortOrder   Int     @default(0)
 }
 
@@ -294,9 +336,10 @@ model ChatMessage {
   createdAt DateTime   @default(now())
 }
 
+/// Per series + financial year counter. id = "{seriesCode}:{financialYear}" e.g. INV:2025-26
 model InvoiceSequence {
-  id      String @id @default("default")
-  lastNum Int    @default(8)
+  id      String @id
+  lastNum Int    @default(0)
 }
 
 model Expense {
