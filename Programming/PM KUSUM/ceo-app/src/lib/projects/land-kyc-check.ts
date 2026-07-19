@@ -2,6 +2,7 @@ import path from "path";
 import Anthropic from "@anthropic-ai/sdk";
 import type { FolderScan, ScannedDoc } from "./scan-folder";
 import { docsToAiContent, formatAnthropicError } from "./doc-content";
+import type { AttachDocsFn } from "./doc-cache";
 
 export type ProgressFn = (pct: number, step: string) => void | Promise<void>;
 
@@ -35,6 +36,8 @@ export type LandKycCheckResult = {
   leaseTypos: string[];
   allMatch: boolean;
   documentsUsed: string[];
+  /** Catalog codes to request when key Land KYC docs are missing. */
+  askForDocuments?: string[];
 };
 
 function scoreLandDoc(doc: ScannedDoc): {
@@ -49,35 +52,73 @@ function scoreLandDoc(doc: ScannedDoc): {
   return { kind: "other", score: 10 };
 }
 
-/** Only documents under the Land KYC folder — one best file per kind. */
-export function selectLandKycDocs(scan: FolderScan): ScannedDoc[] {
-  const landDocs = scan.documents.filter((d) => d.category === "Land KYC");
-  if (landDocs.length === 0) return [];
-
-  const ranked = landDocs
+function pickBestByKind(
+  docs: ScannedDoc[],
+  kind: "ppa" | "jamabandi" | "lease",
+): ScannedDoc | null {
+  const ranked = docs
     .map((d) => ({ d, ...scoreLandDoc(d) }))
+    .filter((x) => x.kind === kind && x.score >= 40)
     .sort((a, b) => b.score - a.score || a.d.size - b.d.size);
-
-  const picked: ScannedDoc[] = [];
-  for (const kind of ["ppa", "lease", "jamabandi"] as const) {
-    const candidates = ranked.filter((x) => x.kind === kind).slice(0, 6);
-    // Prefer smaller among strong matches (faster text extract); keep highest score first
-    candidates.sort((a, b) => b.score - a.score || a.d.size - b.d.size);
-    if (candidates[0]) picked.push(candidates[0].d);
-  }
-
-  // If filenames don't match keywords, take up to 3 Land KYC files (smallest first)
-  if (picked.length === 0) {
-    return [...landDocs].sort((a, b) => a.size - b.size).slice(0, 3);
-  }
-  return picked;
+  return ranked[0]?.d ?? null;
 }
 
-const LAND_KYC_PROMPT = `You are Checkpoint 1 for a PM KUSUM plant file: LAND KYC verification only.
+/**
+ * Land verification docs: jamabandi + lease from Land KYC;
+ * PPA from Land KYC first, else Plant KYC (where LOA/PPA usually live).
+ */
+export function selectLandKycDocs(scan: FolderScan): {
+  used: ScannedDoc[];
+  askForDocuments: string[];
+} {
+  const landDocs = scan.documents.filter((d) => d.category === "Land KYC");
+  const plantDocs = scan.documents.filter((d) => d.category === "Plant KYC");
+  const askForDocuments: string[] = [];
 
-Documents are ONLY from the "Land KYC" folder. You should receive some or all of:
-1) PPA (Power Purchase Agreement) — the land / khasra schedule is almost always on the LAST page(s) or closing annexure. Focus there.
-2) Lease deed — registered lease of project land (lists khasras taken on lease + tenure).
+  if (landDocs.length === 0 && plantDocs.length === 0) {
+    return {
+      used: [],
+      askForDocuments: ["LAND_JAMABANDI", "LAND_LEASE", "PLANT_PPA"],
+    };
+  }
+
+  const picked: ScannedDoc[] = [];
+  const seen = new Set<string>();
+  const push = (doc: ScannedDoc | null) => {
+    if (!doc || seen.has(doc.absolutePath)) return;
+    seen.add(doc.absolutePath);
+    picked.push(doc);
+  };
+
+  const jamabandi = pickBestByKind(landDocs, "jamabandi");
+  const lease = pickBestByKind(landDocs, "lease");
+  // PPA land schedule: prefer Land KYC copy, else Plant KYC (standard Solarseed layout)
+  const ppa =
+    pickBestByKind(landDocs, "ppa") || pickBestByKind(plantDocs, "ppa");
+
+  push(ppa);
+  push(lease);
+  push(jamabandi);
+
+  if (!jamabandi) askForDocuments.push("LAND_JAMABANDI");
+  if (!lease) askForDocuments.push("LAND_LEASE");
+  if (!ppa) askForDocuments.push("PLANT_PPA");
+
+  // Filename fallback: up to 3 Land KYC files if nothing keyword-matched
+  if (picked.length === 0 && landDocs.length > 0) {
+    return {
+      used: [...landDocs].sort((a, b) => a.size - b.size).slice(0, 3),
+      askForDocuments: ["LAND_JAMABANDI", "LAND_LEASE", "PLANT_PPA"],
+    };
+  }
+  return { used: picked, askForDocuments };
+}
+
+const LAND_KYC_PROMPT = `You are Checkpoint 1 for a PM KUSUM plant file: LAND KYC verification.
+
+You may receive documents from Land KYC and/or Plant KYC:
+1) PPA (Power Purchase Agreement) — often stored under Plant KYC. The land / khasra schedule is almost always on the LAST page(s) or closing annexure. Focus there. If a PPA file is attached, set ppa.found=true — do NOT say "PPA not provided".
+2) Lease deed — registered lease of project land (lists khasras taken on lease + tenure). Schedules may be mid/end of a long deed — use whatever schedule pages are attached.
 3) Jamabandi / land records — ownership / khasra / area / village / tehsil / district.
 
 Task:
@@ -150,12 +191,13 @@ function emptySource(): LandSourceExtract {
 export async function runLandKycCheckpoint(
   scan: FolderScan,
   onProgress?: ProgressFn,
+  attachDocs: AttachDocsFn = docsToAiContent,
 ): Promise<{ result: LandKycCheckResult; used: ScannedDoc[] }> {
   if (!process.env.ANTHROPIC_API_KEY) {
     throw new Error("ANTHROPIC_API_KEY not configured");
   }
 
-  await onProgress?.(10, "Looking in Land KYC for PPA, lease deed & jamabandi…");
+  await onProgress?.(10, "Looking for jamabandi, lease & PPA (Land KYC + Plant KYC)…");
 
   if (!scan.foldersPresent.includes("Land KYC")) {
     return {
@@ -170,11 +212,12 @@ export async function runLandKycCheckpoint(
         leaseTypos: [],
         allMatch: false,
         documentsUsed: [],
+        askForDocuments: ["LAND_JAMABANDI", "LAND_LEASE"],
       },
     };
   }
 
-  const used = selectLandKycDocs(scan);
+  const { used, askForDocuments } = selectLandKycDocs(scan);
   if (used.length === 0) {
     return {
       used: [],
@@ -188,12 +231,13 @@ export async function runLandKycCheckpoint(
         leaseTypos: [],
         allMatch: false,
         documentsUsed: [],
+        askForDocuments,
       },
     };
   }
 
   await onProgress?.(35, "Extracting text (PPA last pages, lease, jamabandi)…");
-  const { content: docBlocks, report } = await docsToAiContent(used, {
+  const { content: docBlocks, report } = await attachDocs(used, {
     kindHint: (d) => scoreLandDoc(d).kind,
     maxCharsTotal: 80_000,
     maxBinaryBytesTotal: 8 * 1024 * 1024,
@@ -215,6 +259,7 @@ export async function runLandKycCheckpoint(
         leaseTypos: [],
         allMatch: false,
         documentsUsed: used.map((d) => d.relativePath),
+        askForDocuments,
       },
     };
   }
@@ -224,7 +269,7 @@ export async function runLandKycCheckpoint(
   const content = [
     {
       type: "text" as const,
-      text: `${LAND_KYC_PROMPT}\n\nPlant folder: ${scan.root}\nLand KYC files attached: ${report
+      text: `${LAND_KYC_PROMPT}\n\nPlant folder: ${scan.root}\nFiles attached: ${report
         .map(
           (r) =>
             `${r.doc.relativePath} [${scoreLandDoc(r.doc).kind}/${r.mode}${r.chars ? ` ${r.chars}c` : ""}]`,
@@ -257,19 +302,36 @@ export async function runLandKycCheckpoint(
     "Land KYC check",
   );
 
+  const ppaDoc = used.find((d) => scoreLandDoc(d).kind === "ppa");
+  let ppa = parsed.ppa ?? emptySource();
+  let mismatches = [...(parsed.mismatches ?? [])];
+
+  // Never claim PPA missing when we attached a Plant KYC / Land KYC PPA file
+  if (ppaDoc) {
+    ppa = {
+      ...ppa,
+      found: true,
+      file: ppa.file || ppaDoc.relativePath,
+    };
+    mismatches = mismatches.filter(
+      (m) => !/ppa\s+not\s+provided|no\s+ppa|ppa\s+missing|without\s+ppa/i.test(m),
+    );
+  }
+
   const result: LandKycCheckResult = {
     checkpoint: "land-kyc",
-    ppa: parsed.ppa ?? emptySource(),
+    ppa,
     jamabandi: parsed.jamabandi ?? emptySource(),
     leaseDeed: parsed.leaseDeed ?? emptySource(),
     leasedParcels: parsed.leasedParcels ?? [],
-    mismatches: parsed.mismatches ?? [],
+    mismatches,
     leaseTypos: parsed.leaseTypos ?? [],
     allMatch:
       typeof parsed.allMatch === "boolean"
-        ? parsed.allMatch
-        : (parsed.mismatches?.length ?? 0) === 0 && (parsed.leaseTypos?.length ?? 0) === 0,
+        ? parsed.allMatch && mismatches.length === 0
+        : mismatches.length === 0 && (parsed.leaseTypos?.length ?? 0) === 0,
     documentsUsed: used.map((d) => d.relativePath),
+    askForDocuments,
   };
 
   await onProgress?.(95, "Saving Land KYC checkpoint…");

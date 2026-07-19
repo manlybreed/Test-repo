@@ -4,6 +4,14 @@ import type { DisclosureExtract } from "@/lib/projects/extract-plant";
 import type { SpvSection1 } from "@/lib/projects/spv-section1";
 import type { Section23 } from "@/lib/projects/director-section23";
 import type { Section4 } from "@/lib/projects/dpr-section4";
+import {
+  applyFormV4LiquidityToSection23,
+  computeFormV4Equity,
+  formatInrAmount,
+  formatInrDigits,
+  formatLiquidityMetLabel,
+} from "@/lib/projects/margin-liquidity";
+import { applyFormV4Section4Financials } from "@/lib/projects/dpr-section4";
 
 export type DisclosureSections = {
   section1?: SpvSection1 | null;
@@ -517,6 +525,13 @@ function applySection23(xml: string, s: Section23): string {
       inr(s.totalLiquidAssets),
     );
   }
+  if (s.minLiquidityRequired) {
+    xml = fillLabeledRow(
+      xml,
+      "Minimum Liquidity Required (50% of Margin Money)",
+      inr(s.minLiquidityRequired),
+    );
+  }
   if (s.liquidityMet) {
     xml = fillLabeledRow(xml, "Is Minimum Liquidity Met?", t(s.liquidityMet));
   }
@@ -530,7 +545,74 @@ function applySection23(xml: string, s: Section23): string {
   return xml;
 }
 
+/** Fill Form v4 Equity Calculation Guide (Steps 1–4) + related liquidity lines. */
+function applyFormV4EquityGuide(
+  xml: string,
+  section4?: Section4 | null,
+  section23?: Section23 | null,
+): string {
+  const calc = computeFormV4Equity({
+    dprProjectCost: section4?.dprProjectCost,
+    marginMoney: section4?.marginMoney ?? section23?.marginMoneyRequired,
+    totalLiquidAssets: section23?.totalLiquidAssets,
+  });
+
+  if (calc.dprProjectCost != null) {
+    xml = replaceOnceParagraph(
+      xml,
+      "Total DPR Project Cost (INR):  ___________________",
+      `Total DPR Project Cost (INR):  ${formatInrDigits(calc.dprProjectCost)}`,
+    );
+  }
+  if (calc.marginMoney != null) {
+    xml = replaceOnceParagraph(
+      xml,
+      "Margin Money (Promoter Equity + USL) = 30% of DPR:  INR ___________________",
+      `Margin Money (Promoter Equity + USL) = 30% of DPR:  ${formatInrAmount(calc.marginMoney)}`,
+    );
+    xml = replaceOnceParagraph(
+      xml,
+      "Total Margin Money Required (30% of DPR):  INR _______________________",
+      `Total Margin Money Required (30% of DPR):  ${formatInrAmount(calc.marginMoney)}`,
+    );
+  }
+  if (calc.minLiquidityRequired != null) {
+    const minStr = formatInrDigits(calc.minLiquidityRequired);
+    xml = replaceOnceParagraph(
+      xml,
+      "Minimum Liquid Net Worth Required = 50% of Margin Money:  INR ___________________",
+      `Minimum Liquid Net Worth Required = 50% of Margin Money:  INR ${minStr}`,
+    );
+    xml = fillLabeledRow(
+      xml,
+      "Minimum Liquidity Required (50% of Margin Money)",
+      `INR ${minStr}`,
+    );
+  }
+  if (calc.maxUslAllowed != null) {
+    xml = replaceOnceParagraph(
+      xml,
+      "Unsecured Loans (USL) allowed = up to 70% of Margin Money:  INR ___________________",
+      `Unsecured Loans (USL) allowed = up to 70% of Margin Money:  ${formatInrAmount(calc.maxUslAllowed)}`,
+    );
+  }
+
+  const met = formatLiquidityMetLabel(calc) || section23?.liquidityMet;
+  if (met) {
+    xml = fillLabeledRow(xml, "Is Minimum Liquidity Met?", met);
+  }
+
+  return xml;
+}
+
 function applySection4(xml: string, s: Section4): string {
+  const moduleTech =
+    t(s.moduleTechnology) ||
+    (s.moduleMakeModel ? `Make/Model: ${t(s.moduleMakeModel)}` : "");
+  const inverter =
+    t(s.inverterType) ||
+    (s.inverterMakeModel ? `Make/Model: ${t(s.inverterMakeModel)}` : "");
+
   const firstPass: Array<[string, string]> = [
     ["PM KUSUM Component", t(s.component)],
     ["Panel Type", t(s.panelType)],
@@ -544,8 +626,8 @@ function applySection4(xml: string, s: Section4): string {
       (s.capacityAcMw || s.capacityDcMwp
         ? `${t(s.capacityAcMw) || "—"} MW AC / ${t(s.capacityDcMwp) || "—"} MW DC`
         : "")],
-    ["Module Technology", t(s.moduleTechnology)],
-    ["Inverter Type", t(s.inverterType)],
+    ["Module Technology", moduleTech],
+    ["Inverter Type", inverter],
     ["Mounting Type", t(s.mountingType)],
     ["P90 Generation (kWh/MWp/year)", t(s.p90Generation)],
     ["P50 Generation (kWh/MWp/year)", t(s.p50Generation)],
@@ -572,6 +654,29 @@ function applySection4(xml: string, s: Section4): string {
   for (const [label, value] of firstPass) {
     if (!value) continue;
     xml = fillLabeledRow(xml, label, value);
+  }
+
+  // Extra energy / equipment fields — harmless if labels absent from template
+  if (s.minCuf) {
+    xml = fillLabeledRow(xml, "Minimum CUF (%)", t(s.minCuf));
+  }
+  if (s.moduleEfficiencyLastYear) {
+    xml = fillLabeledRow(
+      xml,
+      "Module Efficiency — Last Year (%)",
+      t(s.moduleEfficiencyLastYear),
+    );
+  }
+  if (s.moduleMakeModel && t(s.moduleTechnology)) {
+    // already preferred make into Module Technology when tech blank; append note via Other
+    xml = replaceOnceParagraph(
+      xml,
+      "Other: ___",
+      `Other: ${t(s.moduleMakeModel)}`,
+    );
+  }
+  if (s.transformerMakeType) {
+    xml = fillLabeledRow(xml, "Transformer Make / Type", t(s.transformerMakeType));
   }
 
   // Duplicate scheme / location labels under Section 4
@@ -605,10 +710,21 @@ function applySection4(xml: string, s: Section4): string {
     );
   }
   if (s.workDoneBrief) {
+    const extras = [
+      s.minCuf ? `Min CUF ${t(s.minCuf)}%` : null,
+      s.moduleEfficiencyLastYear
+        ? `Module eff. last year ${t(s.moduleEfficiencyLastYear)}%`
+        : null,
+      s.inverterMakeModel ? `Inverter ${t(s.inverterMakeModel)}` : null,
+      s.transformerMakeType ? `Transformer ${t(s.transformerMakeType)}` : null,
+    ].filter(Boolean);
+    const brief = extras.length
+      ? `${t(s.workDoneBrief)} (${extras.join("; ")})`
+      : t(s.workDoneBrief);
     xml = replaceOnceParagraph(
       xml,
       "Brief description of work done so far",
-      `Brief description of work done so far: ${t(s.workDoneBrief)}`,
+      `Brief description of work done so far: ${brief}`,
     );
   }
 
@@ -632,28 +748,17 @@ export async function fillDisclosureSectionsDocx(
 
   let xml = new TextDecoder("utf-8").decode(unzipped[docXmlKey]);
 
-  if (sections.section1) xml = applySection1(xml, sections.section1);
-  if (sections.section23) xml = applySection23(xml, sections.section23);
-  if (sections.section4) xml = applySection4(xml, sections.section4);
+  let section4 = sections.section4
+    ? applyFormV4Section4Financials(sections.section4)
+    : null;
+  let section23 = sections.section23
+    ? (applyFormV4LiquidityToSection23(sections.section23, section4) as Section23)
+    : null;
 
-  if (sections.section4?.marginMoney) {
-    const digits = t(sections.section4.marginMoney).replace(/INR/gi, "").replace(/,/g, "").trim();
-    const num = Number(digits);
-    if (Number.isFinite(num) && num > 0) {
-      const half = Math.round(num * 0.5);
-      const formatted = half.toLocaleString("en-IN");
-      xml = fillLabeledRow(
-        xml,
-        "Minimum Liquidity Required (50% of Margin Money)",
-        `INR ${formatted}`,
-      );
-      xml = replaceOnceParagraph(
-        xml,
-        "Minimum Liquid Net Worth Required = 50% of Margin Money:  INR ___________________",
-        `Minimum Liquid Net Worth Required = 50% of Margin Money:  INR ${formatted}`,
-      );
-    }
-  }
+  if (sections.section1) xml = applySection1(xml, sections.section1);
+  if (section23) xml = applySection23(xml, section23);
+  if (section4) xml = applySection4(xml, section4);
+  xml = applyFormV4EquityGuide(xml, section4, section23);
 
   unzipped[docXmlKey] = new TextEncoder().encode(xml);
   return Buffer.from(fflate.zipSync(unzipped));

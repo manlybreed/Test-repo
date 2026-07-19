@@ -36,6 +36,7 @@ import {
   type MatchRequirement,
 } from "@/lib/projects/match-docs";
 import { resolvePlantProfile } from "@/lib/projects/plant-profile";
+import type { ComplianceBundle } from "@/lib/projects/director-compliance";
 import { currentUserIsFinanceOwner } from "@/lib/session";
 import {
   FINANCE_STAGES,
@@ -578,6 +579,20 @@ export async function listPlantsWithProgress() {
       feeFlat,
       sanctionAmount,
     });
+    let compliance: ComplianceBundle | null = null;
+    let actionAt: Record<string, string> | null = null;
+    if (p.rawExtract) {
+      try {
+        const parsed = JSON.parse(p.rawExtract) as Record<string, unknown>;
+        compliance = (parsed.compliance as ComplianceBundle) ?? null;
+        const at = parsed.actionAt;
+        if (at && typeof at === "object" && !Array.isArray(at)) {
+          actionAt = at as Record<string, string>;
+        }
+      } catch {
+        compliance = null;
+      }
+    }
     return {
       id: p.id,
       name: p.name,
@@ -589,6 +604,7 @@ export async function listPlantsWithProgress() {
       disclosureFilePath: p.disclosureFilePath,
       notes: p.notes,
       updatedAt: p.updatedAt.toISOString(),
+      actionAt,
       checklistReceived: received,
       checklistRequired: requiredRows.length,
       capacityMw: profile.capacityMw,
@@ -599,6 +615,7 @@ export async function listPlantsWithProgress() {
       tariff: profile.tariff,
       bankName: profile.bankName,
       activeStatus: profile.activeStatus,
+      compliance,
       interestRate: p.interestRate,
       financeStage: isFinanceStage(p.financeStage) ? p.financeStage : "DOCUMENTATION",
       financeProgress: financeStageProgress(p.financeStage),

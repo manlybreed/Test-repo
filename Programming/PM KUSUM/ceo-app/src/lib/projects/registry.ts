@@ -4,11 +4,13 @@ import { DOC_CATALOG_SEED } from "./doc-catalog";
 const PLANTS_ROOT_KEY = "kusumPlantsRoot";
 
 export async function ensureDocCatalogSeeded(): Promise<void> {
-  const count = await prisma.docTypeCatalog.count();
-  if (count > 0) return;
+  const existing = await prisma.docTypeCatalog.findMany({ select: { code: true } });
+  const have = new Set(existing.map((e) => e.code));
+  const missing = DOC_CATALOG_SEED.filter((s) => !have.has(s.code));
+  if (missing.length === 0) return;
 
   await prisma.docTypeCatalog.createMany({
-    data: DOC_CATALOG_SEED.map((s) => ({
+    data: missing.map((s) => ({
       code: s.code,
       docGroup: s.docGroup,
       label: s.label,

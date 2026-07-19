@@ -1,12 +1,12 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
-import { runLandKycCheck } from "@/actions/projects";
+import { runCibilCheck } from "@/actions/projects";
 import { formatAnthropicError } from "@/lib/projects/doc-content";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-/** Checkpoint 1 — Land KYC khasra verification (skips if already done unless force). */
+/** CIBIL check from Directors KYC (or reuses prior S2–S3 extract). */
 export async function POST(req: NextRequest) {
   const session = await auth();
   if (!session?.user) {
@@ -33,20 +33,17 @@ export async function POST(req: NextRequest) {
         controller.enqueue(encoder.encode(`${JSON.stringify(obj)}\n`));
       };
       try {
-        send({ pct: 2, step: force ? "Force re-run Land KYC…" : "Starting Land KYC checkpoint…" });
-        const result = await runLandKycCheck(
+        send({ pct: 2, step: force ? "Force CIBIL / Directors re-run…" : "Starting CIBIL check…" });
+        const result = await runCibilCheck(
           plantId,
           async (pct, step) => {
-            send({ pct, step, skipped: step.includes("skipped") });
+            send({ pct, step });
           },
           { force },
         );
         send({ pct: 100, step: result.skipped ? "Skipped" : "Done", result });
       } catch (err) {
-        send({
-          error: formatAnthropicError(err),
-          pct: 0,
-        });
+        send({ error: formatAnthropicError(err), pct: 0 });
       } finally {
         controller.close();
       }
