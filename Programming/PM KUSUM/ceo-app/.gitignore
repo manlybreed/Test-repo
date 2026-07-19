@@ -21,6 +21,8 @@
 # misc
 .DS_Store
 *.pem
+.tmp-design-pdf/
+.tmp-pymupdf/
 
 # debug
 npm-debug.log*

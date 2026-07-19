@@ -294,18 +294,27 @@ model SalarySlip {
 }
 
 model Task {
-  id           String        @id @default(cuid())
-  userId       String
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  title        String
-  description  String?
-  projectTag   String?
-  clientTag    String?
-  status       TaskStatus    @default(TODO)
-  estimateMin  Int?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  sessions     TimeSession[]
+  id            String        @id @default(cuid())
+  userId        String
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title         String
+  description   String?
+  projectTag    String?
+  clientTag     String?
+  status        TaskStatus    @default(TODO)
+  estimateMin   Int?
+  /// Optional link back to CEO mail
+  mailMessageId String?
+  mailThreadId  String?
+  dueAt         DateTime?
+  /// P1 | P2 | P3 | P4 | NONE
+  priority      String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  sessions      TimeSession[]
+
+  @@index([mailThreadId])
+  @@index([dueAt])
 }
 
 model TimeSession {
@@ -719,12 +728,12 @@ model StockLedgerEntry {
   @@index([movementDate])
 }
 
-/// Immutable audit trail — Rule 56(8)
+/// Immutable audit trail — Rule 56(8) + mail agentic actions
 model AuditLog {
   id         String   @id @default(cuid())
   entityType String
   entityId   String
-  /// CREATE | UPDATE | STRIKE | EXPORT | SEED
+  /// CREATE | UPDATE | STRIKE | EXPORT | SEED | MAIL_*
   action     String
   beforeJson String?
   afterJson  String?
@@ -734,4 +743,249 @@ model AuditLog {
 
   @@index([entityType, entityId])
   @@index([createdAt])
+}
+
+// ─── AI Email Client (akshay@ / CEO_MAIL_*) ─────────────────────────
+
+model MailAccount {
+  id            String   @id @default(cuid())
+  /// e.g. akshay@thebluridge.com
+  address       String   @unique
+  displayName   String?
+  /// ceo_env → getCeoMailConfig()
+  credentialKey String   @default("ceo_env")
+  userId        String?
+  styleJson     String?
+  lastSyncedAt  DateTime?
+  lastVisitAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  folders       MailFolder[]
+  threads       MailThread[]
+  messages      MailMessage[]
+  signatures    MailSignature[]
+  outbox        MailOutbox[]
+  reminders     MailReminder[]
+  labelRules    MailLabelRule[]
+  syncStates    MailSyncState[]
+  autonomy      MailAutonomySettings?
+}
+
+model MailFolder {
+  id          String @id @default(cuid())
+  accountId   String
+  account     MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  path        String
+  name        String
+  /// INBOX | SENT | DRAFTS | TRASH | OTHER
+  role        String @default("OTHER")
+  uidValidity BigInt?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  messages    MailMessage[]
+  syncState   MailSyncState?
+
+  @@unique([accountId, path])
+  @@index([accountId, role])
+}
+
+model MailThread {
+  id             String   @id @default(cuid())
+  accountId      String
+  account        MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  subject        String
+  snippet        String?
+  participantsJson String @default("[]")
+  lastMessageAt  DateTime
+  unreadCount    Int      @default(0)
+  /// P1 | P2 | P3 | P4 | NONE
+  priority       String   @default("NONE")
+  labelsJson     String   @default("[]")
+  snoozedUntil   DateTime?
+  clientId       String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  messages       MailMessage[]
+  reminders      MailReminder[]
+
+  @@index([accountId, lastMessageAt])
+  @@index([accountId, priority])
+  @@index([snoozedUntil])
+}
+
+model MailMessage {
+  id            String   @id @default(cuid())
+  accountId     String
+  account       MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  folderId      String
+  folder        MailFolder @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  threadId      String
+  thread        MailThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  rfcMessageId  String?
+  imapUid       Int
+  inReplyTo     String?
+  referencesHdr String?
+  fromAddress   String
+  fromName      String?
+  toAddresses   String   @default("[]")
+  ccAddresses   String   @default("[]")
+  subject       String
+  date          DateTime
+  seen          Boolean  @default(false)
+  flagged       Boolean  @default(false)
+  answered      Boolean  @default(false)
+  bodyText      String?
+  bodyHtml      String?
+  snippet       String?
+  hasAttachments Boolean @default(false)
+  listUnsubscribe String?
+  clientId      String?
+  rawPath       String?
+  /// Denormalized for FTS helper queries
+  searchText    String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  attachments   MailAttachment[]
+  aiCache       MailAiCache[]
+
+  @@unique([folderId, imapUid])
+  @@index([accountId, date])
+  @@index([threadId])
+  @@index([rfcMessageId])
+  @@index([fromAddress])
+}
+
+model MailAttachment {
+  id            String @id @default(cuid())
+  messageId     String
+  message       MailMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  filename      String
+  contentType   String?
+  size          Int    @default(0)
+  storagePath   String?
+  extractedText String?
+  /// PENDING | DONE | FAILED | SKIPPED
+  extractStatus String @default("PENDING")
+  createdAt     DateTime @default(now())
+
+  @@index([messageId])
+}
+
+model MailOutbox {
+  id             String   @id @default(cuid())
+  accountId      String
+  account        MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  toAddresses    String
+  ccAddresses    String   @default("[]")
+  bccAddresses   String   @default("[]")
+  subject        String
+  bodyHtml       String
+  bodyText       String?
+  inReplyTo      String?
+  referencesHdr  String?
+  /// DRAFT | QUEUED | SCHEDULED | SENT | FAILED | CANCELLED
+  status         String   @default("DRAFT")
+  sendAt         DateTime?
+  undoUntil      DateTime?
+  idempotencyKey String   @unique
+  smtpMessageId  String?
+  invoiceId      String?
+  error          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([accountId, status])
+  @@index([sendAt])
+}
+
+model MailSignature {
+  id         String  @id @default(cuid())
+  accountId  String
+  account    MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name       String
+  htmlBody   String
+  isDefault  Boolean @default(false)
+  sortOrder  Int     @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([accountId])
+}
+
+model MailSyncState {
+  id        String @id @default(cuid())
+  accountId String
+  account   MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  folderId  String @unique
+  folder    MailFolder @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  lastUid   Int    @default(0)
+  uidNext   Int?
+  modseq    String?
+  updatedAt DateTime @updatedAt
+
+  @@index([accountId])
+}
+
+model MailAiCache {
+  id         String @id @default(cuid())
+  messageId  String?
+  message    MailMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  threadId   String?
+  /// SUMMARY | TRIAGE | DRAFT | DIGEST | COMMITMENT | ATTACHMENT
+  kind       String
+  payloadJson String
+  model      String?
+  createdAt  DateTime @default(now())
+
+  @@index([threadId, kind])
+  @@index([messageId, kind])
+}
+
+model MailReminder {
+  id         String @id @default(cuid())
+  accountId  String
+  account    MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  threadId   String?
+  thread     MailThread? @relation(fields: [threadId], references: [id], onDelete: SetNull)
+  taskId     String?
+  /// FOLLOW_UP | SNOOZE | COMMITMENT
+  kind       String
+  dueAt      DateTime
+  /// GENTLE | NORMAL | URGENT
+  tone       String @default("NORMAL")
+  note       String?
+  dismissed  Boolean @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([accountId, dueAt])
+  @@index([dismissed])
+}
+
+model MailLabelRule {
+  id          String  @id @default(cuid())
+  accountId   String
+  account     MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name        String
+  /// JSON match: { fromContains?, subjectContains?, label }
+  matchJson   String
+  label       String
+  enabled     Boolean @default(true)
+  sortOrder   Int     @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([accountId, enabled])
+}
+
+model MailAutonomySettings {
+  id                 String  @id @default(cuid())
+  accountId          String  @unique
+  account            MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  autoLabel          Boolean @default(true)
+  autoPriority       Boolean @default(true)
+  autoMarkRead       Boolean @default(false)
+  requireConfirmSend Boolean @default(true)
+  updatedAt          DateTime @updatedAt
 }
