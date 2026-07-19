@@ -1,16 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition, type MouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { addPlantFromFolderPicker, deleteKusumPlant } from "@/actions/projects";
+import { addPlantFromFolderPicker, deleteKusumPlant, fillPlantTableFromExtract, resetPlantExtractData } from "@/actions/projects";
 import {
   createPlantInRoot,
   importPlantFromPath,
   pickAndSavePlantsRoot,
   updatePlantProfile,
 } from "@/actions/plant-registry";
-import { ConfirmDeleteDialog } from "@/components/confirm-dialogs";
+import { ConfirmDeleteDialog, ConfirmModifyDialog } from "@/components/confirm-dialogs";
 import { PlantRegistryPanel } from "@/components/plant-registry-panel";
 import { ChecklistTemplateEditor } from "@/components/checklist-template-editor";
 import { formatINR } from "@/lib/utils";
@@ -22,6 +22,7 @@ import {
   type FinanceStage,
 } from "@/lib/projects/finance-pipeline";
 import { FinanceProgressCell } from "@/components/plant-finance-pipeline";
+import { applyFormV4LiquidityToSection23 } from "@/lib/projects/margin-liquidity";
 
 type PlantItem = {
   id: string;
@@ -50,6 +51,46 @@ type PlantItem = {
   feeAmount?: number | null;
   financeStage?: FinanceStage;
   financeProgress?: number;
+  compliance?: ComplianceBundle | null;
+  actionAt?: Partial<
+    Record<
+      | "land"
+      | "plantKyc"
+      | "section1"
+      | "section23"
+      | "section4"
+      | "cibil"
+      | "fillData"
+      | "extractAll",
+      string
+    >
+  > | null;
+};
+
+type ComplianceBundle = {
+  directorMatch?: Array<{
+    name: string;
+    din?: string | null;
+    source: string;
+    issue: string;
+    detail?: string;
+  }>;
+  cibilFlags?: Array<{
+    name: string;
+    status: "ASK_FOR_CIBIL" | "RED_FLAG" | "OK";
+    score?: number | null;
+    detail: string;
+  }>;
+  landFlags?: Array<{
+    severity: "RED_FLAG" | "ASK";
+    detail: string;
+  }>;
+  askForDocuments?: string[];
+  landMatch?: boolean | null;
+  mcaCapital?: {
+    authorizedCapital?: string | null;
+    paidUpCapital?: string | null;
+  } | null;
 };
 
 type LandParcel = {
@@ -78,6 +119,7 @@ type LandKycCheckResult = {
   leaseTypos?: string[];
   allMatch?: boolean;
   documentsUsed?: string[];
+  askForDocuments?: string[];
 };
 
 type SpvSection1Fields = {
@@ -125,6 +167,10 @@ type DirectorRow = {
   dinOrPan?: string | null;
   dateOfBirth?: string | null;
   shareholdingPct?: string | null;
+  cibilScore?: string | number | null;
+  cibilDocumentFound?: boolean | null;
+  cibilNameOnDocument?: string | null;
+  cibilNameMatches?: boolean | null;
 };
 
 type PromoterNwRow = {
@@ -133,11 +179,27 @@ type PromoterNwRow = {
   remarks?: string | null;
 };
 
+type PromoterLiquidRow = {
+  name?: string | null;
+  bankBalance?: string | null;
+  cash?: string | null;
+  fd?: string | null;
+  sharesMf?: string | null;
+  gold?: string | null;
+  receivables90d?: string | null;
+  otherLiquid?: string | null;
+  totalLiquid?: string | null;
+};
+
 type Section23Fields = {
   directors?: DirectorRow[];
   promotersNetWorth?: PromoterNwRow[];
+  promotersLiquidAssets?: PromoterLiquidRow[];
   combinedNetWorth?: string | null;
   totalLiquidAssets?: string | null;
+  minLiquidityRequired?: string | null;
+  maxUslAllowed?: string | null;
+  marginMoneyRequired?: string | null;
   liquidityMet?: string | null;
   liquidityShortfall?: string | null;
   liquidityGapPlan?: string | null;
@@ -168,9 +230,14 @@ type Section4Fields = {
   p90Generation?: string | null;
   p50Generation?: string | null;
   moduleEfficiencyY1?: string | null;
+  moduleEfficiencyLastYear?: string | null;
+  minCuf?: string | null;
   annualDegradation?: string | null;
   yield25YearMwh?: string | null;
   pvsystAvailable?: string | null;
+  moduleMakeModel?: string | null;
+  inverterMakeModel?: string | null;
+  transformerMakeType?: string | null;
   khasra?: string | null;
   village?: string | null;
   tehsil?: string | null;
@@ -198,7 +265,13 @@ type Section4Result = {
   confidence?: number | null;
 };
 
-type JobKind = "land" | "section1" | "section23" | "section4";
+type JobKind =
+  | "land"
+  | "section1"
+  | "section23"
+  | "section4"
+  | "extractAll"
+  | "cibil";
 
 type CheckProgress = {
   plantId: string;
@@ -207,9 +280,81 @@ type CheckProgress = {
   kind: JobKind;
 };
 
+function formatActionWhen(iso?: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleString("en-IN", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function hapticTap() {
+  try {
+    navigator.vibrate?.(12);
+  } catch {
+    /* desktop / denied */
+  }
+}
+
+function ActionChip({
+  label,
+  busyLabel,
+  busy,
+  doneAt,
+  title,
+  disabled,
+  onClick,
+  tone,
+}: {
+  label: string;
+  busyLabel?: string;
+  busy?: boolean;
+  doneAt?: string | null;
+  title: string;
+  disabled?: boolean;
+  onClick: (e: MouseEvent<HTMLButtonElement>) => void;
+  tone: { bg: string; border: string; color: string };
+}) {
+  const when = formatActionWhen(doneAt);
+  const fullTitle = when
+    ? `${title}\nLast run: ${new Date(doneAt!).toLocaleString("en-IN")}`
+    : title;
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      title={fullTitle}
+      aria-busy={busy || undefined}
+      onPointerDown={(e) => {
+        if (disabled || e.button !== 0) return;
+        hapticTap();
+      }}
+      onClick={onClick}
+      className={`plant-action-chip${busy ? " is-busy" : ""}`}
+      style={{
+        background: tone.bg,
+        border: `1px solid ${tone.border}`,
+        color: tone.color,
+      }}
+    >
+      <span className="plant-action-chip__label">
+        {busy ? busyLabel || label : label}
+      </span>
+      {when && !busy ? (
+        <span className="plant-action-chip__when">{when}</span>
+      ) : null}
+    </button>
+  );
+}
+
 function statusBadge(status: string) {
   if (status === "LAND_OK") return { label: "LAND OK", cls: "badge-final" };
   if (status === "LAND_REVIEW") return { label: "LAND REVIEW", cls: "badge-draft" };
+  if (status === "PLANT_KYC_READY") return { label: "PLANT KYC", cls: "badge-final" };
   if (status === "SECTION1_READY") return { label: "SECTION 1", cls: "badge-final" };
   if (status === "SECTION23_READY") return { label: "SECTION 2–3", cls: "badge-final" };
   if (status === "SECTION4_READY") return { label: "SECTION 4", cls: "badge-final" };
@@ -231,9 +376,14 @@ const SECTION4_LABELS: Array<[keyof Section4Fields, string]> = [
   ["moduleTechnology", "Module Technology"],
   ["inverterType", "Inverter Type"],
   ["mountingType", "Mounting Type"],
+  ["moduleMakeModel", "Module Make / Model"],
+  ["inverterMakeModel", "Inverter Make / Model"],
+  ["transformerMakeType", "Transformer Make / Type"],
   ["p90Generation", "P90 Generation"],
   ["p50Generation", "P50 Generation"],
+  ["minCuf", "Min CUF (%)"],
   ["moduleEfficiencyY1", "Module Efficiency Y1"],
+  ["moduleEfficiencyLastYear", "Module Efficiency Last Year"],
   ["annualDegradation", "Annual Degradation"],
   ["yield25YearMwh", "25-Year Yield (MWh)"],
   ["pvsystAvailable", "PVsyst Available?"],
@@ -286,6 +436,102 @@ const SECTION1_LABELS: Array<[keyof SpvSection1Fields, string]> = [
   ["bankIfsc", "IFSC"],
   ["bankAccountType", "Account Type"],
 ];
+
+function ComplianceStrip({
+  compliance,
+  landAsk,
+}: {
+  compliance?: ComplianceBundle | null;
+  landAsk?: string[] | null;
+}) {
+  if (!compliance && !(landAsk?.length)) return null;
+  const c = compliance || {};
+  const askDocs = [
+    ...new Set([...(c.askForDocuments || []), ...(landAsk || [])]),
+  ];
+  const redCibil = (c.cibilFlags || []).filter((f) => f.status === "RED_FLAG");
+  const askCibil = (c.cibilFlags || []).filter((f) => f.status === "ASK_FOR_CIBIL");
+  const mismatches = c.directorMatch || [];
+  const gstMca = mismatches.filter((m) => m.issue === "GST_MCA_MISMATCH");
+  const otherDir = mismatches.filter((m) => m.issue !== "GST_MCA_MISMATCH");
+  const landRed = (c.landFlags || []).filter((f) => f.severity === "RED_FLAG");
+  const landAskFlags = (c.landFlags || []).filter((f) => f.severity === "ASK");
+
+  return (
+    <div
+      className="rounded-xl p-3 mb-4 text-xs space-y-2"
+      style={{
+        background: "rgba(248,113,113,0.06)",
+        border: "1px solid rgba(248,113,113,0.22)",
+      }}
+    >
+      <p className="font-semibold text-sm" style={{ color: "#fca5a5" }}>
+        Red flags &amp; compliance
+      </p>
+      <div className="flex flex-wrap gap-3" style={{ color: "var(--text-muted)" }}>
+        <span>
+          Land:{" "}
+          {c.landMatch == null
+            ? "—"
+            : c.landMatch
+              ? "khasra match OK"
+              : `REVIEW (${landRed.length} khasra/land flag${landRed.length === 1 ? "" : "s"})`}
+        </span>
+        {c.mcaCapital && (c.mcaCapital.authorizedCapital || c.mcaCapital.paidUpCapital) && (
+          <span>
+            MCA capital: auth {c.mcaCapital.authorizedCapital || "—"} / paid-up{" "}
+            {c.mcaCapital.paidUpCapital || "—"}
+          </span>
+        )}
+        <span>
+          GST↔MCA: {gstMca.length} · Directors KYC: {otherDir.length}
+        </span>
+        <span>
+          CIBIL: {askCibil.length} ask · {redCibil.length} red flag
+        </span>
+      </div>
+      {landRed.map((f, i) => (
+        <p key={`land-red-${i}`} style={{ color: "#f87171" }}>
+          RED FLAG — Khasra/land: {f.detail}
+        </p>
+      ))}
+      {landAskFlags.map((f, i) => (
+        <p key={`land-ask-${i}`} style={{ color: "#fbbf24" }}>
+          {f.detail}
+        </p>
+      ))}
+      {askDocs.length > 0 && (
+        <p style={{ color: "#fbbf24" }}>
+          Ask for documents: {askDocs.filter((d) => !d.startsWith("Ask for")).join(", ") || askDocs.join(", ")}
+        </p>
+      )}
+      {redCibil.map((f) => (
+        <p key={`red-${f.name}`} style={{ color: "#f87171" }}>
+          RED FLAG — CIBIL {f.name}: {f.detail}
+        </p>
+      ))}
+      {askCibil.map((f) => (
+        <p key={`ask-${f.name}`} style={{ color: "#fbbf24" }}>
+          Ask for CIBIL — {f.name}
+        </p>
+      ))}
+      {gstMca.map((m, i) => (
+        <p key={`gst-mca-${i}`} style={{ color: "#f87171" }}>
+          RED FLAG — Directors not same in GST and MCA:{" "}
+          {m.detail || `${m.name} (${m.source})`}
+        </p>
+      ))}
+      {otherDir.slice(0, 6).map((m, i) => (
+        <p key={`${m.name}-${i}`} style={{ color: "#fdba74" }}>
+          {m.detail ||
+            (m.issue === "MISSING_FROM_DIRECTORS_KYC"
+              ? `${m.name} on ${m.source} missing from Directors KYC`
+              : `${m.name} in Directors KYC missing from MCA/GST`)}
+        </p>
+      ))}
+    </div>
+  );
+}
 
 function ParcelTable({
   title,
@@ -341,13 +587,26 @@ function ParcelTable({
 function Section23Output({
   result,
   filePath,
+  section4,
 }: {
   result: Section23Result;
   filePath?: string | null;
+  section4?: Section4Fields | null;
 }) {
-  const s = result.section23 || {};
+  const raw = result.section23 || {};
+  const s = applyFormV4LiquidityToSection23(
+    { ...raw, notes: result.notes },
+    section4
+      ? {
+          dprProjectCost: section4.dprProjectCost,
+          marginMoney: section4.marginMoney,
+        }
+      : null,
+    result.notes,
+  ) as Section23Fields;
   const directors = s.directors ?? [];
   const nw = s.promotersNetWorth ?? [];
+  const liquidRows = s.promotersLiquidAssets ?? [];
   return (
     <div
       className="rounded-xl p-4 mb-6 text-xs space-y-3"
@@ -401,12 +660,13 @@ function Section23Output({
               <th>DIN / PAN</th>
               <th>DOB</th>
               <th>Share %</th>
+              <th>CIBIL</th>
             </tr>
           </thead>
           <tbody>
             {directors.length === 0 ? (
               <tr>
-                <td colSpan={6}>—</td>
+                <td colSpan={7}>—</td>
               </tr>
             ) : (
               directors.map((d, i) => (
@@ -417,6 +677,15 @@ function Section23Output({
                   <td>{d.dinOrPan || "—"}</td>
                   <td>{d.dateOfBirth || "—"}</td>
                   <td>{d.shareholdingPct || "—"}</td>
+                  <td>
+                    {d.cibilDocumentFound === false
+                      ? "Ask for CIBIL"
+                      : d.cibilNameMatches === false
+                        ? `Name mismatch (${d.cibilNameOnDocument || "?"})`
+                        : d.cibilScore != null
+                          ? String(d.cibilScore)
+                          : "—"}
+                  </td>
                 </tr>
               ))
             )}
@@ -457,12 +726,62 @@ function Section23Output({
           </tbody>
         </table>
       </div>
+      {liquidRows.length > 0 && (
+        <>
+          <p
+            className="text-[0.65rem] tracking-[0.12em] uppercase font-semibold"
+            style={{ color: "var(--text-dim)" }}
+          >
+            Section 3.2 — Liquid assets (Form v4)
+          </p>
+          <div className="overflow-x-auto rounded-lg" style={{ border: "1px solid var(--border)" }}>
+            <table className="data text-xs">
+              <thead>
+                <tr style={{ background: "rgba(255,255,255,0.02)" }}>
+                  <th>Promoter</th>
+                  <th>Bank</th>
+                  <th>Cash</th>
+                  <th>FD</th>
+                  <th>Shares/MF</th>
+                  <th>Total liquid</th>
+                </tr>
+              </thead>
+              <tbody>
+                {liquidRows.map((r, i) => (
+                  <tr key={`liq-${r.name}-${i}`}>
+                    <td className="font-medium">{r.name || "—"}</td>
+                    <td>{r.bankBalance || "—"}</td>
+                    <td>{r.cash || "—"}</td>
+                    <td>{r.fd || "—"}</td>
+                    <td>{r.sharesMf || "—"}</td>
+                    <td>{r.totalLiquid || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
       <div className="grid grid-cols-2 gap-2" style={{ color: "var(--text-muted)" }}>
         <p>Combined NW: {s.combinedNetWorth || "—"}</p>
         <p>Total liquid assets: {s.totalLiquidAssets || "—"}</p>
+        <p>Margin money (30% DPR): {s.marginMoneyRequired || "—"}</p>
+        <p>Min liquidity (50% margin): {s.minLiquidityRequired || "—"}</p>
+        <p>Max USL (70% margin): {s.maxUslAllowed || "—"}</p>
         <p>Liquidity met: {s.liquidityMet || "—"}</p>
+        <p>Shortfall: {s.liquidityShortfall || "—"}</p>
         <p>Gap plan: {s.liquidityGapPlan || "—"}</p>
       </div>
+      {!section4?.dprProjectCost && !section4?.marginMoney && (
+        <p className="text-[0.65rem]" style={{ color: "#fbbf24" }}>
+          Run Section 4 (DPR) to compute margin money and whether minimum liquidity is met
+          (Form v4: min liquid = 50% of 30% DPR).
+        </p>
+      )}
+      <p className="text-[0.65rem]" style={{ color: "var(--text-dim)" }}>
+        Form v4: Margin = 30% of DPR · Min liquid NW = 50% of margin · USL ≤ 70% of margin ·
+        Own liquid ≥ 30% of margin
+      </p>
       {result.notes && <p style={{ color: "#fbbf24" }}>Notes: {result.notes}</p>}
     </div>
   );
@@ -626,7 +945,12 @@ export function ProjectsClient({
   const [peekPlantId, setPeekPlantId] = useState<string | null>(null);
   const [peekMode, setPeekMode] = useState<"side" | "full">("side");
   const [peekWidth, setPeekWidth] = useState(960);
+  const [peekTab, setPeekTab] = useState<
+    "files" | "checklist" | "tasks" | "ask" | "extract"
+  >("checklist");
   const [showTemplate, setShowTemplate] = useState(false);
+  const [resetting, setResetting] = useState<PlantItem | null>(null);
+  const [fillNote, setFillNote] = useState<string | null>(null);
   const resizingRef = useRef(false);
   const peekWidthRef = useRef(960);
   const peekPlant = plants.find((p) => p.id === peekPlantId) ?? null;
@@ -675,14 +999,19 @@ export function ProjectsClient({
     };
   }, []);
 
-  function openPeek(id: string) {
+  function openPeek(
+    id: string,
+    tab: "files" | "checklist" | "tasks" | "ask" | "extract" = "checklist",
+  ) {
     setPeekPlantId(id);
     setPeekMode("side");
+    setPeekTab(tab);
   }
 
   function closePeek() {
     setPeekPlantId(null);
     setPeekMode("side");
+    setPeekTab("checklist");
   }
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState("");
@@ -708,6 +1037,19 @@ export function ProjectsClient({
     section4: Section4Result;
     filePath?: string | null;
   } | null>(null);
+  const [complianceReport, setComplianceReport] = useState<{
+    plantId: string;
+    compliance: ComplianceBundle;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!check) return;
+    const prev = document.documentElement.style.cursor;
+    document.documentElement.style.cursor = "progress";
+    return () => {
+      document.documentElement.style.cursor = prev;
+    };
+  }, [check]);
 
   function onAddPlant() {
     setError("");
@@ -776,19 +1118,35 @@ export function ProjectsClient({
     kind: JobKind,
     url: string,
     startStep: string,
+    force = false,
   ) {
     setError("");
     if (kind === "land") setLandReport(null);
     if (kind === "section1") setSection1Report(null);
     if (kind === "section23") setSection23Report(null);
     if (kind === "section4") setSection4Report(null);
-    setCheck({ plantId: id, pct: 1, step: startStep, kind });
+    if (kind === "cibil") setComplianceReport(null);
+    if (kind === "extractAll") {
+      setLandReport(null);
+      setSection1Report(null);
+      setSection23Report(null);
+      setSection4Report(null);
+      setComplianceReport(null);
+    }
+    setFillNote(null);
+    openPeek(id, "extract");
+    setCheck({
+      plantId: id,
+      pct: 1,
+      step: force ? `Force: ${startStep}` : startStep,
+      kind,
+    });
 
     try {
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plantId: id }),
+        body: JSON.stringify({ plantId: id, force }),
       });
       if (!res.ok || !res.body) throw new Error(`Request failed (${res.status})`);
 
@@ -824,6 +1182,10 @@ export function ProjectsClient({
         }
       }
 
+      if (lastResult?.skipped && typeof lastResult.summary === "string") {
+        setError(""); // clear; skipped is not an error — show in progress then refresh
+      }
+
       if (kind === "land" && lastResult?.land) {
         setLandReport({ plantId: id, land: lastResult.land as LandKycCheckResult });
       }
@@ -840,6 +1202,12 @@ export function ProjectsClient({
           section23: lastResult.section23 as Section23Result,
           filePath: (lastResult.filePath as string) || null,
         });
+        if (lastResult.compliance) {
+          setComplianceReport({
+            plantId: id,
+            compliance: lastResult.compliance as ComplianceBundle,
+          });
+        }
       }
       if (kind === "section4" && lastResult?.section4) {
         setSection4Report({
@@ -847,6 +1215,27 @@ export function ProjectsClient({
           section4: lastResult.section4 as Section4Result,
           filePath: (lastResult.filePath as string) || null,
         });
+      }
+      if (kind === "extractAll") {
+        if (lastResult?.compliance) {
+          setComplianceReport({
+            plantId: id,
+            compliance: lastResult.compliance as ComplianceBundle,
+          });
+        }
+      }
+      if (kind === "cibil" && lastResult?.compliance) {
+        setComplianceReport({
+          plantId: id,
+          compliance: lastResult.compliance as ComplianceBundle,
+        });
+        if (lastResult.section23) {
+          setSection23Report({
+            plantId: id,
+            section23: lastResult.section23 as Section23Result,
+            filePath: (lastResult.filePath as string) || null,
+          });
+        }
       }
       router.refresh();
     } catch (err) {
@@ -871,14 +1260,39 @@ export function ProjectsClient({
   function confirmDelete() {
     if (!deleting) return;
     setError("");
+    const id = deleting.id;
     start(async () => {
       try {
-        await deleteKusumPlant(deleting.id);
+        await deleteKusumPlant(id);
         setDeleting(null);
+        if (peekPlantId === id) closePeek();
         router.refresh();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Delete failed");
         setDeleting(null);
+      }
+    });
+  }
+
+  function confirmReset() {
+    if (!resetting) return;
+    setError("");
+    const id = resetting.id;
+    start(async () => {
+      try {
+        await resetPlantExtractData(id);
+        setResetting(null);
+        setLandReport((r) => (r?.plantId === id ? null : r));
+        setSection1Report((r) => (r?.plantId === id ? null : r));
+        setSection23Report((r) => (r?.plantId === id ? null : r));
+        setSection4Report((r) => (r?.plantId === id ? null : r));
+        setComplianceReport((r) => (r?.plantId === id ? null : r));
+        setFillNote(null);
+        openPeek(id, "extract");
+        router.refresh();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Reset failed");
+        setResetting(null);
       }
     });
   }
@@ -891,7 +1305,7 @@ export function ProjectsClient({
     : 0;
 
   return (
-    <div>
+    <div className="min-w-0 w-full max-w-full">
       <div className="flex items-start justify-between gap-4 mb-8 flex-wrap">
         <div
           className={`grid gap-4 flex-1 min-w-[280px] ${
@@ -1039,114 +1453,13 @@ export function ProjectsClient({
         </p>
       )}
 
-      {check && (
-        <div
-          className="rounded-xl p-4 mb-6"
-          style={{ background: "var(--bg-panel)", border: "1px solid rgba(99,102,241,0.35)" }}
-        >
-          <div className="flex items-center justify-between gap-3 mb-2">
-            <p className="text-sm font-medium" style={{ color: "#a5b4fc" }}>
-              {check.kind === "section1"
-                ? "Section 1 — SPV KYC"
-                : check.kind === "section23"
-                  ? "Sections 2–3 — Director KYC"
-                  : check.kind === "section4"
-                    ? "Section 4 — DPR"
-                    : "Checkpoint 1 — Land KYC"}
-            </p>
-            <span className="text-xs tabular-nums font-semibold" style={{ color: "#818cf8" }}>
-              {Math.round(check.pct)}%
-            </span>
-          </div>
-          <div
-            className="h-2 rounded-full overflow-hidden mb-2"
-            style={{ background: "rgba(255,255,255,0.08)" }}
-          >
-            <div
-              className="h-full rounded-full transition-[width] duration-300 ease-out"
-              style={{
-                width: `${Math.min(100, Math.max(2, check.pct))}%`,
-                background: "linear-gradient(90deg, #6366f1, #34d399)",
-              }}
-            />
-          </div>
-          <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-            {check.step}
-          </p>
-        </div>
-      )}
-
-      {section1Report?.section1 && (
-        <Section1Output result={section1Report.section1} filePath={section1Report.filePath} />
-      )}
-
-      {section23Report?.section23 && (
-        <Section23Output
-          result={section23Report.section23}
-          filePath={section23Report.filePath}
-        />
-      )}
-
-      {section4Report?.section4 && (
-        <Section4Output result={section4Report.section4} filePath={section4Report.filePath} />
-      )}
-
-      {landReport?.land && (
-        <div
-          className="rounded-xl p-4 mb-6 text-xs space-y-2"
-          style={{
-            background: landReport.land.allMatch
-              ? "rgba(16,185,129,0.08)"
-              : "rgba(245,158,11,0.08)",
-            border: `1px solid ${
-              landReport.land.allMatch ? "rgba(16,185,129,0.3)" : "rgba(245,158,11,0.35)"
-            }`,
-          }}
-        >
-          <p
-            className="font-semibold text-sm"
-            style={{ color: landReport.land.allMatch ? "#34d399" : "#fbbf24" }}
-          >
-            {landReport.land.allMatch
-              ? "Land KYC match — PPA (last page), jamabandi & lease deed agree"
-              : "Land KYC review needed — mismatches or lease typos"}
-          </p>
-          {(landReport.land.documentsUsed?.length ?? 0) > 0 && (
-            <p style={{ color: "var(--text-dim)" }}>
-              Used: {landReport.land.documentsUsed!.join(" · ")}
-            </p>
-          )}
-          <ParcelTable
-            title="Leased khasras (consensus)"
-            parcels={landReport.land.leasedParcels ?? []}
-            empty="No leased khasras extracted"
-          />
-          <ParcelTable
-            title="From PPA (last page / schedule)"
-            parcels={landReport.land.ppa?.parcels ?? []}
-          />
-          <ParcelTable title="From lease deed" parcels={landReport.land.leaseDeed?.parcels ?? []} />
-          <ParcelTable title="From jamabandi" parcels={landReport.land.jamabandi?.parcels ?? []} />
-          {(landReport.land.mismatches ?? []).map((m) => (
-            <p key={m} style={{ color: "#fbbf24" }}>
-              • {m}
-            </p>
-          ))}
-          {(landReport.land.leaseTypos ?? []).map((m) => (
-            <p key={m} style={{ color: "#f87171" }}>
-              • Lease typo: {m}
-            </p>
-          ))}
-        </div>
-      )}
-
       {adding && (
         <p className="text-xs mb-4" style={{ color: "var(--text-muted)" }}>
           Choose a plant folder in the dialog… (download iCloud files locally first)
         </p>
       )}
 
-      <section>
+      <section className="min-w-0 max-w-full">
         <div className="flex items-center gap-2 mb-4">
           <h2 className="text-base font-semibold">Plants</h2>
           <span
@@ -1161,11 +1474,14 @@ export function ProjectsClient({
           </span>
         </div>
 
-        <div className="rounded-xl overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+        <div
+          className="projects-table-wrap"
+          style={{ border: "1px solid var(--border)" }}
+        >
           <table className="data">
             <thead>
               <tr style={{ background: "rgba(255,255,255,0.02)" }}>
-                <th>Plant</th>
+                <th className="projects-plant-col">Plant</th>
                 <th>Capacity</th>
                 <th>Tehsil</th>
                 <th>District</th>
@@ -1184,7 +1500,7 @@ export function ProjectsClient({
                 <th>Active</th>
                 <th>Checklist</th>
                 <th>Status</th>
-                <th></th>
+                <th className="projects-actions-col">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -1199,16 +1515,19 @@ export function ProjectsClient({
                     key={p.id}
                     onClick={() => openPeek(p.id)}
                     className="cursor-pointer"
+                    data-peek-open={peekOpen ? "true" : undefined}
                     style={{
                       background: peekOpen ? "rgba(99,102,241,0.08)" : undefined,
                       outline: peekOpen ? "1px solid rgba(99,102,241,0.45)" : undefined,
                       outlineOffset: "-1px",
                     }}
                   >
-                    <td className="font-medium">
-                      <div>{p.name}</div>
+                    <td className="projects-plant-col font-medium">
+                      <div className="truncate" title={p.name}>
+                        {p.name}
+                      </div>
                       <div
-                        className="text-[0.65rem] font-mono truncate max-w-[200px]"
+                        className="text-[0.65rem] font-mono truncate"
                         style={{ color: "var(--text-muted)" }}
                         title={p.folderPath}
                       >
@@ -1218,8 +1537,18 @@ export function ProjectsClient({
                     <td className="text-sm tabular-nums whitespace-nowrap">
                       {p.capacityMw ? `${p.capacityMw}` : "—"}
                     </td>
-                    <td className="text-sm">{p.tehsil || "—"}</td>
-                    <td className="text-sm">{p.district || "—"}</td>
+                    <td
+                      className="text-sm max-w-[8rem] truncate whitespace-nowrap"
+                      title={p.tehsil || undefined}
+                    >
+                      {p.tehsil || "—"}
+                    </td>
+                    <td
+                      className="text-sm max-w-[8rem] truncate whitespace-nowrap"
+                      title={p.district || undefined}
+                    >
+                      {p.district || "—"}
+                    </td>
                     <td
                       className="text-sm max-w-[120px] truncate"
                       title={p.dprName || undefined}
@@ -1244,7 +1573,7 @@ export function ProjectsClient({
                           onClick={(e) => e.stopPropagation()}
                         >
                           <input
-                            className="input text-xs py-1 w-[7.5rem]"
+                            className="input text-xs py-1 w-full min-w-[6.5rem] max-w-[8.5rem]"
                             key={`fee-${p.id}-${p.feePercent ?? "x"}-${p.feeFlat ?? "f"}`}
                             defaultValue={formatFeeDisplay(p.feePercent, p.feeFlat)}
                             placeholder="1.25% or ₹5.5L"
@@ -1271,7 +1600,7 @@ export function ProjectsClient({
                           onClick={(e) => e.stopPropagation()}
                         >
                           <input
-                            className="input text-xs py-1 w-[8.5rem]"
+                            className="input text-xs py-1 w-full min-w-[7rem] max-w-[9rem]"
                             key={`san-${p.id}-${p.sanctionAmount ?? "x"}`}
                             defaultValue={formatSanctionInput(p.sanctionAmount)}
                             placeholder="₹"
@@ -1339,133 +1668,241 @@ export function ProjectsClient({
                     <td>
                       <span className={`badge ${badge.cls}`}>{badge.label}</span>
                     </td>
-                    <td onClick={(e) => e.stopPropagation()}>
-                      <div className="flex items-center gap-2 justify-end flex-wrap">
-                        <button
-                          type="button"
-                          onClick={() => openPeek(p.id)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
-                          style={{
-                            background: peekOpen
+                    <td
+                      className="projects-actions-col"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="projects-actions-btns">
+                        <ActionChip
+                          label={peekOpen ? "Open" : "Files & checklist"}
+                          title="Open plant files and checklist panel"
+                          tone={{
+                            bg: peekOpen
                               ? "rgba(99,102,241,0.25)"
                               : "rgba(99,102,241,0.12)",
-                            border: "1px solid rgba(99,102,241,0.35)",
+                            border: "rgba(99,102,241,0.35)",
                             color: "#c7d2fe",
                           }}
-                        >
-                          {peekOpen ? "Open" : "Files & checklist"}
-                        </button>
-                        <button
-                          type="button"
+                          onClick={() => openPeek(p.id)}
+                        />
+                        <ActionChip
+                          label="Run all"
+                          busyLabel="Running…"
+                          busy={check?.plantId === p.id && check.kind === "extractAll"}
+                          doneAt={p.actionAt?.extractAll}
                           disabled={checking || pending}
-                          onClick={() =>
+                          title="Folders: Land KYC → Plant KYC → SPV KYC → Directors KYC → DPR From EPC. ≤5 AI calls; skips completed. Shift+click to force re-run all."
+                          tone={{
+                            bg: "rgba(244,114,182,0.12)",
+                            border: "rgba(244,114,182,0.3)",
+                            color: "#f9a8d4",
+                          }}
+                          onClick={(e) =>
                             void streamJob(
                               p.id,
-                              "section1",
-                              "/api/projects/spv-section1",
-                              "Starting Section 1 (SPV KYC)…",
+                              "extractAll",
+                              "/api/projects/extract-all",
+                              "Starting optimized Run All…",
+                              e.shiftKey,
                             )
                           }
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all disabled:opacity-40"
-                          style={{
-                            background: "rgba(16,185,129,0.12)",
-                            border: "1px solid rgba(16,185,129,0.28)",
-                            color: "#34d399",
-                          }}
-                        >
-                          {check?.plantId === p.id && check.kind === "section1"
-                            ? "Filling…"
-                            : "Fill Section 1"}
-                        </button>
-                        <button
-                          type="button"
+                        />
+                        <ActionChip
+                          label="Fill data"
+                          doneAt={p.actionAt?.fillData}
                           disabled={checking || pending}
-                          onClick={() =>
-                            void streamJob(
-                              p.id,
-                              "section23",
-                              "/api/projects/director-section23",
-                              "Starting Sections 2–3 (Director KYC)…",
-                            )
-                          }
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all disabled:opacity-40"
-                          style={{
-                            background: "rgba(245,158,11,0.12)",
-                            border: "1px solid rgba(245,158,11,0.28)",
-                            color: "#fbbf24",
+                          title="No AI — fill Capacity / Tehsil / District / Tariff from existing extracts (rawExtract)."
+                          tone={{
+                            bg: "rgba(52,211,153,0.12)",
+                            border: "rgba(52,211,153,0.3)",
+                            color: "#6ee7b7",
                           }}
-                        >
-                          {check?.plantId === p.id && check.kind === "section23"
-                            ? "Filling…"
-                            : "Fill S2–S3"}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={checking || pending}
-                          onClick={() =>
-                            void streamJob(
-                              p.id,
-                              "section4",
-                              "/api/projects/dpr-section4",
-                              "Starting Section 4 (DPR)…",
-                            )
-                          }
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all disabled:opacity-40"
-                          style={{
-                            background: "rgba(56,189,248,0.12)",
-                            border: "1px solid rgba(56,189,248,0.28)",
-                            color: "#7dd3fc",
+                          onClick={() => {
+                            setError("");
+                            openPeek(p.id, "extract");
+                            start(async () => {
+                              try {
+                                const r = await fillPlantTableFromExtract(p.id);
+                                setFillNote(r.summary || "Table columns filled from extracts.");
+                                router.refresh();
+                              } catch (err) {
+                                setError(
+                                  err instanceof Error ? err.message : "Fill data failed",
+                                );
+                              }
+                            });
                           }}
-                        >
-                          {check?.plantId === p.id && check.kind === "section4"
-                            ? "Filling…"
-                            : "Fill Section 4"}
-                        </button>
-                        <button
-                          type="button"
+                        />
+                        <ActionChip
+                          label="Land KYC"
+                          busyLabel="Checking…"
+                          busy={check?.plantId === p.id && check.kind === "land"}
+                          doneAt={p.actionAt?.land}
                           disabled={checking || pending}
-                          onClick={() =>
+                          title="Folder: Land KYC — jamabandi, lease deed, PPA (last page). Skips if done; Shift+click to force."
+                          tone={{
+                            bg: "rgba(99,102,241,0.12)",
+                            border: "rgba(99,102,241,0.28)",
+                            color: "#a5b4fc",
+                          }}
+                          onClick={(e) =>
                             void streamJob(
                               p.id,
                               "land",
                               "/api/projects/land-kyc-check",
                               "Starting Land KYC checkpoint…",
+                              e.shiftKey,
                             )
                           }
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all disabled:opacity-40"
-                          style={{
-                            background: "rgba(99,102,241,0.12)",
-                            border: "1px solid rgba(99,102,241,0.28)",
-                            color: "#a5b4fc",
+                        />
+                        <ActionChip
+                          label="Section 1"
+                          busyLabel="Filling…"
+                          busy={check?.plantId === p.id && check.kind === "section1"}
+                          doneAt={p.actionAt?.section1}
+                          disabled={checking || pending}
+                          title="Folder: SPV KYC — COI/MCA, PAN, GST, bank. Capital + directors for compliance. Skips if done; Shift+click to force."
+                          tone={{
+                            bg: "rgba(16,185,129,0.12)",
+                            border: "rgba(16,185,129,0.28)",
+                            color: "#34d399",
                           }}
-                        >
-                          {check?.plantId === p.id && check.kind === "land"
-                            ? "Checking…"
-                            : "Check Land KYC"}
-                        </button>
+                          onClick={(e) =>
+                            void streamJob(
+                              p.id,
+                              "section1",
+                              "/api/projects/spv-section1",
+                              "Starting Section 1 (SPV KYC)…",
+                              e.shiftKey,
+                            )
+                          }
+                        />
+                        <ActionChip
+                          label="Section 2"
+                          busyLabel="Filling…"
+                          busy={check?.plantId === p.id && check.kind === "section23"}
+                          doneAt={p.actionAt?.section23}
+                          disabled={checking || pending}
+                          title="Folder: Directors KYC — profile, PAN/Aadhaar, DIN. Same AI call as Section 3 (fills both). Skips if done; Shift+click to force."
+                          tone={{
+                            bg: "rgba(245,158,11,0.12)",
+                            border: "rgba(245,158,11,0.28)",
+                            color: "#fbbf24",
+                          }}
+                          onClick={(e) =>
+                            void streamJob(
+                              p.id,
+                              "section23",
+                              "/api/projects/director-section23",
+                              "Starting Section 2 (Directors)…",
+                              e.shiftKey,
+                            )
+                          }
+                        />
+                        <ActionChip
+                          label="Section 3"
+                          busyLabel="Filling…"
+                          busy={check?.plantId === p.id && check.kind === "section23"}
+                          doneAt={p.actionAt?.section23}
+                          disabled={checking || pending}
+                          title="Folder: Directors KYC — net-worth / ITR. Shares one AI call with Section 2 (do not click both unless forcing). Skips if done; Shift+click to force."
+                          tone={{
+                            bg: "rgba(251,191,36,0.1)",
+                            border: "rgba(251,191,36,0.28)",
+                            color: "#fcd34d",
+                          }}
+                          onClick={(e) =>
+                            void streamJob(
+                              p.id,
+                              "section23",
+                              "/api/projects/director-section23",
+                              "Starting Section 3 (Net worth)…",
+                              e.shiftKey,
+                            )
+                          }
+                        />
+                        <ActionChip
+                          label="CIBIL"
+                          busyLabel="Checking…"
+                          busy={check?.plantId === p.id && check.kind === "cibil"}
+                          doneAt={p.actionAt?.cibil}
+                          disabled={checking || pending}
+                          title="Folder: Directors KYC — CIBIL / credit reports (DIR_CIBIL). Free (no AI) if Section 2–3 already extracted; otherwise runs Directors pass. Shift+click forces Directors re-extract."
+                          tone={{
+                            bg: "rgba(248,113,113,0.12)",
+                            border: "rgba(248,113,113,0.3)",
+                            color: "#fca5a5",
+                          }}
+                          onClick={(e) =>
+                            void streamJob(
+                              p.id,
+                              "cibil",
+                              "/api/projects/cibil-check",
+                              "Starting CIBIL check…",
+                              e.shiftKey,
+                            )
+                          }
+                        />
+                        <ActionChip
+                          label="Section 4"
+                          busyLabel="Filling…"
+                          busy={check?.plantId === p.id && check.kind === "section4"}
+                          doneAt={p.actionAt?.section4}
+                          disabled={checking || pending}
+                          title="Folder: DPR From EPC — DPR + PVsyst. Reuses Land + Plant KYC for location/LOA/tariff. Skips if done; Shift+click to force."
+                          tone={{
+                            bg: "rgba(56,189,248,0.12)",
+                            border: "rgba(56,189,248,0.28)",
+                            color: "#7dd3fc",
+                          }}
+                          onClick={(e) =>
+                            void streamJob(
+                              p.id,
+                              "section4",
+                              "/api/projects/dpr-section4",
+                              "Starting Section 4 (DPR)…",
+                              e.shiftKey,
+                            )
+                          }
+                        />
                         {p.disclosureFilePath && (
                           <Link
                             href={`/api/files/${p.disclosureFilePath}`}
                             target="_blank"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
+                            className="plant-action-chip"
                             style={{
                               background: "rgba(255,255,255,0.06)",
                               border: "1px solid var(--border)",
                               color: "var(--text-muted)",
+                              textDecoration: "none",
                             }}
+                            onPointerDown={() => hapticTap()}
                           >
-                            DOCX
+                            <span className="plant-action-chip__label">DOCX</span>
                           </Link>
                         )}
-                        <button
-                          type="button"
+                        <ActionChip
+                          label="Reset data"
                           disabled={pending || checking}
+                          title="Clear all AI extracts, disclosure DOCX, and Capacity/Tehsil/District/Tariff. Keeps checklist, files, and fees."
+                          tone={{
+                            bg: "rgba(148,163,184,0.1)",
+                            border: "rgba(148,163,184,0.35)",
+                            color: "#cbd5e1",
+                          }}
+                          onClick={() => setResetting(p)}
+                        />
+                        <ActionChip
+                          label="Delete"
+                          disabled={pending || checking}
+                          title="Delete this plant from the registry"
+                          tone={{
+                            bg: "rgba(248,113,113,0.08)",
+                            border: "rgba(248,113,113,0.25)",
+                            color: "#f87171",
+                          }}
                           onClick={() => setDeleting(p)}
-                          className="text-[0.65rem] px-2 py-1 rounded-md"
-                          style={{ color: "#f87171" }}
-                        >
-                          Delete
-                        </button>
+                        />
                       </div>
                     </td>
                   </tr>
@@ -1548,6 +1985,215 @@ export function ProjectsClient({
               onModeChange={setPeekMode}
               onClose={closePeek}
               canSeeFees={canSeeFees}
+              activeTab={peekTab}
+              onTabChange={setPeekTab}
+              complianceHeader={
+                <ComplianceStrip
+                  compliance={
+                    (complianceReport?.plantId === peekPlant.id
+                      ? complianceReport.compliance
+                      : null) ||
+                    peekPlant.compliance ||
+                    null
+                  }
+                  landAsk={
+                    landReport?.plantId === peekPlant.id
+                      ? landReport.land.askForDocuments
+                      : null
+                  }
+                />
+              }
+              extractPanel={
+                <div className="space-y-4">
+                  {check?.plantId === peekPlant.id && (
+                    <div
+                      className="rounded-xl p-4"
+                      style={{
+                        background: "rgba(99,102,241,0.1)",
+                        border: "1px solid rgba(99,102,241,0.35)",
+                      }}
+                    >
+                      <div className="flex items-center justify-between gap-3 mb-2">
+                        <p className="text-sm font-medium" style={{ color: "#a5b4fc" }}>
+                          {check.kind === "extractAll"
+                            ? "Run all (optimized)"
+                            : check.kind === "cibil"
+                              ? "CIBIL check"
+                              : check.kind === "section1"
+                                ? "Section 1 — SPV KYC"
+                                : check.kind === "section23"
+                                  ? "Sections 2–3 — Director KYC"
+                                  : check.kind === "section4"
+                                    ? "Section 4 — DPR"
+                                    : "Land KYC"}
+                        </p>
+                        <span
+                          className="text-xs tabular-nums font-semibold"
+                          style={{ color: "#818cf8" }}
+                        >
+                          {Math.round(check.pct)}%
+                        </span>
+                      </div>
+                      <div
+                        className="h-2 rounded-full overflow-hidden mb-2"
+                        style={{ background: "rgba(255,255,255,0.08)" }}
+                      >
+                        <div
+                          className="h-full rounded-full transition-[width] duration-300 ease-out"
+                          style={{
+                            width: `${Math.min(100, Math.max(2, check.pct))}%`,
+                            background: "linear-gradient(90deg, #6366f1, #34d399)",
+                          }}
+                        />
+                      </div>
+                      <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+                        {check.step}
+                      </p>
+                      <p className="text-[0.65rem] mt-1" style={{ color: "var(--text-dim)" }}>
+                        Tip: completed steps skip AI — Shift+click a button to force re-run.
+                      </p>
+                    </div>
+                  )}
+
+                  {fillNote && (
+                    <div
+                      className="rounded-xl p-3 text-xs"
+                      style={{
+                        background: "rgba(52,211,153,0.1)",
+                        border: "1px solid rgba(52,211,153,0.3)",
+                        color: "#6ee7b7",
+                      }}
+                    >
+                      {fillNote}
+                    </div>
+                  )}
+
+                  {complianceReport?.plantId === peekPlant.id &&
+                    complianceReport.compliance && (
+                      <ComplianceStrip compliance={complianceReport.compliance} />
+                    )}
+
+                  {landReport?.plantId === peekPlant.id && landReport.land && (
+                    <div
+                      className="rounded-xl p-4 text-xs space-y-2"
+                      style={{
+                        background: landReport.land.allMatch
+                          ? "rgba(16,185,129,0.08)"
+                          : "rgba(245,158,11,0.08)",
+                        border: `1px solid ${
+                          landReport.land.allMatch
+                            ? "rgba(16,185,129,0.3)"
+                            : "rgba(245,158,11,0.35)"
+                        }`,
+                      }}
+                    >
+                      <p
+                        className="font-semibold text-sm"
+                        style={{
+                          color: landReport.land.allMatch ? "#34d399" : "#fbbf24",
+                        }}
+                      >
+                        {landReport.land.allMatch
+                          ? "Land KYC match — PPA, jamabandi & lease agree"
+                          : "Land KYC review needed — mismatches or lease typos"}
+                      </p>
+                      {(landReport.land.documentsUsed?.length ?? 0) > 0 && (
+                        <p style={{ color: "var(--text-dim)" }}>
+                          Used: {landReport.land.documentsUsed!.join(" · ")}
+                        </p>
+                      )}
+                      <ParcelTable
+                        title="Leased khasras (consensus)"
+                        parcels={landReport.land.leasedParcels ?? []}
+                        empty="No leased khasras extracted"
+                      />
+                      <ParcelTable
+                        title="From PPA (last page / schedule)"
+                        parcels={landReport.land.ppa?.parcels ?? []}
+                      />
+                      <ParcelTable
+                        title="From lease deed"
+                        parcels={landReport.land.leaseDeed?.parcels ?? []}
+                      />
+                      <ParcelTable
+                        title="From jamabandi"
+                        parcels={landReport.land.jamabandi?.parcels ?? []}
+                      />
+                      {(landReport.land.mismatches ?? []).map((m) => (
+                        <p key={m} style={{ color: "#fbbf24" }}>
+                          • {m}
+                        </p>
+                      ))}
+                      {(landReport.land.leaseTypos ?? []).map((m) => (
+                        <p key={m} style={{ color: "#f87171" }}>
+                          • Lease typo: {m}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+
+                  {section1Report?.plantId === peekPlant.id &&
+                    section1Report.section1 && (
+                      <Section1Output
+                        result={section1Report.section1}
+                        filePath={section1Report.filePath}
+                      />
+                    )}
+
+                  {section23Report?.plantId === peekPlant.id &&
+                    section23Report.section23 && (
+                      <Section23Output
+                        result={section23Report.section23}
+                        filePath={section23Report.filePath}
+                        section4={
+                          section4Report?.plantId === peekPlant.id
+                            ? (section4Report.section4?.section4 ??
+                              (section4Report.section4 as Section4Fields | undefined) ??
+                              null)
+                            : null
+                        }
+                      />
+                    )}
+
+                  {section4Report?.plantId === peekPlant.id &&
+                    section4Report.section4 && (
+                      <Section4Output
+                        result={section4Report.section4}
+                        filePath={section4Report.filePath}
+                      />
+                    )}
+
+                  {!check &&
+                    !fillNote &&
+                    complianceReport?.plantId !== peekPlant.id &&
+                    landReport?.plantId !== peekPlant.id &&
+                    section1Report?.plantId !== peekPlant.id &&
+                    section23Report?.plantId !== peekPlant.id &&
+                    section4Report?.plantId !== peekPlant.id && (
+                      <div
+                        className="rounded-xl p-5 text-sm"
+                        style={{
+                          background: "rgba(255,255,255,0.03)",
+                          border: "1px solid var(--border)",
+                          color: "var(--text-muted)",
+                        }}
+                      >
+                        <p className="font-medium mb-1" style={{ color: "var(--text)" }}>
+                          No extract for this session yet
+                        </p>
+                        <p>
+                          Use the action buttons on the plants table (Land KYC, Section 1–4, Run
+                          all). Progress and results open in this tab.
+                        </p>
+                        {peekPlant.extractSummary && (
+                          <p className="mt-3 text-xs" style={{ color: "var(--text-dim)" }}>
+                            Last saved: {peekPlant.extractSummary}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                </div>
+              }
             />
           </aside>
         </>
@@ -1569,6 +2215,21 @@ export function ProjectsClient({
         pending={pending}
         onCancel={() => setDeleting(null)}
         onConfirm={confirmDelete}
+      />
+
+      <ConfirmModifyDialog
+        open={!!resetting}
+        title="Reset plant extracts?"
+        description={
+          resetting
+            ? `Clear all AI extracts, disclosure DOCX, and Capacity / Tehsil / District / Tariff / Bank for “${resetting.name}”. Checklist, files, and fees are kept. You can re-run extracts after.`
+            : ""
+        }
+        pending={pending}
+        confirmLabel="Reset extracts"
+        pendingLabel="Resetting…"
+        onCancel={() => setResetting(null)}
+        onConfirm={confirmReset}
       />
     </div>
   );

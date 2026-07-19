@@ -1,12 +1,12 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
-import { runLandKycCheck } from "@/actions/projects";
+import { runExtractAll } from "@/actions/projects";
 import { formatAnthropicError } from "@/lib/projects/doc-content";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-/** Checkpoint 1 — Land KYC khasra verification (skips if already done unless force). */
+/** Optimized Run All — Land → Plant KYC → S1 → S23+CIBIL → S4 (NDJSON progress). */
 export async function POST(req: NextRequest) {
   const session = await auth();
   if (!session?.user) {
@@ -33,15 +33,19 @@ export async function POST(req: NextRequest) {
         controller.enqueue(encoder.encode(`${JSON.stringify(obj)}\n`));
       };
       try {
-        send({ pct: 2, step: force ? "Force re-run Land KYC…" : "Starting Land KYC checkpoint…" });
-        const result = await runLandKycCheck(
-          plantId,
-          async (pct, step) => {
-            send({ pct, step, skipped: step.includes("skipped") });
+        send({ pct: 1, step: "Starting optimized Run All…", extractStep: "land" });
+        const result = await runExtractAll(plantId, {
+          force,
+          onProgress: async (p) => {
+            send({
+              pct: p.pct,
+              step: p.step,
+              extractStep: p.extractStep,
+              skipped: p.skipped,
+            });
           },
-          { force },
-        );
-        send({ pct: 100, step: result.skipped ? "Skipped" : "Done", result });
+        });
+        send({ pct: 100, step: "Done", result });
       } catch (err) {
         send({
           error: formatAnthropicError(err),

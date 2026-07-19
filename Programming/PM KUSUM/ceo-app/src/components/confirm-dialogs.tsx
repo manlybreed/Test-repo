@@ -115,6 +115,8 @@ export function ConfirmModifyDialog({
   onConfirm,
   onCancel,
   pending,
+  confirmLabel = "Confirm & save",
+  pendingLabel = "Saving…",
 }: {
   open: boolean;
   title: string;
@@ -122,6 +124,8 @@ export function ConfirmModifyDialog({
   onConfirm: () => void;
   onCancel: () => void;
   pending?: boolean;
+  confirmLabel?: string;
+  pendingLabel?: string;
 }) {
   if (!open || typeof document === "undefined") return null;
 
@@ -149,7 +153,7 @@ export function ConfirmModifyDialog({
             onClick={onConfirm}
             disabled={pending}
           >
-            {pending ? "Saving…" : "Confirm & save"}
+            {pending ? pendingLabel : confirmLabel}
           </button>
         </div>
       </div>

@@ -81,13 +81,13 @@ export function clipDocText(text: string, kindHint: string, maxChars = MAX_CHARS
 
   const isLease = /lease|patta/i.test(kindHint);
   if (isLease) {
-    // Lease deeds: need schedule of khasras + tenure — keep head (parties/dates) + tail (schedules)
-    const head = Math.floor(maxChars * 0.4);
+    // Lease deeds: khasra schedules often dominate the back half — keep a small head + heavy tail
+    const head = Math.min(3000, Math.floor(maxChars * 0.18));
     const tail = maxChars - head - 80;
     return (
       cleaned.slice(0, head) +
-      "\n\n[… middle lease pages omitted …]\n\n" +
-      cleaned.slice(-tail)
+      "\n\n[… middle lease pages omitted — khasra schedule / annexure below …]\n\n" +
+      cleaned.slice(-Math.max(tail, Math.floor(maxChars * 0.8)))
     );
   }
 
@@ -167,14 +167,29 @@ export async function slimPdfBuffer(
   const src = await PDFDocument.load(buf, { ignoreEncryption: true });
   const totalPages = src.getPageCount();
   const kind = kindHint.toLowerCase();
+  const isPpa = /ppa|power\s*purchase/.test(kind);
+  const isLease = /lease|patta/.test(kind);
+  /** PPA land schedule is usually on the closing pages. */
+  const PPA_TAIL_PAGES = 5;
+  /** Lease khasra schedules often span many annexure pages — keep a deep tail. */
+  const LEASE_TAIL_PAGES = 12;
+  const LEASE_MID_PAGES = 3;
+  const tailPages = isLease ? LEASE_TAIL_PAGES : PPA_TAIL_PAGES;
 
   const buildIndices = (front: number, back: number) => {
     const indices = new Set<number>();
-    if (/ppa|power\s*purchase/.test(kind) && totalPages > 4) {
-      indices.add(0);
-      if (totalPages > 1) indices.add(1);
-      if (totalPages > 2) indices.add(totalPages - 2);
-      indices.add(totalPages - 1);
+    if (isPpa || isLease) {
+      // Thin head (parties/title) + last N pages (khasra / land schedule)
+      for (let i = 0; i < Math.min(front, totalPages); i++) indices.add(i);
+      if (isLease && front > 0 && totalPages > front + back + LEASE_MID_PAGES) {
+        // Schedules sometimes sit mid-deed — grab a mid slice (dropped on tightest size retry)
+        const mid = Math.floor(totalPages * 0.45);
+        for (let i = mid; i < Math.min(mid + LEASE_MID_PAGES, totalPages); i++) {
+          indices.add(i);
+        }
+      }
+      const tail = Math.min(Math.max(back, tailPages), totalPages);
+      for (let i = totalPages - tail; i < totalPages; i++) indices.add(i);
       return [...indices].sort((a, b) => a - b);
     }
     for (let i = 0; i < Math.min(front, totalPages); i++) indices.add(i);
@@ -182,22 +197,40 @@ export async function slimPdfBuffer(
     return [...indices].sort((a, b) => a - b);
   };
 
-  let front = /lease|patta/.test(kind) ? 2 : 3;
-  let back = /lease|patta/.test(kind) ? 2 : 0;
-  if (/jamabandi|jama|khatauni|land/.test(kind)) {
+  let front = 3;
+  let back = 0;
+  if (isPpa) {
+    front = 2;
+    back = PPA_TAIL_PAGES;
+  } else if (isLease) {
+    front = 2;
+    back = LEASE_TAIL_PAGES;
+  } else if (/jamabandi|jama|khatauni|land/.test(kind)) {
     front = Math.min(2, totalPages);
     back = 0;
   }
 
   let last = buf;
   let kept = totalPages;
-  for (const attempt of [
-    [front, back],
-    [1, 2],
-    [1, 1],
-    [0, 1],
-    [1, 0],
-  ] as const) {
+  // Shrink head / mid first; never drop below the target tail for PPA/lease.
+  const attempts: ReadonlyArray<readonly [number, number]> =
+    isPpa || isLease
+      ? [
+          [front, tailPages],
+          [1, tailPages],
+          [0, tailPages],
+        ]
+      : [
+          [front, back],
+          [2, 4],
+          [1, 3],
+          [1, 2],
+          [1, 1],
+          [0, 1],
+          [1, 0],
+        ];
+
+  for (const attempt of attempts) {
     const ordered = buildIndices(attempt[0], attempt[1]);
     if (ordered.length >= totalPages && buf.length <= maxBytes) {
       return { buf, pagesKept: totalPages, totalPages };

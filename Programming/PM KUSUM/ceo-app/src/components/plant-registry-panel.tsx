@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   useTransition,
+  type ReactNode,
 } from "react";
 import {
   addDirectorToPlant,
@@ -40,6 +41,7 @@ import {
   PlantFinancePipeline,
   type PlantFinanceState,
 } from "@/components/plant-finance-pipeline";
+import { PlantAssistant } from "@/components/plant-assistant";
 
 type ChecklistRow = Awaited<ReturnType<typeof getPlantChecklist>>[number];
 type FileRow = Awaited<ReturnType<typeof listPlantFiles>>["files"][number];
@@ -234,6 +236,10 @@ export function PlantRegistryPanel({
   onModeChange,
   onClose,
   canSeeFees = false,
+  complianceHeader,
+  extractPanel,
+  activeTab,
+  onTabChange,
 }: {
   plantId: string;
   plantName: string;
@@ -241,8 +247,20 @@ export function PlantRegistryPanel({
   onModeChange?: (mode: PeekMode) => void;
   onClose?: () => void;
   canSeeFees?: boolean;
+  complianceHeader?: ReactNode;
+  /** Extraction progress + Land / Section reports for this plant */
+  extractPanel?: ReactNode;
+  activeTab?: "files" | "checklist" | "tasks" | "ask" | "extract";
+  onTabChange?: (tab: "files" | "checklist" | "tasks" | "ask" | "extract") => void;
 }) {
-  const [tab, setTab] = useState<"files" | "checklist" | "tasks">("checklist");
+  const [internalTab, setInternalTab] = useState<
+    "files" | "checklist" | "tasks" | "ask" | "extract"
+  >("checklist");
+  const tab = activeTab ?? internalTab;
+  const setTab = (t: typeof tab) => {
+    onTabChange?.(t);
+    if (activeTab == null) setInternalTab(t);
+  };
   const [files, setFiles] = useState<FileRow[]>([]);
   const [foldersMissing, setFoldersMissing] = useState<string[]>([]);
   const [checklist, setChecklist] = useState<ChecklistRow[]>([]);
@@ -647,7 +665,7 @@ export function PlantRegistryPanel({
           </p>
         </div>
         <div className="flex flex-wrap gap-2 items-center">
-          {(["checklist", "files", "tasks"] as const).map((t) => (
+          {(["checklist", "files", "tasks", "extract", "ask"] as const).map((t) => (
             <button
               key={t}
               type="button"
@@ -659,7 +677,7 @@ export function PlantRegistryPanel({
                 color: tab === t ? "#e0e7ff" : "#d4daf0",
               }}
             >
-              {t}
+              {t === "ask" ? "Ask AI" : t === "extract" ? "Extracts" : t}
               {t === "tasks" && openTasks.length > 0 ? ` (${openTasks.length})` : ""}
             </button>
           ))}
@@ -702,6 +720,10 @@ export function PlantRegistryPanel({
           </button>
         </div>
       </header>
+
+      {complianceHeader ? (
+        <div className={`shrink-0 px-5 pb-2 ${contentMax}`}>{complianceHeader}</div>
+      ) : null}
 
       <div
         className={`shrink-0 px-5 pb-3 grid grid-cols-2 sm:grid-cols-4 gap-2 ${contentMax}`}
@@ -1088,6 +1110,35 @@ export function PlantRegistryPanel({
                 </p>
               )}
             </div>
+          </div>
+        )}
+
+        {tab === "extract" && (
+          <div className="pb-4 space-y-4 min-w-0">
+            {extractPanel || (
+              <div
+                className="rounded-xl p-6 text-sm"
+                style={{
+                  background: "rgba(255,255,255,0.03)",
+                  border: "1px solid var(--border)",
+                  color: "var(--text-muted)",
+                }}
+              >
+                <p className="font-medium mb-1" style={{ color: "var(--text)" }}>
+                  Extraction results
+                </p>
+                <p>
+                  Run Land KYC, Section fills, or Run all from the plants table — progress and
+                  reports appear here inside this project window.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === "ask" && (
+          <div className="pb-4">
+            <PlantAssistant plantId={plantId} plantName={plantName} />
           </div>
         )}
 

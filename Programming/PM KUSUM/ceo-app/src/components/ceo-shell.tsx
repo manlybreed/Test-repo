@@ -318,11 +318,12 @@ export function CeoShell({
           </div>
         </div>
 
-        {/* Page content */}
-        <div className="px-8 py-8">
+        {/* Page content — min-w-0 so wide tables can scroll inside main */}
+        <div className="px-4 sm:px-6 lg:px-8 py-6 sm:py-8 min-w-0 max-w-full">
           <AnimatePresence mode="wait">
             <motion.div
               key={pathname}
+              className="min-w-0 max-w-full"
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -5 }}

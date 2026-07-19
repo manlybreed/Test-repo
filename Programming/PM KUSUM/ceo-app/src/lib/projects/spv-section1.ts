@@ -2,8 +2,14 @@ import path from "path";
 import Anthropic from "@anthropic-ai/sdk";
 import type { FolderScan, ScannedDoc } from "./scan-folder";
 import { docsToAiContent, formatAnthropicError } from "./doc-content";
+import type { AttachDocsFn } from "./doc-cache";
 
 export type ProgressFn = (pct: number, step: string) => void | Promise<void>;
+
+export type NamedDirector = {
+  name?: string | null;
+  din?: string | null;
+};
 
 /** Section 1 — Applicant / SPV Details (disclosure form). */
 export type SpvSection1 = {
@@ -35,6 +41,10 @@ export type SpvSection1 = {
   bankAccount?: string | null;
   bankIfsc?: string | null;
   bankAccountType?: string | null;
+  /** Directors listed on GST registration (for compliance cross-check). */
+  gstDirectors?: NamedDirector[] | null;
+  /** Directors listed on MCA / COI / DIN docs. */
+  mcaDirectors?: NamedDirector[] | null;
 };
 
 export type SpvSection1Result = {
@@ -70,7 +80,9 @@ const SECTION1_PROMPT = `You fill Section 1 — Applicant / SPV Details of the P
 
 Documents are ONLY from the "SPV KYC" folder (COI, PAN, GST, bank proofs, MOA/AOA, Udyam, etc.).
 
-Extract fields EXACTLY as on official documents. Prefer COI / MCA for legal name, CIN, capital, registered address. Prefer GST certificate for GSTIN / address. Prefer PAN card for PAN. Prefer cancelled cheque / passbook for bank details.
+Extract fields EXACTLY as on official documents. Prefer COI / MCA master data for legal name, CIN, capital, registered address (when both COI and other docs exist, prefer MCA master data / COI for authorizedCapital and paidUpCapital). Prefer GST certificate for GSTIN / address. Prefer PAN card for PAN. Prefer cancelled cheque / passbook for bank details.
+
+Also list directors named on GST (gstDirectors) and on MCA/COI/DIN docs (mcaDirectors) with name + DIN when present — for compliance cross-check only.
 
 Return ONLY JSON:
 {
@@ -102,6 +114,8 @@ Return ONLY JSON:
   "bankAccount": null,
   "bankIfsc": null,
   "bankAccountType": null,
+  "gstDirectors": [{"name":null,"din":null}],
+  "mcaDirectors": [{"name":null,"din":null}],
   "notes": "short gaps / ambiguities",
   "confidence": 0.0
 }
@@ -110,7 +124,8 @@ Rules:
 - Uppercase PAN, GSTIN, CIN, IFSC when found.
 - Amounts as written (Indian commas OK), without inventing proposed capital if not documented.
 - If contact / bank not in SPV KYC, leave null — do not invent.
-- Do not fill director details (Section 2).`;
+- gstDirectors / mcaDirectors: only names/DINs clearly on those docs; empty array if none.
+- Do not fill full director KYC profile (Section 2).`;
 
 function parseJsonObject<T>(text: string, label: string): T {
   const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -125,6 +140,7 @@ function parseJsonObject<T>(text: string, label: string): T {
 export async function runSpvSection1Checkpoint(
   scan: FolderScan,
   onProgress?: ProgressFn,
+  attachDocs: AttachDocsFn = docsToAiContent,
 ): Promise<{ result: SpvSection1Result; used: ScannedDoc[] }> {
   if (!process.env.ANTHROPIC_API_KEY) {
     throw new Error("ANTHROPIC_API_KEY not configured");
@@ -142,7 +158,7 @@ export async function runSpvSection1Checkpoint(
   }
 
   await onProgress?.(35, "Reading SPV KYC documents…");
-  const { content: docBlocks, report } = await docsToAiContent(used, {
+  const { content: docBlocks, report } = await attachDocs(used, {
     kindHint: (d) => path.basename(d.absolutePath),
     maxCharsTotal: 120_000,
     maxBinaryBytesTotal: 6 * 1024 * 1024,
@@ -191,8 +207,16 @@ export async function runSpvSection1Checkpoint(
   const {
     notes,
     confidence,
-    ...section1
+    gstDirectors,
+    mcaDirectors,
+    ...rest
   } = parsed;
+
+  const section1: SpvSection1 = {
+    ...rest,
+    gstDirectors: Array.isArray(gstDirectors) ? gstDirectors : [],
+    mcaDirectors: Array.isArray(mcaDirectors) ? mcaDirectors : [],
+  };
 
   const result: SpvSection1Result = {
     checkpoint: "spv-section1",

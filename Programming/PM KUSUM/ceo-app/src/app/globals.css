@@ -210,7 +210,7 @@ select.input option {
 .hairline { border-color: var(--border); }
 
 /* ── Tables ──────────────────────────────────────────────────────── */
-.table-wrap { overflow-x: auto; }
+.table-wrap { overflow-x: auto; max-width: 100%; -webkit-overflow-scrolling: touch; }
 
 table.data {
   width: 100%;
@@ -235,6 +235,122 @@ table.data td {
 }
 table.data tbody tr { transition: background 0.12s; }
 table.data tbody tr:hover td { background: rgba(255,255,255,0.025); }
+
+/* Wide projects table: scroll horizontally; keep actions visible */
+.projects-table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 0.75rem;
+}
+.projects-table-wrap table.data {
+  width: max-content;
+  min-width: 100%;
+}
+.projects-table-wrap .projects-plant-col {
+  min-width: 11rem;
+  max-width: 16rem;
+}
+.projects-table-wrap .projects-actions-col {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  min-width: 13.5rem;
+  max-width: 26rem;
+  background: var(--bg-elevated);
+  box-shadow: -12px 0 18px rgba(0, 0, 0, 0.35);
+  vertical-align: top;
+}
+.projects-table-wrap thead .projects-actions-col {
+  z-index: 3;
+  background: #151821;
+}
+.projects-table-wrap tbody tr:hover .projects-actions-col {
+  background: #1a1e2c;
+}
+.projects-table-wrap tbody tr[data-peek-open="true"] .projects-actions-col {
+  background: #1c2238;
+}
+.projects-table-wrap tbody tr[data-peek-open="true"]:hover .projects-actions-col {
+  background: #222a42;
+}
+.projects-table-wrap .projects-actions-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  justify-content: flex-end;
+  max-width: 26rem;
+}
+.projects-table-wrap .projects-actions-btns > * {
+  flex: 0 0 auto;
+}
+
+/* Plant action chips — press feel + last-run dates */
+.plant-action-chip {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+  padding: 0.35rem 0.65rem;
+  border-radius: 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.15;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  transform: translateZ(0);
+  transition:
+    transform 0.14s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.14s ease,
+    filter 0.14s ease,
+    opacity 0.14s ease;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+}
+.plant-action-chip:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.14);
+  box-shadow:
+    0 4px 14px rgba(0, 0, 0, 0.28),
+    0 1px 0 rgba(255, 255, 255, 0.06) inset;
+}
+.plant-action-chip:active:not(:disabled) {
+  transform: scale(0.96);
+  cursor: grabbing;
+  filter: brightness(0.96);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35) inset;
+}
+.plant-action-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+.plant-action-chip.is-busy {
+  cursor: progress;
+  animation: plant-action-pulse 1.15s ease-in-out infinite;
+}
+.plant-action-chip__label {
+  letter-spacing: 0.01em;
+}
+.plant-action-chip__when {
+  font-size: 0.58rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.72;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+@keyframes plant-action-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.68; }
+}
+
+@media (hover: none) {
+  .plant-action-chip:active:not(:disabled) {
+    transform: scale(0.94);
+  }
+}
 
 /* ── Badges ──────────────────────────────────────────────────────── */
 .badge {

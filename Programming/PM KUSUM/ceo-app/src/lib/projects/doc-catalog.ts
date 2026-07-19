@@ -49,6 +49,7 @@ export const DOC_CATALOG_SEED: CatalogSeed[] = [
   { code: "DIR_NETWORTH", docGroup: "DIRECTORS", label: "Net Worth Certificate", description: "Net Worth Certificate for last 1 year", scope: "PARTY", folderHint: "Directors KYC", matchHints: ["net worth", "networth"], namePattern: "{partyName}-{label}", sortOrder: 160 },
   { code: "DIR_ITR", docGroup: "DIRECTORS", label: "ITR & Computation", description: "ITR, COMPUTATION for 3 years", scope: "PARTY", folderHint: "Directors KYC", matchHints: ["itr", "computation"], namePattern: "{partyName}-{label}", sortOrder: 170 },
   { code: "DIR_PROFILE", docGroup: "DIRECTORS", label: "Director Profile", description: "Promoters' / Director Profile", scope: "PARTY", folderHint: "Directors KYC", matchHints: ["director profile", "profile"], namePattern: "{partyName}-{label}", sortOrder: 180 },
+  { code: "DIR_CIBIL", docGroup: "DIRECTORS", label: "CIBIL Report", description: "CIBIL / credit score report", scope: "PARTY", folderHint: "Directors KYC", matchHints: ["cibil", "credit score", "credit report"], namePattern: "{partyName}-{label}", sortOrder: 185 },
 
   // Plant KYC
   { code: "PLANT_LOA", docGroup: "PLANT", label: "LOA", description: "Letter of Award", scope: "PLANT", folderHint: "Plant KYC", matchHints: ["loa", "letter of award"], sortOrder: 200 },
