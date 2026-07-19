@@ -1,15 +1,18 @@
 export function BluRidgeLogo({
   size = 40,
   className = "",
+  markOnly = false,
 }: {
   size?: number;
   className?: string;
+  /** Icon mark only (for collapsed sidebar) */
+  markOnly?: boolean;
 }) {
   return (
     <svg
-      width={size * 3.4}
+      width={markOnly ? size : size * 3.4}
       height={size}
-      viewBox="0 0 136 40"
+      viewBox={markOnly ? "0 0 40 40" : "0 0 136 40"}
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
@@ -97,40 +100,44 @@ export function BluRidgeLogo({
         fill="rgba(220,230,255,0.95)"
       />
 
-      {/* ── DIVIDER ─────────────────────────────────── */}
-      <line
-        x1="42" y1="10" x2="42" y2="32"
-        stroke="rgba(255,255,255,0.1)"
-        strokeWidth="0.8"
-      />
+      {!markOnly && (
+        <>
+          {/* ── DIVIDER ─────────────────────────────────── */}
+          <line
+            x1="42" y1="10" x2="42" y2="32"
+            stroke="rgba(255,255,255,0.1)"
+            strokeWidth="0.8"
+          />
 
-      {/* ── BLU ─────────────────────────────────────── */}
-      <text
-        x="49"
-        y="21"
-        fontFamily="'Inter', 'Segoe UI', system-ui, sans-serif"
-        fontSize="12"
-        fontWeight="800"
-        letterSpacing="0.06em"
-        fill="rgba(255,255,255,0.95)"
-        dominantBaseline="middle"
-      >
-        BLU
-      </text>
+          {/* ── BLU ─────────────────────────────────────── */}
+          <text
+            x="49"
+            y="21"
+            fontFamily="'Inter', 'Segoe UI', system-ui, sans-serif"
+            fontSize="12"
+            fontWeight="800"
+            letterSpacing="0.06em"
+            fill="rgba(255,255,255,0.95)"
+            dominantBaseline="middle"
+          >
+            BLU
+          </text>
 
-      {/* ── RIDGE ───────────────────────────────────── */}
-      <text
-        x="49"
-        y="31"
-        fontFamily="'Inter', 'Segoe UI', system-ui, sans-serif"
-        fontSize="8.5"
-        fontWeight="400"
-        letterSpacing="0.35em"
-        fill="rgba(160,175,240,0.7)"
-        dominantBaseline="middle"
-      >
-        RIDGE
-      </text>
+          {/* ── RIDGE ───────────────────────────────────── */}
+          <text
+            x="49"
+            y="31"
+            fontFamily="'Inter', 'Segoe UI', system-ui, sans-serif"
+            fontSize="8.5"
+            fontWeight="400"
+            letterSpacing="0.35em"
+            fill="rgba(160,175,240,0.7)"
+            dominantBaseline="middle"
+          >
+            RIDGE
+          </text>
+        </>
+      )}
     </svg>
   );
 }

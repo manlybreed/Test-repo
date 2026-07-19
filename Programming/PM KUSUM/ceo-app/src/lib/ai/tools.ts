@@ -29,6 +29,7 @@ You help the CEO with:
 - Salary slips (PDF) for employees — use list_employees first
 - Tasks and Pomodoro / time tracking
 - Expense records — use list_expenses or get_expense_summary to answer expense questions
+- CEO Mail (akshay@) — use search_mail / ask_mail / digest_inbox / summarize_thread / draft_reply / propose_tasks_from_mail / recall_person. Never send mail from tools; user confirms send in Mail UI.
 
 Rules:
 - NEVER answer questions about counts, statuses, or amounts from memory — always call the relevant list/summary tool first.
@@ -292,6 +293,74 @@ export const ceoTools: Anthropic.Tool[] = [
       "Get a financial summary of all expenses: total spend, this-month spend, spend by category, count, and how many need review.",
     input_schema: { type: "object", properties: {} },
   },
+  {
+    name: "search_mail",
+    description:
+      "Search the CEO mailbox (akshay@) by natural language / keywords. Returns message snippets with ids for citation.",
+    input_schema: {
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"],
+    },
+  },
+  {
+    name: "ask_mail",
+    description:
+      "Answer a question about the CEO mailbox using retrieval-grounded RAG with message citations. Prefer this over guessing.",
+    input_schema: {
+      type: "object",
+      properties: { question: { type: "string" } },
+      required: ["question"],
+    },
+  },
+  {
+    name: "digest_inbox",
+    description:
+      "Build a priority-grouped digest of recent inbox mail (AI-04).",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "summarize_thread",
+    description: "Summarize a mail thread by threadId with citations.",
+    input_schema: {
+      type: "object",
+      properties: { threadId: { type: "string" } },
+      required: ["threadId"],
+    },
+  },
+  {
+    name: "draft_reply",
+    description:
+      "Draft an HTML reply for a thread. Does NOT send — user must confirm in Mail UI.",
+    input_schema: {
+      type: "object",
+      properties: {
+        threadId: { type: "string" },
+        intent: { type: "string" },
+        tone: { type: "string" },
+      },
+      required: ["threadId"],
+    },
+  },
+  {
+    name: "propose_tasks_from_mail",
+    description:
+      "Extract commitment/task proposals from a thread. Does not create tasks until user accepts in Mail UI.",
+    input_schema: {
+      type: "object",
+      properties: { threadId: { type: "string" } },
+      required: ["threadId"],
+    },
+  },
+  {
+    name: "recall_person",
+    description: "What did I last discuss with this person across mail threads?",
+    input_schema: {
+      type: "object",
+      properties: { person: { type: "string" } },
+      required: ["person"],
+    },
+  },
 ];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -527,6 +596,44 @@ export async function runCeoTool(name: string, input: any): Promise<string> {
       case "get_expense_summary": {
         const summary = await getExpenseSummary();
         return JSON.stringify(summary);
+      }
+      case "search_mail": {
+        const { searchMailAction } = await import("@/actions/mail");
+        const rows = await searchMailAction(input.query);
+        return JSON.stringify(rows.slice(0, 20));
+      }
+      case "ask_mail": {
+        const { askMailAction } = await import("@/actions/mail");
+        return JSON.stringify(await askMailAction(input.question));
+      }
+      case "digest_inbox": {
+        const { digestAction } = await import("@/actions/mail");
+        return JSON.stringify(await digestAction());
+      }
+      case "summarize_thread": {
+        const { summarizeThreadAction } = await import("@/actions/mail");
+        return JSON.stringify(await summarizeThreadAction(input.threadId));
+      }
+      case "draft_reply": {
+        const { draftReplyAction } = await import("@/actions/mail");
+        const draft = await draftReplyAction({
+          threadId: input.threadId,
+          intent: input.intent,
+          tone: input.tone,
+        });
+        return JSON.stringify({
+          ok: true,
+          draft,
+          note: "Not sent — confirm in /ceo/mail",
+        });
+      }
+      case "propose_tasks_from_mail": {
+        const { extractCommitmentsAction } = await import("@/actions/mail");
+        return JSON.stringify(await extractCommitmentsAction(input.threadId));
+      }
+      case "recall_person": {
+        const { recallPersonAction } = await import("@/actions/mail");
+        return JSON.stringify(await recallPersonAction(input.person));
       }
       default:
         return JSON.stringify({ ok: false, error: `Unknown tool ${name}` });
