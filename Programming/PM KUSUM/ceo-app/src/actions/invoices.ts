@@ -25,6 +25,7 @@ import { draftInvoiceFromText } from "@/lib/ai/invoice-draft";
 import { adviseRefundPath } from "@/lib/ai/invoice-refund-advise";
 import type { InvoiceDocumentType, InvoiceLineCalcInput } from "@/lib/invoice/types";
 import { financialYearFromDate } from "@/lib/invoice/financial-year";
+import { syncLedgersForInvoice } from "@/lib/ledgers/sync";
 
 export type InvoiceLineInput = InvoiceLineCalcInput;
 
@@ -215,6 +216,7 @@ export async function createInvoice(input: {
   let filePath: string | null = null;
   if (status === "ISSUED") {
     filePath = await renderAndStorePdf(invoice);
+    await syncLedgersForInvoice(invoice);
   }
 
   revalidateInvoicePaths();
@@ -273,6 +275,7 @@ export async function issueDraftInvoice(id: string) {
   });
 
   const filePath = await renderAndStorePdf(issued);
+  await syncLedgersForInvoice(issued);
   revalidateInvoicePaths();
   return { id: issued.id, number: issued.number, filePath };
 }
@@ -577,11 +580,11 @@ export async function cancelInvoice(id: string, reason: string) {
     await prisma.invoice.delete({ where: { id } });
   } else if (inv.status === "ISSUED") {
     if (!reason?.trim()) throw new Error("Cancel reason required");
-    // Prefer credit note for tax invoices; soft-cancel flag for others
-    await prisma.invoice.update({
+    const updated = await prisma.invoice.update({
       where: { id },
       data: { status: "CANCELLED", cancelReason: reason.trim() },
     });
+    await syncLedgersForInvoice(updated);
   }
   revalidateInvoicePaths();
 }
@@ -695,6 +698,7 @@ export async function createCreditOrDebitNote(input: {
   });
 
   const filePath = await renderAndStorePdf(note);
+  await syncLedgersForInvoice(note);
   revalidateInvoicePaths();
   return { id: note.id, number: note.number, filePath, grandTotal: note.grandTotal };
 }
@@ -880,6 +884,7 @@ export async function createRefundVoucher(input: {
   });
 
   const filePath = await renderAndStorePdf(note);
+  await syncLedgersForInvoice(note);
   revalidateInvoicePaths();
   return { id: note.id, number: note.number, filePath };
 }

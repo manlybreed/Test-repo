@@ -43,3 +43,21 @@
 - `aatoBand`: `UNDER_5CR` \| `OVER_5CR` (drives e-invoice readiness)
 - `eInvoiceEnabled`: boolean (feature flag)
 - `hsnDefault`: already on `CompanyProfile` (`998313`)
+- `maintainsStockLedger`: default `false` (services)
+- `retentionMonths`: default `72`
+
+## Ledgers / Rule 56 (Phases J–N)
+
+| Register | Status |
+|----------|--------|
+| Outward supply | **Fixed** — `OutwardSupplyEntry` posted from ISSUED tax/CN/DN |
+| Inward supply | **Fixed** — from expenses + GSTR-2B seed; vendor GSTIN fields on Expense |
+| ITC ledger | **Fixed** — provisional from inward; category blocks |
+| Advance ledger | **Fixed** — RV/RFV posting + balance |
+| Stock ledger | Scaffold / N/A banner when `maintainsStockLedger=false` |
+| Audit trail 56(8) | **Fixed** — `AuditLog` append-only |
+| Hard-delete ledgers | Forbidden — strike only |
+| Expense hard-delete | Replaced with strike + inward/ITC strike |
+| 72-month retention | `retentionUntil` on entries (heuristic) |
+| On-demand export | CSV per register via Ledgers UI |
+| Portal seed | GSTR-2B / GSTR-1 JSON + inward CSV |

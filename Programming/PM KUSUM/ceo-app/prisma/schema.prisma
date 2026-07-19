@@ -44,28 +44,32 @@ model User {
 }
 
 model CompanyProfile {
-  id              String   @id @default(cuid())
-  legalName       String
-  tradeName       String?
-  addressLine1    String
-  addressLine2    String?
-  city            String
-  state           String
-  stateCode       String
-  pincode         String?
-  gstin           String
-  pan             String?
-  email           String?
-  phone           String?
-  bankName        String?
-  bankAccount     String?
-  bankIfsc        String?
-  hsnDefault      String   @default("998313")
+  id                   String   @id @default(cuid())
+  legalName            String
+  tradeName            String?
+  addressLine1         String
+  addressLine2         String?
+  city                 String
+  state                String
+  stateCode            String
+  pincode              String?
+  gstin                String
+  pan                  String?
+  email                String?
+  phone                String?
+  bankName             String?
+  bankAccount          String?
+  bankIfsc             String?
+  hsnDefault           String   @default("998313")
   /// UNDER_5CR | OVER_5CR — drives e-invoice readiness messaging
-  aatoBand        String   @default("UNDER_5CR")
-  eInvoiceEnabled Boolean  @default(false)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  aatoBand             String   @default("UNDER_5CR")
+  eInvoiceEnabled      Boolean  @default(false)
+  /// BluRidge consulting = false; goods traders would enable stock register
+  maintainsStockLedger Boolean  @default(false)
+  retentionMonths      Int      @default(72)
+  booksLockedBefore    DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 }
 
 model Client {
@@ -197,6 +201,8 @@ model Invoice {
   createdAt                DateTime      @default(now())
   updatedAt                DateTime      @updatedAt
   lines                    InvoiceLine[]
+  outwardEntries           OutwardSupplyEntry[]
+  advanceEntries           AdvanceLedgerEntry[]
 
   @@index([documentType, status])
   @@index([financialYear, seriesCode])
@@ -343,34 +349,48 @@ model InvoiceSequence {
 }
 
 model Expense {
-  id               String   @id @default(cuid())
-  date             DateTime
-  vendor           String
-  amount           Decimal  @db.Decimal(12, 2)
-  category         String
-  subCategory      String?
-  description      String?
-  paymentMode      String?
-  gstAmount        Decimal? @db.Decimal(12, 2)
-  gstEntity        String?  // DEL | RAJ — BluRidge GST under which vendor invoice was booked
-  invoiceNo        String?
-  invoiceNoNorm    String?  // normalized invoice number for de-duplication
-  billedTo         String?  // raw "Billed to" text from the invoice
-  billedToPartyId  String?
-  billedToParty    BilledToParty? @relation(fields: [billedToPartyId], references: [id], onDelete: SetNull)
-  ourGstMentioned  Boolean? // whether a BluRidge GSTIN appears on the bill
-  billedGstin      String?  // BluRidge GSTIN found on the bill (if any)
-  contentHash      String?  // sha256 of stored file — catches identical re-uploads
-  filePath         String?
-  rawExtract       String?
-  notes            String?
-  needsReview      Boolean  @default(false)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id                     String   @id @default(cuid())
+  date                   DateTime
+  vendor                 String
+  vendorGstin            String?
+  vendorAddress          String?
+  amount                 Decimal  @db.Decimal(12, 2)
+  category               String
+  subCategory            String?
+  description            String?
+  paymentMode            String?
+  gstAmount              Decimal? @db.Decimal(12, 2)
+  cgstAmount             Decimal? @db.Decimal(12, 2)
+  sgstAmount             Decimal? @db.Decimal(12, 2)
+  igstAmount             Decimal? @db.Decimal(12, 2)
+  placeOfSupplyStateCode String?
+  hsn                    String?
+  itcEligible            Boolean  @default(true)
+  gstEntity              String?  // DEL | RAJ
+  invoiceNo              String?
+  invoiceNoNorm          String?
+  billedTo               String?
+  billedToPartyId        String?
+  billedToParty          BilledToParty? @relation(fields: [billedToPartyId], references: [id], onDelete: SetNull)
+  ourGstMentioned        Boolean?
+  billedGstin            String?
+  contentHash            String?
+  filePath               String?
+  rawExtract             String?
+  notes                  String?
+  needsReview            Boolean  @default(false)
+  /// ACTIVE | STRUCK — never hard-delete within retention
+  status                 String   @default("ACTIVE")
+  struckOutAt            DateTime?
+  struckOutReason        String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  inwardEntries          InwardSupplyEntry[]
 
   @@index([invoiceNoNorm])
   @@index([contentHash])
   @@index([billedToPartyId])
+  @@index([status])
 }
 
 /// Canonical bill-to party (deduped across expense receipts)
@@ -546,4 +566,172 @@ model AppSetting {
   key       String   @id
   value     String
   updatedAt DateTime @updatedAt
+}
+
+/// Outward supply register (sales) — Rule 56
+model OutwardSupplyEntry {
+  id                     String    @id @default(cuid())
+  financialYear          String
+  gstEntity              String?
+  documentType           String
+  documentNumber         String
+  documentDate           DateTime
+  invoiceId              String?
+  invoice                Invoice?  @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  buyerName              String
+  buyerGstin             String?
+  buyerAddress           String?
+  placeOfSupplyStateCode String?
+  reverseCharge          Boolean   @default(false)
+  taxableValue           Float
+  cgstAmount             Float     @default(0)
+  sgstAmount             Float     @default(0)
+  igstAmount             Float     @default(0)
+  grandTotal             Float
+  /// DOC | PORTAL | MANUAL
+  source                 String    @default("DOC")
+  struckOutAt            DateTime?
+  struckOutReason        String?
+  retentionUntil         DateTime
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  @@index([financialYear, gstEntity])
+  @@index([documentDate])
+  @@index([invoiceId])
+  @@index([struckOutAt])
+}
+
+/// Inward supply register (purchases)
+model InwardSupplyEntry {
+  id                     String    @id @default(cuid())
+  financialYear          String
+  gstEntity              String?
+  supplierName           String
+  supplierGstin          String?
+  supplierAddress        String?
+  billNumber             String?
+  billDate               DateTime
+  hsn                    String?
+  placeOfSupplyStateCode String?
+  reverseCharge          Boolean   @default(false)
+  taxableValue           Float
+  cgstAmount             Float     @default(0)
+  sgstAmount             Float     @default(0)
+  igstAmount             Float     @default(0)
+  grandTotal             Float
+  expenseId              String?
+  expense                Expense?  @relation(fields: [expenseId], references: [id], onDelete: SetNull)
+  /// DOC | PORTAL | MANUAL
+  source                 String    @default("DOC")
+  itcEligible            Boolean   @default(true)
+  struckOutAt            DateTime?
+  struckOutReason        String?
+  retentionUntil         DateTime
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  itcEntries             ItcLedgerEntry[]
+
+  @@index([financialYear, gstEntity])
+  @@index([billDate])
+  @@index([expenseId])
+  @@index([supplierGstin])
+  @@index([struckOutAt])
+}
+
+/// ITC ledger — eligible / claimed / reversed
+model ItcLedgerEntry {
+  id               String            @id @default(cuid())
+  financialYear    String
+  gstEntity        String?
+  periodYm         String
+  inwardEntryId    String?
+  inwardEntry      InwardSupplyEntry? @relation(fields: [inwardEntryId], references: [id], onDelete: SetNull)
+  /// ELIGIBLE | CLAIMED | REVERSED | INELIGIBLE
+  status           String            @default("ELIGIBLE")
+  cgstAmount       Float             @default(0)
+  sgstAmount       Float             @default(0)
+  igstAmount       Float             @default(0)
+  totalItc         Float             @default(0)
+  notes            String?
+  source           String            @default("DOC")
+  struckOutAt      DateTime?
+  struckOutReason  String?
+  retentionUntil   DateTime
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  @@index([financialYear, gstEntity])
+  @@index([periodYm])
+  @@index([inwardEntryId])
+  @@index([struckOutAt])
+}
+
+/// Advance ledger — received / paid / adjusted
+model AdvanceLedgerEntry {
+  id               String    @id @default(cuid())
+  financialYear    String
+  gstEntity        String?
+  /// RECEIVED | PAID | ADJUSTED | REFUNDED
+  kind             String
+  partyName        String
+  partyGstin       String?
+  amount           Float
+  taxAmount        Float     @default(0)
+  documentNumber   String?
+  documentDate     DateTime
+  invoiceId        String?
+  invoice          Invoice?  @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  notes            String?
+  source           String    @default("DOC")
+  struckOutAt      DateTime?
+  struckOutReason  String?
+  retentionUntil   DateTime
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([financialYear, gstEntity])
+  @@index([documentDate])
+  @@index([invoiceId])
+  @@index([struckOutAt])
+}
+
+/// Stock ledger scaffold (unused when CompanyProfile.maintainsStockLedger=false)
+model StockLedgerEntry {
+  id              String    @id @default(cuid())
+  financialYear   String
+  itemCode        String?
+  itemDescription String
+  uqc             String?
+  /// OPENING | RECEIPT | SUPPLY | LOSS | CLOSING
+  movement        String
+  quantity        Float
+  documentRef     String?
+  movementDate    DateTime
+  notes           String?
+  struckOutAt     DateTime?
+  struckOutReason String?
+  retentionUntil  DateTime
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([financialYear])
+  @@index([movementDate])
+}
+
+/// Immutable audit trail — Rule 56(8)
+model AuditLog {
+  id         String   @id @default(cuid())
+  entityType String
+  entityId   String
+  /// CREATE | UPDATE | STRIKE | EXPORT | SEED
+  action     String
+  beforeJson String?
+  afterJson  String?
+  reason     String?
+  actorUserId String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
 }

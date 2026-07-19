@@ -8,16 +8,27 @@ import { normalizeInvoiceNumber } from "@/lib/upload";
 import { type GstEntity } from "@/lib/gst-entities";
 import { ensureBilledToParty } from "@/actions/billed-to";
 import { reconcileExpenseGstFlags } from "@/lib/expense-gst-check";
+import { postInwardFromExpense } from "@/lib/ledgers/inward";
+import { isWithinRetention } from "@/lib/ledgers/retention";
+import { retentionUntilForDate } from "@/lib/ledgers/retention";
 
 export type ExpenseInput = {
   date: string;
   vendor: string;
+  vendorGstin?: string;
+  vendorAddress?: string;
   amount: number;
   category: string;
   subCategory?: string;
   description?: string;
   paymentMode?: string;
   gstAmount?: number;
+  cgstAmount?: number;
+  sgstAmount?: number;
+  igstAmount?: number;
+  placeOfSupplyStateCode?: string;
+  hsn?: string;
+  itcEligible?: boolean;
   gstEntity?: string | null;
   invoiceNo?: string;
   billedTo?: string;
@@ -156,12 +167,20 @@ export async function createExpense(data: ExpenseInput) {
     data: {
       date: new Date(data.date),
       vendor: data.vendor,
+      vendorGstin: data.vendorGstin || null,
+      vendorAddress: data.vendorAddress || null,
       amount: new Decimal(data.amount),
       category: data.category,
       subCategory: data.subCategory,
       description: data.description,
       paymentMode: data.paymentMode,
       gstAmount: data.gstAmount != null ? new Decimal(data.gstAmount) : null,
+      cgstAmount: data.cgstAmount != null ? new Decimal(data.cgstAmount) : null,
+      sgstAmount: data.sgstAmount != null ? new Decimal(data.sgstAmount) : null,
+      igstAmount: data.igstAmount != null ? new Decimal(data.igstAmount) : null,
+      placeOfSupplyStateCode: data.placeOfSupplyStateCode || null,
+      hsn: data.hsn || null,
+      itcEligible: data.itcEligible ?? true,
       gstEntity,
       invoiceNo: data.invoiceNo || null,
       invoiceNoNorm,
@@ -174,10 +193,13 @@ export async function createExpense(data: ExpenseInput) {
       rawExtract: data.rawExtract,
       notes: data.notes,
       needsReview: data.needsReview ?? false,
+      status: "ACTIVE",
     },
     include: { billedToParty: true },
   });
+  await postInwardFromExpense(expense);
   revalidatePath("/ceo/expenses");
+  revalidatePath("/ceo/ledgers");
   return serializeExpense(expense);
 }
 
@@ -246,6 +268,26 @@ export async function updateExpense(id: string, data: Partial<ExpenseInput>) {
       ...(data.gstAmount !== undefined && {
         gstAmount: data.gstAmount != null ? new Decimal(data.gstAmount) : null,
       }),
+      ...(data.cgstAmount !== undefined && {
+        cgstAmount: data.cgstAmount != null ? new Decimal(data.cgstAmount) : null,
+      }),
+      ...(data.sgstAmount !== undefined && {
+        sgstAmount: data.sgstAmount != null ? new Decimal(data.sgstAmount) : null,
+      }),
+      ...(data.igstAmount !== undefined && {
+        igstAmount: data.igstAmount != null ? new Decimal(data.igstAmount) : null,
+      }),
+      ...(data.vendorGstin !== undefined && {
+        vendorGstin: data.vendorGstin || null,
+      }),
+      ...(data.vendorAddress !== undefined && {
+        vendorAddress: data.vendorAddress || null,
+      }),
+      ...(data.placeOfSupplyStateCode !== undefined && {
+        placeOfSupplyStateCode: data.placeOfSupplyStateCode || null,
+      }),
+      ...(data.hsn !== undefined && { hsn: data.hsn || null }),
+      ...(data.itcEligible !== undefined && { itcEligible: data.itcEligible }),
       ...(gstFields
         ? {
             gstEntity: gstFields.gstEntity,
@@ -279,21 +321,57 @@ export async function updateExpense(id: string, data: Partial<ExpenseInput>) {
       ...(data.needsReview !== undefined && { needsReview: data.needsReview }),
     },
   });
+  await postInwardFromExpense(expense);
   revalidatePath("/ceo/expenses");
+  revalidatePath("/ceo/ledgers");
   return serializeExpense(expense);
 }
 
-export async function deleteExpense(id: string) {
+/** Strike-out only — never hard-delete within retention window */
+export async function deleteExpense(id: string, reason?: string) {
   await requireCeo();
   if (!id) throw new Error("Expense ID required");
-  await prisma.expense.delete({ where: { id } });
+  const existing = await prisma.expense.findUnique({ where: { id } });
+  if (!existing) throw new Error("Expense not found");
+
+  const until = retentionUntilForDate(existing.date);
+  if (isWithinRetention(until)) {
+    const struck = await prisma.expense.update({
+      where: { id },
+      data: {
+        status: "STRUCK",
+        struckOutAt: new Date(),
+        struckOutReason: reason?.trim() || "Struck out by user",
+      },
+    });
+    await postInwardFromExpense(struck);
+    revalidatePath("/ceo/expenses");
+    revalidatePath("/ceo/ledgers");
+    return { struck: true as const };
+  }
+
+  // Past retention — still prefer strike over hard delete for audit integrity
+  const struck = await prisma.expense.update({
+    where: { id },
+    data: {
+      status: "STRUCK",
+      struckOutAt: new Date(),
+      struckOutReason: reason?.trim() || "Struck out (past retention)",
+    },
+  });
+  await postInwardFromExpense(struck);
   revalidatePath("/ceo/expenses");
+  revalidatePath("/ceo/ledgers");
+  return { struck: true as const };
 }
 
 export async function listExpenses(category?: string) {
   await requireCeo();
   return prisma.expense.findMany({
-    where: category ? { category } : undefined,
+    where: {
+      status: { not: "STRUCK" },
+      ...(category ? { category } : {}),
+    },
     orderBy: { date: "desc" },
     include: { billedToParty: { select: { id: true, canonicalName: true } } },
   });
@@ -354,7 +432,10 @@ function serializeExpense(e: {
 
 export async function getExpenseSummary() {
   await requireCeo();
-  const expenses = await prisma.expense.findMany({ orderBy: { date: "desc" } });
+  const expenses = await prisma.expense.findMany({
+    where: { status: { not: "STRUCK" } },
+    orderBy: { date: "desc" },
+  });
   const total = expenses.reduce((s, e) => s + Number(e.amount), 0);
   const needsReview = expenses.filter((e) => e.needsReview).length;
 

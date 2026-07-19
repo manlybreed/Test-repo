@@ -46,6 +46,15 @@ Smart draft, import→compliant draft, pre-issue validator, client/agreement mat
 - **F** CN/DN + refund wizard  
 - **G** GSTR-1 + AI reconcile  
 - **H** E-invoice scaffold (flagged)  
-- **I** Backlog (export/LUT, e-way, …)
+- **I** Backlog (export/LUT, e-way, …)  
+- **J** Ledgers schema + retention + expense harden  
+- **K** Outward/inward/ITC/advance posting engines + backfill  
+- **L** GSTR-2B/1 portal seed + Ledgers UI  
+- **M** On-demand CSV register export + 72-month guards  
+- **N** Docs / gap matrix for ledgers  
+
+### Ledgers (Phases J–N)
+
+Software maintains Rule 56 registers: **Outward**, **Inward**, **ITC**, **Advance**, and **Stock** (N/A scaffold for services — `maintainsStockLedger=false`). Books are append-only; corrections strike + compensate; never hard-delete ledger rows. Sec 36 retention: entries store `retentionUntil` (FY annual-return due + 72 months heuristic — confirm with practitioner). On-demand CSV export per register. Seed from GSTR-2B / GSTR-1 JSON uploads.
 
 See also: [gap-matrix-and-breaks.md](./gap-matrix-and-breaks.md).

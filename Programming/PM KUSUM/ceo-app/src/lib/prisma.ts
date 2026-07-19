@@ -6,7 +6,7 @@ import { PrismaClient } from "@prisma/client";
  * a process that loaded @prisma/client before `prisma generate` will
  * still construct a client missing new models until the server restarts.
  */
-const PRISMA_SCHEMA_STAMP = "plant-fee-flat-v1";
+const PRISMA_SCHEMA_STAMP = "gst-ledgers-v1";
 
 const REQUIRED_MODELS = [
   "kusumPlant",
@@ -16,6 +16,12 @@ const REQUIRED_MODELS = [
   "plantFileComment",
   "plantTask",
   "appSetting",
+  "outwardSupplyEntry",
+  "inwardSupplyEntry",
+  "itcLedgerEntry",
+  "advanceLedgerEntry",
+  "stockLedgerEntry",
+  "auditLog",
 ] as const;
 
 const globalForPrisma = globalThis as unknown as {

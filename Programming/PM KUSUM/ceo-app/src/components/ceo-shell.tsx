@@ -58,6 +58,7 @@ const NAV_SECTIONS = [
       { href: "/ceo/financing",  label: "PM KUSUM Financing", icon: "invoice" },
       { href: "/ceo/agreements", label: "Agreements",  icon: "agreement", ownerOnly: true },
       { href: "/ceo/invoices",   label: "Invoices",    icon: "invoice" },
+      { href: "/ceo/ledgers",    label: "Ledgers",     icon: "invoice" },
       { href: "/ceo/expenses",   label: "Expenses",    icon: "expense" },
     ],
   },
