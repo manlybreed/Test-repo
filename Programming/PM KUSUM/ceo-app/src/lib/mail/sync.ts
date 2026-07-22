@@ -20,6 +20,7 @@ import {
   recomputeThreadDenorm,
   reconcileThreadFlagLabels,
 } from "@/lib/mail/threads-query";
+import { publishMailLive } from "@/lib/mail/live-bus";
 import path from "path";
 import fs from "fs/promises";
 
@@ -124,18 +125,32 @@ export async function syncCeoMail(opts?: {
   maxPerFolder?: number;
   /** Cap AI triage for newly imported threads (0 = skip). Default 8. */
   maxTriageNew?: number;
+  /** Limit to these folder roles (e.g. IDLE delta for INBOX/SENT). */
+  roles?: string[];
+  /**
+   * Only fetch UIDs newer than lastUid; skip full-window flag refresh / tombstones.
+   * Used by IMAP IDLE near-real-time pulls.
+   */
+  incremental?: boolean;
 }) {
   const account = await ensureCeoMailAccount(opts?.userId);
   if (!account) throw new Error("CEO mail not configured");
 
   const max = opts?.maxPerFolder ?? 60;
   const maxTriageNew = opts?.maxTriageNew ?? 8;
-  // One-shot cleanup of flag chips that used to pollute Inbox/Sent lists
-  await reconcileThreadFlagLabels(account.id).catch(() => 0);
-  // Fix absurd smart labels (e.g. test mail → RECEIPT) without calling Claude
-  await repairSmartLabels({ accountId: account.id, limit: 80 }).catch(
-    () => undefined,
-  );
+  const incremental = Boolean(opts?.incremental);
+  const roleFilter = opts?.roles?.length
+    ? new Set(opts.roles.map((r) => r.toUpperCase()))
+    : null;
+
+  if (!incremental) {
+    // One-shot cleanup of flag chips that used to pollute Inbox/Sent lists
+    await reconcileThreadFlagLabels(account.id).catch(() => 0);
+    // Fix absurd smart labels (e.g. test mail → RECEIPT) without calling Claude
+    await repairSmartLabels({ accountId: account.id, limit: 80 }).catch(
+      () => undefined,
+    );
+  }
 
   const client = await connectImap();
   let imported = 0;
@@ -151,6 +166,8 @@ export async function syncCeoMail(opts?: {
       }
       const role =
         roleFromSpecialUse(box.specialUse) || roleForPath(pathName);
+
+      if (roleFilter && !roleFilter.has(role)) continue;
 
       const folder = await prisma.mailFolder.upsert({
         where: {
@@ -181,40 +198,54 @@ export async function syncCeoMail(opts?: {
 
         const exists = await client.search({ all: true }, { uid: true });
         const uids = (exists === false ? [] : exists) as number[];
-        const folderMax =
-          role === "INBOX"
-            ? Math.max(max, 300)
-            : role === "SENT"
-              ? Math.max(max, 150)
-              : max;
         const sorted = [...uids].sort((a, b) => a - b);
-        const windowUids = sorted.slice(-folderMax);
 
-        const already = windowUids.length
-          ? await prisma.mailMessage.findMany({
-              where: { folderId: folder.id, imapUid: { in: windowUids } },
-              select: { imapUid: true },
-            })
-          : [];
-        const haveUid = new Set(already.map((m) => m.imapUid));
-        const newUids = windowUids.filter((u) => !haveUid.has(u));
-        const refreshUids = windowUids.filter((u) => haveUid.has(u));
+        let windowUids: number[];
+        let newUids: number[];
+        let refreshUids: number[] = [];
 
-        // Tombstone: local UIDs in this window that vanished from IMAP (moved/deleted)
-        if (windowUids.length) {
-          const minWindow = windowUids[0]!;
-          const stale = await prisma.mailMessage.findMany({
-            where: {
-              folderId: folder.id,
-              imapUid: { gte: minWindow, notIn: windowUids },
-            },
-            select: { id: true, threadId: true },
-          });
-          if (stale.length) {
-            await prisma.mailMessage.deleteMany({
-              where: { id: { in: stale.map((s) => s.id) } },
+        if (incremental) {
+          // Only messages the server has assigned after our watermark
+          newUids = sorted.filter((u) => u > syncState.lastUid);
+          if (newUids.length > max) {
+            newUids = newUids.slice(-max);
+          }
+          windowUids = newUids;
+        } else {
+          const folderMax =
+            role === "INBOX"
+              ? Math.max(max, 300)
+              : role === "SENT"
+                ? Math.max(max, 150)
+                : max;
+          windowUids = sorted.slice(-folderMax);
+
+          const already = windowUids.length
+            ? await prisma.mailMessage.findMany({
+                where: { folderId: folder.id, imapUid: { in: windowUids } },
+                select: { imapUid: true },
+              })
+            : [];
+          const haveUid = new Set(already.map((m) => m.imapUid));
+          newUids = windowUids.filter((u) => !haveUid.has(u));
+          refreshUids = windowUids.filter((u) => haveUid.has(u));
+
+          // Tombstone: local UIDs in this window that vanished from IMAP (moved/deleted)
+          if (windowUids.length) {
+            const minWindow = windowUids[0]!;
+            const stale = await prisma.mailMessage.findMany({
+              where: {
+                folderId: folder.id,
+                imapUid: { gte: minWindow, notIn: windowUids },
+              },
+              select: { id: true, threadId: true },
             });
-            for (const s of stale) touchedThreads.add(s.threadId);
+            if (stale.length) {
+              await prisma.mailMessage.deleteMany({
+                where: { id: { in: stale.map((s) => s.id) } },
+              });
+              for (const s of stale) touchedThreads.add(s.threadId);
+            }
           }
         }
 
@@ -497,9 +528,20 @@ export async function syncCeoMail(opts?: {
     triaged = t.labeled;
   }
 
-  // AI-13: extract attachment text for RAG (best-effort, capped)
-  const { processPendingAttachments } = await import("@/lib/mail/ai/attachments");
-  await processPendingAttachments(account.id, 12).catch(() => 0);
+  if (!incremental) {
+    const { processPendingAttachments } = await import(
+      "@/lib/mail/ai/attachments"
+    );
+    await processPendingAttachments(account.id, 12).catch(() => 0);
+  }
+
+  if (imported > 0 || !incremental) {
+    publishMailLive({
+      type: "mail:updated",
+      accountId: account.id,
+      imported,
+    });
+  }
 
   return { accountId: account.id, imported, triaged };
 }

@@ -12,6 +12,7 @@
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
+    "mail:idle": "tsx scripts/mail-idle.ts",
     "postinstall": "prisma generate",
     "desktop:prepare": "prisma generate && next build",
     "desktop:dev": "bash macos/build-shell.sh macos/.build/debug/BluRidgeCEO && CEO_DESKTOP_URL=http://127.0.0.1:3000 macos/.build/debug/BluRidgeCEO",

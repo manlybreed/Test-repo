@@ -29,6 +29,17 @@ Mail server is a dependency; AI is additive; retrieval-grounded; human confirms 
 
 No pgvector in v1.
 
+## Live sync (IMAP IDLE)
+
+Near-real-time inbox/sent updates while the Next.js server is running:
+
+1. `src/instrumentation.ts` starts `startMailIdleWatcher()` (disable with `CEO_MAIL_IDLE=0`)
+2. Long-lived IMAP connections watch **INBOX** + **SENT**; on `exists`/`flags`/`expunge` → incremental sync
+3. Events publish on an in-process bus → `/api/mail/live` SSE → mail UI reloads the active view
+4. **Refresh** button remains as a manual full sync; 10‑minute quiet poll only if SSE is disconnected
+
+Optional debug worker: `npm run mail:idle`
+
 ## Spec coverage (AI-01 … AI-21)
 
 | ID | Feature | Phase | Status |
