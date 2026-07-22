@@ -3,7 +3,7 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   // Standalone output powers the native Mac .app (faster cold start).
   output: "standalone",
-  serverExternalPackages: ["@react-pdf/renderer", "docx"],
+  serverExternalPackages: ["@react-pdf/renderer", "docx", "imapflow", "mailparser"],
   images: {
     unoptimized: true,
   },

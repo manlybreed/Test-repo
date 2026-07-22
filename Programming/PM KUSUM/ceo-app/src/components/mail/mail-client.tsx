@@ -78,7 +78,7 @@ const SYSTEM_FOLDER_ROLES = new Set<string>(SYSTEM_ROLE_ORDER);
 const HIDDEN_MAILBOX_RE =
   /^(all mail|all|important|starred|starred mail|notes|chats|snoozed|scheduled|outbox|junk e-mail|deleted items|sent messages|sent items|drafts?)$/i;
 
-const MAIL_POLL_MS = 3 * 60 * 1000;
+const MAIL_POLL_MS = 10 * 60 * 1000; // fallback only when live SSE is down
 const OUTBOX_ID = "__outbox__";
 const SMART_INBOX_ID = "__smart_inbox__";
 
@@ -485,6 +485,7 @@ export function MailClient({
   }, []);
   /** When false, a background draft save must not reattach draftId (e.g. after opening a thread). */
   const attachDraftIdRef = useRef(true);
+  const [liveConnected, setLiveConnected] = useState(false);
   const [status, setStatus] = useState("");
   const [askQ, setAskQ] = useState("");
   const [askA, setAskA] = useState("");
@@ -1697,7 +1698,7 @@ export function MailClient({
         kind: "sync",
         label: "Connecting to mail.thebluridge.com…",
       });
-      setStatus("Syncing…");
+      setStatus("Refreshing…");
     }
     const phases = [
       "Connecting to mail.thebluridge.com…",
@@ -1724,7 +1725,7 @@ export function MailClient({
         if (r.bootstrap?.configured) applyBootstrap(r.bootstrap);
         await reloadActiveView();
         const msg =
-          `Synced · ${r.imported} new` +
+          `Refreshed · ${r.imported} new` +
           (r.triaged ? ` · ${r.triaged} categorized` : "");
         setStatus(msg);
         if (!opts?.quiet) {
@@ -1738,7 +1739,7 @@ export function MailClient({
         }
       } catch (e) {
         if (!opts?.quiet) {
-          setStatus(e instanceof Error ? e.message : "Sync failed");
+          setStatus(e instanceof Error ? e.message : "Refresh failed");
           setJobProgress(null);
           haptic("warn");
         }
@@ -1752,17 +1753,74 @@ export function MailClient({
     });
   }
 
-  // Auto-check for new mail every 3 minutes while this page is open
+  // Live updates via IMAP IDLE → SSE (near real-time)
   useEffect(() => {
     if (!configured) return;
+    let es: EventSource | null = null;
+    let closed = false;
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleRefresh = () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        if (document.visibilityState !== "visible") return;
+        void reloadActiveView().then(() => {
+          setStatus((s) =>
+            s.startsWith("Live") || !s ? "Live · mailbox updated" : s,
+          );
+        });
+      }, 350);
+    };
+
+    const connect = () => {
+      if (closed) return;
+      es = new EventSource("/api/mail/live");
+      es.onopen = () => setLiveConnected(true);
+      es.onerror = () => {
+        // EventSource reconnects automatically; mark offline until next open
+        setLiveConnected(false);
+      };
+      es.onmessage = (msg) => {
+        try {
+          const data = JSON.parse(msg.data) as {
+            type?: string;
+            imported?: number;
+          };
+          if (data.type === "hello" || data.type === "ping") {
+            setLiveConnected(true);
+          }
+          if (data.type === "mail:updated") scheduleRefresh();
+          if (data.type === "mail:idle") {
+            setLiveConnected(true);
+            setStatus((s) => s || "Live · watching mailbox");
+          }
+        } catch {
+          /* ignore malformed */
+        }
+      };
+    };
+
+    connect();
+    return () => {
+      closed = true;
+      setLiveConnected(false);
+      if (refreshTimer) clearTimeout(refreshTimer);
+      es?.close();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- live channel while configured
+  }, [configured]);
+
+  // Fallback poll only when live channel is down
+  useEffect(() => {
+    if (!configured || liveConnected) return;
     const tick = () => {
       if (document.visibilityState !== "visible") return;
       runSync({ quiet: true });
     };
     const id = window.setInterval(tick, MAIL_POLL_MS);
     return () => window.clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- poll only while configured
-  }, [configured]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [configured, liveConnected]);
 
   return (
     <div className="mail-shell relative flex h-[calc(100vh-7.5rem)] min-h-[560px] flex-col gap-3 overflow-hidden">
@@ -1798,7 +1856,8 @@ export function MailClient({
             <span style={{ color: "var(--mail-muted)" }}>{accountInfo?.address}</span>
             {accountInfo?.lastSyncedAt
               ? ` · ${timesReady ? formatWhen(accountInfo.lastSyncedAt) : "—"} · ${threads.length} threads`
-              : " · not synced — hit Sync"}
+              : " · not synced — hit Refresh"}
+            {liveConnected ? " · live" : ""}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -1806,7 +1865,7 @@ export function MailClient({
             Compose
           </GhostBtn>
           <GhostBtn onClick={() => runSync()} disabled={syncing || categorizing}>
-            {syncing ? "Syncing…" : "Sync"}
+            {syncing ? "Refreshing…" : "Refresh"}
           </GhostBtn>
           <GhostBtn onClick={runCategorizeAll} disabled={categorizing || syncing}>
             {categorizing
@@ -1903,7 +1962,7 @@ export function MailClient({
           >
             <div className="mb-1.5 flex items-center justify-between gap-3 text-[0.7rem]">
               <span style={{ color: "var(--accent-bright)" }}>
-                {jobProgress.kind === "sync" ? "Sync" : "Categorize"}
+                {jobProgress.kind === "sync" ? "Refresh" : "Categorize"}
                 {" · "}
                 {jobProgress.label}
               </span>
@@ -2562,7 +2621,7 @@ export function MailClient({
                     : "No threads match"}
                 </p>
                 <GhostBtn onClick={() => runSync()} primary>
-                  Sync mailbox
+                  Refresh mailbox
                 </GhostBtn>
               </li>
             )}
