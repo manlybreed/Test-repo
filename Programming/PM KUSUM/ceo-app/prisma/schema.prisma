@@ -770,6 +770,7 @@ model MailAccount {
   labelRules    MailLabelRule[]
   syncStates    MailSyncState[]
   autonomy      MailAutonomySettings?
+  blockedSenders BlockedSender[]
 }
 
 model MailFolder {
@@ -801,6 +802,8 @@ model MailThread {
   unreadCount    Int      @default(0)
   /// P1 | P2 | P3 | P4 | NONE
   priority       String   @default("NONE")
+  /// Distinct from priority — a manual "important" star
+  important      Boolean  @default(false)
   labelsJson     String   @default("[]")
   snoozedUntil   DateTime?
   clientId       String?
@@ -812,6 +815,7 @@ model MailThread {
   @@index([accountId, lastMessageAt])
   @@index([accountId, priority])
   @@index([snoozedUntil])
+  @@index([accountId, important])
 }
 
 model MailMessage {
@@ -977,6 +981,18 @@ model MailLabelRule {
   updatedAt   DateTime @updatedAt
 
   @@index([accountId, enabled])
+}
+
+model BlockedSender {
+  id        String   @id @default(cuid())
+  accountId String
+  account   MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  address   String
+  reason    String?
+  createdAt DateTime @default(now())
+
+  @@unique([accountId, address])
+  @@index([accountId])
 }
 
 model MailAutonomySettings {

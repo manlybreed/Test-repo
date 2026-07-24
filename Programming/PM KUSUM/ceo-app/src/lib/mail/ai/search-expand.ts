@@ -80,6 +80,7 @@ export async function expandSearchQuery(query: string): Promise<SearchPlan> {
   const raw = await claudeJson<SearchPlan>({
     model: "haiku",
     maxTokens: 500,
+    timeoutMs: 3000,
     system: `You expand CEO mailbox search queries into JSON for India business email.
 Return JSON only:
 {
@@ -168,6 +169,7 @@ export async function rerankSearchHits(opts: {
   const raw = await claudeJson<z.infer<typeof RerankSchema>>({
     model: "haiku",
     maxTokens: 800,
+    timeoutMs: 3000,
     system: `Rank mailbox threads for a search query. Return JSON {orderedIds: string[]}
 with the most relevant thread ids first. Only use ids from the candidates list.
 Drop clearly irrelevant threads. Prefer subject/from matches over weak body noise.`,

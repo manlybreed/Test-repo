@@ -23,6 +23,7 @@ export type ThreadListRow = {
   lastMessageAt: Date;
   unreadCount: number;
   priority: string;
+  important: boolean;
   labelsJson: string;
   fromName: string | null;
   fromAddress: string | null;
@@ -129,6 +130,7 @@ function toRow(
     lastMessageAt: Date;
     unreadCount: number;
     priority: string;
+    important: boolean;
     labelsJson: string;
   },
   preview: MsgPreview | null,
@@ -147,6 +149,7 @@ function toRow(
     lastMessageAt: preview?.date || t.lastMessageAt,
     unreadCount: folderRole === "INBOX" ? t.unreadCount : 0,
     priority: t.priority,
+    important: t.important,
     labelsJson: JSON.stringify(displayLabels(t.labelsJson, folderRole)),
     fromName: counterpart ? null : preview?.fromName || null,
     fromAddress: counterpart || preview?.fromAddress || null,
@@ -309,6 +312,7 @@ export async function queryThreadsForView(opts: {
       lastMessageAt: true,
       unreadCount: true,
       priority: true,
+      important: true,
       labelsJson: true,
     },
   });

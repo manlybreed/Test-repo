@@ -69,6 +69,8 @@ export async function claudeJson<T>(opts: {
   system: string;
   user: string;
   maxTokens?: number;
+  /** Abort and return null past this budget instead of blocking the caller. */
+  timeoutMs?: number;
 }): Promise<T | null> {
   const client = getAnthropic();
   if (!client) return null;
@@ -80,12 +82,15 @@ export async function claudeJson<T>(opts: {
 
 Respond with a single JSON value only (object or array). No markdown fences, no preamble, no trailing commentary.`;
 
-  const res = await client.messages.create({
-    model,
-    max_tokens: opts.maxTokens ?? 2048,
-    system,
-    messages: [{ role: "user", content: opts.user }],
-  });
+  const res = await client.messages.create(
+    {
+      model,
+      max_tokens: opts.maxTokens ?? 2048,
+      system,
+      messages: [{ role: "user", content: opts.user }],
+    },
+    { timeout: opts.timeoutMs ?? 6000 },
+  );
 
   const text = res.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")

@@ -72,9 +72,24 @@ Grounding invariants (already enforced, keep them):
 | G4 | `rerankSearchHits` not wired into `retrieveMail` | Ask/draft consume FTS-rank order; rerank only helps thread search |
 | G5 | No recency prior in ranking | ts_rank ties break on date, but a 2-year-old strong lexical match can beat last week's relevant mail |
 | G6 | No retrieval eval harness | Recall regressions (e.g. after prompt or synonym edits) are invisible until the CEO notices |
-| G7 | No semantic recall | "the vendor who kept delaying the transformer delivery" fails unless words overlap |
+| G7 | No semantic recall | "the vendor who kept delaying the transformer delivery" fails unless words overlap — status: conditional, see §4.7 |
+| G8 | No person/contact index | `expandSearchQuery`'s `fromHints` is a static heuristic list, not a real aggregate of who's actually in this mailbox — "who sent…" on an unlisted sender falls through to plain ILIKE |
 
 ## 4. Roadmap
+
+Locked order (see §4.7 Decision log for why): **R1 FTS harden → R2 people index → R3 chunking → R4 golden-set eval → R5 hybrid pgvector (conditional) → R6 support polish + regression watch.**
+
+```
+R1 FTS harden ──► R2 People index ──► R3 Chunking ──► R4 Golden-set eval
+                                                             │
+                                              paraphrase slice still misses?
+                                                     │              │
+                                                    yes             no
+                                                     │              │
+                                                     ▼              ▼
+                                         R5 Hybrid pgvector    skip R5, re-run
+                                          + remeasure           R4 weekly
+```
 
 ### Phase R1 — FTS hardening (no new infra)
 
@@ -83,29 +98,73 @@ Grounding invariants (already enforced, keep them):
 3. **Recency prior** — final score = `scoreSearchHit * exp(-ageDays/180)` cap-floored so strong old matches still surface.
 4. **Wire rerank into ask/draft** — after FTS top-48, run `rerankSearchHits` before `packChunks` when candidate count > limit.
 
-### Phase R2 — chunking & packing
+### Phase R2 — people/contact index
+
+*Moved before chunking — cheap, no new infra, and directly targets "who sent…" recall, which R1 alone under-serves.*
+
+1. Sync-time contact aggregation: `email`, display-name variants seen in From/To/Cc, `lastMessageAt`, sample recent subjects. Small table, updated incrementally per sync/IDLE pull — not a per-query cost.
+2. `expandSearchQuery` gains a person-hint lookup: fuzzy-match name tokens in the query against the contact table (not just the existing `fromHints` heuristic list) before falling back to ILIKE on `fromAddress`.
+3. Feeds `recallPerson` too — turns "recall Name" from a live retrieve into a lookup against a warm, pre-aggregated row.
+
+### Phase R3 — chunking & packing
 
 1. Chunk long bodies/attachment text at sync time (~1000 chars, 150 overlap) into a `MailChunk` table carrying `messageId`; FTS index chunks, retrieve chunks, cite parent message.
 2. Pack budget by model: keep 12k for Haiku paths, raise to ~30k for Sonnet ask/summarize.
 3. Dedupe near-identical quoted-reply chunks before packing (thread tail explosion).
+4. **Load-bearing for R5 too**: if hybrid ships later, chunks (not truncated full bodies) are the embedding unit — do this before vectors regardless of the R4 verdict.
 
-### Phase R3 — retrieval evals (before any pgvector work)
+### Phase R4 — golden-set eval (decision point, not a formality)
 
-1. Golden set: 30–50 real queries (from actual Ask usage logs) → expected messageIds.
-2. `npm run eval:rag` — recall@10 / MRR against the golden set, runs with mocked Claude.
-3. Gate: only proceed to R4 if measured recall shows FTS is the bottleneck (per plan: "pgvector only if FTS recall insufficient").
+1. **Four-bucket golden set**, not a flat query list: production sample (real past Ask queries/searches), adversarial (near-duplicate senders/subjects), edge cases (empty results, very short queries, attachment-only hits), failure replays (anything a user flagged as wrong). Each entry: query → expected `messageId`s.
+2. **Tag one bucket explicitly "paraphrase"** — queries with deliberately weak lexical overlap with the target email (e.g. asking about "the delivery holdup" when the mail says "pushed back the shipment"). This is the slice that actually decides R5, not the aggregate score.
+3. `npm run eval:rag` — recall@10 / MRR overall **and per-bucket**, mocked Claude.
+4. Re-run weekly once it exists — gate on the trend, not a one-time snapshot (catches regressions from prompt/synonym edits, not just the initial hybrid decision).
 
-### Phase R4 — hybrid semantic retrieval (only if R3 says so)
+### Phase R5 — hybrid semantic retrieval (conditional on R4's paraphrase slice)
 
-1. `pgvector` column on `MailChunk`; embed at sync (batched, off the request path).
-2. Hybrid query: FTS top-40 ∪ vector top-40 → Reciprocal Rank Fusion → rerank → pack. Keep FTS-only as automatic fallback.
+Ship only if the paraphrase bucket in R4 still misses after R1–R3 are in. If it clears the bar, skip this phase — re-run R4 weekly instead of building it speculatively.
+
+1. `pgvector` column on `MailChunk`; embed at sync (batched, off the request path) — zero query-time embedding cost except the one query embedding per Ask.
+2. Hybrid query: FTS top-20 ∪ vector top-20 → Reciprocal Rank Fusion → rerank → pack. Over-fetch each side before fusing (RRF needs the extra candidates to have signal); keep FTS-only as automatic fallback if the embedding call fails.
 3. Embedding model via same env-gated pattern as `getAnthropic()` (e.g. Voyage); zero embeddings ⇒ pure-FTS behavior unchanged.
+4. **Remeasure against the same R4 golden set** immediately after shipping — the eval isn't just a gate, it's the acceptance test.
 
-### Phase R5 — support-side polish
+### Phase R6 — support-side polish
 
 1. Ask dock: show "searched for: …" (the SearchPlan intent + groups) so misses are debuggable by the user.
-2. People recall: pre-aggregate per-contact digest (last subjects, open commitments) refreshed on sync, so `recall Name` is instant.
-3. Multi-turn Ask: carry prior citations as pinned context for follow-up questions ("what did he say about the price?" keeps the thread).
+2. Multi-turn Ask: carry prior citations as pinned context for follow-up questions ("what did he say about the price?" keeps the thread).
+3. Keep the R4 golden set running weekly indefinitely — cheapest regression detector for prompt/index changes in R1–R5.
+
+### 4.7 Decision log — why gated, not skipped
+
+An earlier draft of this plan (external review) argued for skipping R4 and building R5 unconditionally, on the premise that `expandSearchQuery` "cannot fix" paraphrase-style queries and that this was already a known, proven failure mode. Two things changed that:
+
+- **No observed failure existed** — the paraphrase examples motivating that argument were hypothetical ("a mail that says something about so-and-so"), never a logged real miss. Skipping measurement to fix an unmeasured problem is the thing R4 exists to prevent.
+- **Retrieval literature doesn't support "structurally impossible"** — LLM-expanded BM25 "frequently approaches or matches the retrieval effectiveness of dense retrievers operating on unexpanded queries" (see sources below). It's not proof this mailbox's setup will succeed, but it means the premise was overstated, not settled.
+- **Scale cuts the same way** — for a single mailbox at low query volume (nowhere near the ~10M-document range where FTS starts to strain), the added infra/cost of pgvector is disproportionate to skip measuring first.
+- **Conceded from that review, and kept**: people-index timing (moved to R2, ahead of chunking) and "must remeasure to know if hybrid helped" — both incorporated above.
+
+Net: R4's paraphrase-labeled slice is the actual test of the disputed claim, not a generic recall number that could hide the exact failure mode in question. If R5 is needed, R4 will show it — cheaply, in about an eval-build afternoon, not weeks.
+
+Sources: [Building Hybrid Search for RAG (pgvector + FTS + RRF)](https://dev.to/lpossamai/building-hybrid-search-for-rag-combining-pgvector-and-full-text-search-with-reciprocal-rank-fusion-6nk) · [Hybrid search with PostgreSQL and pgvector — Jonathan Katz](https://jkatz05.com/post/postgres/hybrid-search-postgres-pgvector/) · [A Reproducibility Study of LLM-Based Query Reformulation](https://arxiv.org/pdf/2604.27421) · [Vector Database Recall Evaluation (2026)](https://futureagi.com/blog/evaluating-vector-database-recall-quality-2026/)
+
+## 4.8 Target latency budget (Ask path)
+
+| Step | Typical cost |
+|---|---|
+| `expandSearchQuery` (Haiku, 10-min cache) | 0–1.5s (0 if cache hit) |
+| FTS query + `packChunks` | 50–300ms |
+| `rerankSearchHits` (Haiku, R1) | ~0.5–1s |
+| Final answer (Sonnet) | 1–3s |
+| **Total (cache miss, no hybrid)** | **typically < 5s** |
+| + hybrid (R5, if shipped) | + query embedding (~100–300ms) + ANN search (tens of ms) — stays under budget since it replaces, not adds to, the FTS step |
+
+## 4.9 Success criteria
+
+- "There's a mail about X — who sent it?" resolves to correct sender + subject + an openable citation, in < 5s on a warm server.
+- R4 recall@10 clears the target on the overall set **and** the paraphrase-tagged bucket specifically (a passing aggregate with a failing paraphrase bucket does not count as done).
+- Empty retrieval still returns an honest "not found," never an invented answer.
+- Weekly golden-set re-run stays flat or improves — a regression here blocks unrelated prompt/index changes from shipping silently.
 
 ## 5. Non-goals
 
@@ -115,6 +174,7 @@ Grounding invariants (already enforced, keep them):
 
 ## 6. Tests
 
-- Extend `retrieve.test.ts` for tsv-column path, unaccent matches, recency decay.
-- New `chunking.test.ts` (R2) and `eval/rag-golden.test.ts` (R3).
+- Extend `retrieve.test.ts` for tsv-column path, unaccent matches, recency decay (R1).
+- New `contacts.test.ts` (R2), `chunking.test.ts` (R3), and `eval/rag-golden.test.ts` (R4, includes the paraphrase bucket).
+- If R5 ships: `hybrid-retrieve.test.ts` asserting FTS-only fallback when embeddings are unset, plus a rerun of `eval/rag-golden.test.ts` against the same set.
 - All mocked-Anthropic; live check stays behind `CEO_MAIL_LIVE_TEST=1`.
