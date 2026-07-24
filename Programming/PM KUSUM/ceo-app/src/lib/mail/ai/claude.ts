@@ -69,7 +69,11 @@ export async function claudeJson<T>(opts: {
   system: string;
   user: string;
   maxTokens?: number;
-  /** Abort and return null past this budget instead of blocking the caller. */
+  /**
+   * Abort and return null past this budget instead of blocking the caller.
+   * Latency-sensitive helpers (expand/rerank) pass a tight 3s; the default is
+   * generous enough for a Sonnet grounded answer over a full pack budget.
+   */
   timeoutMs?: number;
 }): Promise<T | null> {
   const client = getAnthropic();
@@ -89,7 +93,7 @@ Respond with a single JSON value only (object or array). No markdown fences, no 
       system,
       messages: [{ role: "user", content: opts.user }],
     },
-    { timeout: opts.timeoutMs ?? 6000 },
+    { timeout: opts.timeoutMs ?? 45000 },
   );
 
   const text = res.content

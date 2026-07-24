@@ -77,6 +77,8 @@ Grounding invariants (already enforced, keep them):
 
 ## 4. Roadmap
 
+**Implementation status (branch `feature/rag-search-improvements`):** R1 ✅ · R2 ✅ · R3 ✅ · R4 ✅ scaffolded · R5 ⛔ gated (paraphrase slice currently clears the bar with AI-expand → not built) · R6 ⏳ pending. First `npm run eval:rag` result: overall recall@10 **1.00** with AI expand, **0.92** FTS-only; paraphrase slice **1.00** vs **0.67** — empirically confirming LLM-expand bridges the paraphrase gap that pure FTS misses, so pgvector is not yet justified.
+
 Locked order (see §4.7 Decision log for why): **R1 FTS harden → R2 people index → R3 chunking → R4 golden-set eval → R5 hybrid pgvector (conditional) → R6 support polish + regression watch.**
 
 ```
@@ -91,34 +93,35 @@ R1 FTS harden ──► R2 People index ──► R3 Chunking ──► R4 Golde
                                           + remeasure           R4 weekly
 ```
 
-### Phase R1 — FTS hardening (no new infra)
+### Phase R1 — FTS hardening (no new infra) ✅
 
-1. **Stored `tsv` column** (generated, GIN-indexed) replacing the expression index; `setweight` A=subject, B=from/participants, C=body, D=attachment text. Migration + drop old index.
-2. **`unaccent` + `simple` config union** — index `to_tsvector('english', …) || to_tsvector('simple', unaccent(…))` so names, Hindi transliterations, and codes (PM-KUSUM, IREDA) match exactly.
-3. **Recency prior** — final score = `scoreSearchHit * exp(-ageDays/180)` cap-floored so strong old matches still surface.
-4. **Wire rerank into ask/draft** — after FTS top-48, run `rerankSearchHits` before `packChunks` when candidate count > limit.
+1. **Weighted `unaccent` expression GIN index** (`mail_message_tsv_idx`, `ensureMailFtsIndex()`): `setweight` A=subject, B=from/to, C=body, D=searchText (incl. attachment text), each as `english ∥ simple` over an immutable `f_unaccent()` wrapper. `retrieveMail` ranks with `ts_rank_cd` on the same expression.
+   *Decision:* used an **expression index, not a stored generated column** — a generated `tsvector` column breaks `prisma db push` (it errors trying to manage a default on it, and requires `--accept-data-loss`), whereas a non-schema expression index survives every `db push`. At mailbox scale the per-query recompute over ~48 candidates is negligible. Validated with `EXPLAIN` (Bitmap Index Scan) and a from-scratch `ensure()` recreate.
+2. **`unaccent` + `simple` config union** — done as part of (1); José→jose, Café→cafe, PM-KUSUM verified.
+3. **Recency prior** — `scoreSearchHit` multiplies by `max(0.4, exp(-ageDays/180))` when a `date` is supplied (opt-in; no-date path undecayed). Unit-tested.
+4. **Wire rerank into ask** — `retrieveMail({rerank:true})` runs `rerankSearchHits` (Haiku, 3s timeout) over the top ~2×limit shortlist before trimming; enabled on the Ask path.
 
-### Phase R2 — people/contact index
+### Phase R2 — people/contact index ✅
 
 *Moved before chunking — cheap, no new infra, and directly targets "who sent…" recall, which R1 alone under-serves.*
 
-1. Sync-time contact aggregation: `email`, display-name variants seen in From/To/Cc, `lastMessageAt`, sample recent subjects. Small table, updated incrementally per sync/IDLE pull — not a per-query cost.
-2. `expandSearchQuery` gains a person-hint lookup: fuzzy-match name tokens in the query against the contact table (not just the existing `fromHints` heuristic list) before falling back to ILIKE on `fromAddress`.
-3. Feeds `recallPerson` too — turns "recall Name" from a live retrieve into a lookup against a warm, pre-aggregated row.
+1. `MailContact` model + `upsertContactsFromMessage` (called per new message in sync): address, display-name variants, `messageCount` (sender-only), `lastMessageAt`, recent subjects. Idempotent SQL `backfillContacts` seeds history (130 contacts from 740 messages, verified).
+2. `findContacts` / `resolvePersonAddress`: fuzzy name/domain lookup with pure `rankContacts` scoring (token hits → frequency → recency), unit-tested. Lazy-backfills on first empty lookup.
+3. Wired into `recallPerson` — resolves a bare name to the best address before retrieval. (Full `expandSearchQuery` integration for arbitrary "who sent" NL queries left for R6.)
 
-### Phase R3 — chunking & packing
+### Phase R3 — chunking & packing ✅
 
-1. Chunk long bodies/attachment text at sync time (~1000 chars, 150 overlap) into a `MailChunk` table carrying `messageId`; FTS index chunks, retrieve chunks, cite parent message.
-2. Pack budget by model: keep 12k for Haiku paths, raise to ~30k for Sonnet ask/summarize.
-3. Dedupe near-identical quoted-reply chunks before packing (thread tail explosion).
-4. **Load-bearing for R5 too**: if hybrid ships later, chunks (not truncated full bodies) are the embedding unit — do this before vectors regardless of the R4 verdict.
+1. `MailChunk` model + `rechunkMessage` (~1000 chars, 150 overlap) over body + attachment text, FTS-indexed (`mail_chunk_tsv_idx`). Built at message create and again after attachment extraction (`extractAttachmentText`). Backfilled 4,944 chunks from 740 messages, verified. `bestChunkByMessage` returns the query-relevant passage per candidate; `retrieveMail` packs that instead of the naive first-1200-chars.
+2. Pack budget by model: Ask (Sonnet) raised to 24k; Haiku paths keep 12k.
+3. `stripQuotedTail` removes trailing quoted-reply blocks before chunking (dedupes thread tails); unit-tested alongside `chunkText`.
+4. **Load-bearing for R5 too**: chunks are the embedding unit if hybrid ever ships — done regardless of the R4 verdict.
 
-### Phase R4 — golden-set eval (decision point, not a formality)
+### Phase R4 — golden-set eval (decision point, not a formality) ✅ scaffolded
 
-1. **Four-bucket golden set**, not a flat query list: production sample (real past Ask queries/searches), adversarial (near-duplicate senders/subjects), edge cases (empty results, very short queries, attachment-only hits), failure replays (anything a user flagged as wrong). Each entry: query → expected `messageId`s.
-2. **Tag one bucket explicitly "paraphrase"** — queries with deliberately weak lexical overlap with the target email (e.g. asking about "the delivery holdup" when the mail says "pushed back the shipment"). This is the slice that actually decides R5, not the aggregate score.
-3. `npm run eval:rag` — recall@10 / MRR overall **and per-bucket**, mocked Claude.
-4. Re-run weekly once it exists — gate on the trend, not a one-time snapshot (catches regressions from prompt/synonym edits, not just the initial hybrid decision).
+1. **Four-bucket golden set** in `scripts/rag-golden.json`: production, adversarial, edge, **paraphrase**. Expectations are resync-stable sender/subject substrings (not `messageId`s, which regenerate on resync). Seeded with a starter set — grow from real Ask/search logs and flagged misses.
+2. The **paraphrase** bucket is tagged as the R5 decision slice, exactly as designed.
+3. `npm run eval:rag` (`scripts/eval-rag.ts`) — recall@10 / MRR overall **and per-bucket**, runs the real `retrieveMail`; prints whether it ran in AI-expand or FTS-only mode and whether the paraphrase slice clears the target.
+4. Re-run periodically once the set grows — gate on the trend. *(Weekly automation not yet wired.)*
 
 ### Phase R5 — hybrid semantic retrieval (conditional on R4's paraphrase slice)
 

@@ -1,0 +1,26 @@
+{
+  "_readme": "Phase R4 golden set for `npm run eval:rag`. Four buckets. Each entry: a query and one or more `expect` clauses (fromContains / subjectContains, case-insensitive). An entry HITS if any expect clause matches any result in top-k. The `paraphrase` bucket is the decision slice for R5 (hybrid pgvector): if it clears the bar after R1-R3, skip R5. Grow this from real Ask/search logs and flagged misses; keep expectations resync-stable (sender/subject substrings, not messageIds).",
+  "buckets": {
+    "production": [
+      { "query": "invoice from anthropic", "expect": [{ "fromContains": "anthropic" }] },
+      { "query": "hackernoon newsletter", "expect": [{ "fromContains": "hackernoon" }] },
+      { "query": "reddit protests india", "expect": [{ "fromContains": "reddit" }] },
+      { "query": "proforma invoice bluridge", "expect": [{ "subjectContains": "invoice" }] },
+      { "query": "HBS executive education program", "expect": [{ "fromContains": "hbs" }, { "subjectContains": "executive" }] }
+    ],
+    "adversarial": [
+      { "query": "test email bluridge consulting", "expect": [{ "subjectContains": "test" }] },
+      { "query": "meeting invitation nextcloud", "expect": [{ "subjectContains": "meeting" }, { "subjectContains": "invitation" }] }
+    ],
+    "edge": [
+      { "query": "hi", "expectEmptyOk": true },
+      { "query": "zzznonexistentqueryxyz", "expectEmpty": true },
+      { "query": "viability report", "expect": [{ "subjectContains": "viability" }] }
+    ],
+    "paraphrase": [
+      { "query": "the message about paying anthropic", "expect": [{ "fromContains": "anthropic" }] },
+      { "query": "who emailed about a virtual office renewal", "expect": [{ "subjectContains": "renewal" }] },
+      { "query": "note about a credit for a bill", "expect": [{ "subjectContains": "credit" }, { "fromContains": "anthropic" }] }
+    ]
+  }
+}

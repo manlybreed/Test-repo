@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { claudeJson, fenceMailData, getAnthropic } from "@/lib/mail/ai/claude";
 import { packChunks, retrieveMail, type RetrievedChunk } from "@/lib/mail/ai/retrieve";
+import { resolvePersonAddress } from "@/lib/mail/contacts";
 
 const AskSchema = z.object({
   answer: z.string(),
@@ -47,8 +48,14 @@ export async function askMailbox(
   accountId: string,
   question: string,
 ): Promise<AskResult> {
-  const chunks = await retrieveMail({ accountId, query: question, limit: 15 });
-  const { packed, citations } = packChunks(chunks);
+  const chunks = await retrieveMail({
+    accountId,
+    query: question,
+    limit: 15,
+    rerank: true,
+  });
+  // R3: Sonnet answers from a larger context budget than the Haiku paths.
+  const { packed, citations } = packChunks(chunks, 24000);
 
   if (!packed) {
     return {
@@ -95,12 +102,15 @@ If unsupported by mail_data, set notFound true and answer "I don't find that in 
   };
 }
 
-/** AI-16 */
+/** AI-16 — resolve the person to an address via the R2 contact index first. */
 export async function recallPerson(
   accountId: string,
   person: string,
 ): Promise<AskResult> {
-  const asEmail = person.includes("@") ? person : undefined;
+  const resolved = await resolvePersonAddress(accountId, person).catch(
+    () => null,
+  );
+  const asEmail = resolved || (person.includes("@") ? person : undefined);
   const chunks = await retrieveMail({
     accountId,
     query: person,
