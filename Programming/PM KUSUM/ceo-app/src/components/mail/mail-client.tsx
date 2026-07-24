@@ -2,6 +2,26 @@
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import {
+  Archive as ArchiveIcon,
+  BellRing,
+  ChevronDown,
+  ChevronsLeft,
+  ChevronsRight,
+  Clock3,
+  FileText,
+  FolderInput,
+  Inbox as InboxIcon,
+  MoreHorizontal,
+  PenLine,
+  RefreshCw,
+  Send,
+  ShieldAlert,
+  SlidersHorizontal,
+  Sparkles,
+  Star,
+  Trash2,
+} from "lucide-react";
 import { MailComposer } from "@/components/mail/composer";
 import { MessageReader, type MailMessageView } from "@/components/mail/message-reader";
 import {
@@ -49,6 +69,11 @@ import {
   upsertLabelRuleAction,
   deleteLabelRuleAction,
   snoozeThread,
+  archiveThreadAction,
+  moveThreadToFolderAction,
+  setThreadImportant,
+  listTasksForThreadAction,
+  blockSenderAction,
 } from "@/actions/mail";
 import {
   DEFAULT_DRAFT_TONE,
@@ -89,6 +114,7 @@ type Thread = {
   lastMessageAt: string | Date;
   unreadCount: number;
   priority: string;
+  important?: boolean;
   labelsJson: string;
   fromName?: string | null;
   fromAddress?: string | null;
@@ -243,6 +269,24 @@ function priorityTone(p: string) {
   return null;
 }
 
+function systemFolderIcon(role: string) {
+  const size = 16;
+  switch (role) {
+    case "INBOX":
+      return <InboxIcon size={size} />;
+    case "SENT":
+      return <Send size={size} />;
+    case "DRAFTS":
+      return <FileText size={size} />;
+    case "TRASH":
+      return <Trash2 size={size} />;
+    case "JUNK":
+      return <ShieldAlert size={size} />;
+    default:
+      return <FileText size={size} />;
+  }
+}
+
 function labelTone(label: string) {
   const h = [...label].reduce((a, c) => a + c.charCodeAt(0), 0) % 5;
   const tones = [
@@ -301,6 +345,20 @@ function formatWhen(d: string | Date) {
   return `${MONTHS_SHORT[date.getMonth()]} ${date.getDate()}`;
 }
 
+/** Ticking "synced Xs/m/h ago" so the header doesn't look frozen between syncs. */
+function formatSyncedAgo(d: string | Date, nowMs: number) {
+  const date = new Date(d);
+  if (Number.isNaN(date.getTime())) return "";
+  const diffSec = Math.max(0, Math.round((nowMs - date.getTime()) / 1000));
+  if (diffSec < 5) return "synced just now";
+  if (diffSec < 60) return `synced ${diffSec}s ago`;
+  const diffMin = Math.round(diffSec / 60);
+  if (diffMin < 60) return `synced ${diffMin}m ago`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `synced ${diffHr}h ago`;
+  return `synced ${formatWhen(date)}`;
+}
+
 function FolderSection({
   title,
   open,
@@ -352,12 +410,34 @@ function FolderRow({
   badge,
   active,
   onClick,
+  compact,
+  icon,
 }: {
   name: string;
   badge: string;
   active: boolean;
   onClick: () => void;
+  /** Icon-rail mode: just an icon, full name as tooltip. */
+  compact?: boolean;
+  icon?: React.ReactNode;
 }) {
+  if (compact) {
+    return (
+      <button
+        type="button"
+        title={name}
+        aria-label={name}
+        onClick={onClick}
+        className="mx-auto flex h-9 w-9 cursor-pointer items-center justify-center rounded-xl transition-colors"
+        style={{
+          background: active ? "var(--mail-purple-dim)" : "transparent",
+          color: active ? "#c4b5fd" : "var(--mail-muted)",
+        }}
+      >
+        {icon ?? <span className="text-[0.6rem] font-semibold">{badge.slice(0, 2)}</span>}
+      </button>
+    );
+  }
   return (
     <button
       type="button"
@@ -388,28 +468,33 @@ function GhostBtn({
   disabled,
   primary,
   danger,
+  bare,
 }: {
   children: React.ReactNode;
   onClick: () => void;
   disabled?: boolean;
   primary?: boolean;
   danger?: boolean;
+  /** No pill background/border — for use inside an already-grouped cluster. */
+  bare?: boolean;
 }) {
   return (
     <motion.button
       type="button"
       disabled={disabled}
-      whileHover={{ y: -1, scale: 1.02 }}
+      whileHover={bare ? { opacity: 1 } : { y: -1, scale: 1.02 }}
       whileTap={{ scale: 0.94 }}
       transition={spring}
       onClick={() => {
         haptic(danger ? "warn" : "tap");
         onClick();
       }}
-      className={`cursor-pointer rounded-full px-3.5 py-2 text-xs font-semibold tracking-wide disabled:cursor-not-allowed disabled:opacity-40 ${primary ? "mail-cta-primary" : ""}`}
+      className={`cursor-pointer rounded-full text-xs font-semibold tracking-wide disabled:cursor-not-allowed disabled:opacity-40 ${bare ? "px-2 py-1 opacity-80 hover:opacity-100" : "px-3.5 py-2"} ${primary ? "mail-cta-primary" : ""}`}
       style={
-        primary
-          ? undefined
+        primary || bare
+          ? bare
+            ? { color: "var(--text-muted)" }
+            : undefined
           : {
               background: danger ? "rgba(239,68,68,0.12)" : "var(--bg-elevated)",
               color: danger ? "#f87171" : "var(--text-muted)",
@@ -418,6 +503,51 @@ function GhostBtn({
       }
     >
       {children}
+    </motion.button>
+  );
+}
+
+/** Compact icon-only action, Gmail/Outlook-style toolbar. Title = tooltip. */
+function IconBtn({
+  icon,
+  title,
+  onClick,
+  disabled,
+  danger,
+  active,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  onClick: () => void;
+  disabled?: boolean;
+  danger?: boolean;
+  active?: boolean;
+}) {
+  return (
+    <motion.button
+      type="button"
+      title={title}
+      aria-label={title}
+      disabled={disabled}
+      whileHover={{ y: -1, scale: 1.05 }}
+      whileTap={{ scale: 0.92 }}
+      transition={spring}
+      onClick={() => {
+        haptic(danger ? "warn" : "tap");
+        onClick();
+      }}
+      className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full disabled:cursor-not-allowed disabled:opacity-40"
+      style={{
+        background: active
+          ? "var(--mail-purple-dim)"
+          : danger
+            ? "rgba(239,68,68,0.12)"
+            : "var(--bg-elevated)",
+        color: active ? "#c4b5fd" : danger ? "#f87171" : "var(--text-muted)",
+        border: "1px solid var(--border-strong)",
+      }}
+    >
+      {icon}
     </motion.button>
   );
 }
@@ -483,6 +613,12 @@ export function MailClient({
   useEffect(() => {
     setTimesReady(true);
   }, []);
+  /** Ticks so "synced Xs/m ago" advances instead of freezing at the last sync's wall-clock time. */
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
   /** When false, a background draft save must not reattach draftId (e.g. after opening a thread). */
   const attachDraftIdRef = useRef(true);
   const [liveConnected, setLiveConnected] = useState(false);
@@ -514,6 +650,9 @@ export function MailClient({
   const [activeSmartLabel, setActiveSmartLabel] = useState<SmartLabel | null>(
     null,
   );
+  const [foldersCollapsed, setFoldersCollapsed] = useState(false);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [showSnoozeMenu, setShowSnoozeMenu] = useState(false);
   const [mailboxesOpen, setMailboxesOpen] = useState(true);
   const [labelsOpen, setLabelsOpen] = useState(true);
   const [smartOpen, setSmartOpen] = useState(true);
@@ -522,6 +661,34 @@ export function MailClient({
   const [commitments, setCommitments] = useState<
     { title: string; dueAt?: string | null; priority?: string }[]
   >([]);
+  const [threadTasks, setThreadTasks] = useState<
+    { id: string; title: string; status: string; dueAt: string | Date | null }[]
+  >([]);
+  const [showMoveMenu, setShowMoveMenu] = useState(false);
+  const [showPriorityMenu, setShowPriorityMenu] = useState(false);
+  const [remindAt, setRemindAt] = useState("");
+  const toolbarMenusRef = useRef<HTMLDivElement>(null);
+
+  // Click outside any open toolbar dropdown (Move to / Snooze / More / Priority) closes it
+  useEffect(() => {
+    if (
+      !showMoveMenu &&
+      !showSnoozeMenu &&
+      !showMoreMenu &&
+      !showPriorityMenu
+    ) {
+      return;
+    }
+    const onPointerDown = (e: MouseEvent) => {
+      if (toolbarMenusRef.current?.contains(e.target as Node)) return;
+      setShowMoveMenu(false);
+      setShowSnoozeMenu(false);
+      setShowMoreMenu(false);
+      setShowPriorityMenu(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [showMoveMenu, showSnoozeMenu, showMoreMenu, showPriorityMenu]);
 
   const systemFolders = useMemo(
     () => pickSystemFolders(folderList),
@@ -561,14 +728,16 @@ export function MailClient({
     // Slightly longer debounce — AI expand + rerank costs a round-trip
     const handle = window.setTimeout(() => {
       startNavTransition(async () => {
+        const startedAt = performance.now();
         try {
           const rows = (await searchThreadsAction(q)) as Thread[];
+          const elapsedMs = Math.round(performance.now() - startedAt);
           setThreads(rows);
           setActiveSmartLabel(null);
           setStatus(
             rows.length
-              ? `Search · ${rows.length} result${rows.length === 1 ? "" : "s"}`
-              : "Search · no matches",
+              ? `Search · ${rows.length} result${rows.length === 1 ? "" : "s"} · ${elapsedMs}ms`
+              : `Search · no matches · ${elapsedMs}ms`,
           );
         } catch (e) {
           setStatus(e instanceof Error ? e.message : "Search failed");
@@ -583,6 +752,7 @@ export function MailClient({
   // Restore folder / smart-label view when search is cleared
   useEffect(() => {
     if (threadQuery.trim().length >= 2) return;
+    setStatus((prev) => (prev.startsWith("Search") ? "" : prev));
     startNavTransition(async () => {
       await reloadActiveView();
     });
@@ -675,8 +845,17 @@ export function MailClient({
     setDraftId(null);
     setAskA("");
     setCommitments([]);
+    setThreadTasks([]);
+    setShowMoveMenu(false);
+    setShowSnoozeMenu(false);
+    setShowMoreMenu(false);
+    setRemindAt("");
     setMessages([]);
     setStatus("Loading…");
+
+    void listTasksForThreadAction(id)
+      .then((rows) => setThreadTasks(rows))
+      .catch(() => undefined);
 
     void (async () => {
       try {
@@ -1765,6 +1944,7 @@ export function MailClient({
       refreshTimer = setTimeout(() => {
         if (document.visibilityState !== "visible") return;
         void reloadActiveView().then(() => {
+          setAccountInfo((a) => (a ? { ...a, lastSyncedAt: new Date() } : a));
           setStatus((s) =>
             s.startsWith("Live") || !s ? "Live · mailbox updated" : s,
           );
@@ -1855,7 +2035,7 @@ export function MailClient({
           >
             <span style={{ color: "var(--mail-muted)" }}>{accountInfo?.address}</span>
             {accountInfo?.lastSyncedAt
-              ? ` · ${timesReady ? formatWhen(accountInfo.lastSyncedAt) : "—"} · ${threads.length} threads`
+              ? ` · ${timesReady ? formatSyncedAgo(accountInfo.lastSyncedAt, nowTick) : "—"} · ${threads.length} threads`
               : " · not synced — hit Refresh"}
             {liveConnected ? " · live" : ""}
           </p>
@@ -1864,67 +2044,100 @@ export function MailClient({
           <GhostBtn onClick={composeNew} primary>
             Compose
           </GhostBtn>
-          <GhostBtn onClick={() => runSync()} disabled={syncing || categorizing}>
-            {syncing ? "Refreshing…" : "Refresh"}
-          </GhostBtn>
-          <GhostBtn onClick={runCategorizeAll} disabled={categorizing || syncing}>
-            {categorizing
-              ? jobProgress?.current != null && jobProgress.total
-                ? `${jobProgress.current}/${jobProgress.total}`
-                : "Categorizing…"
-              : "Categorize"}
-          </GhostBtn>
-          <GhostBtn
-            onClick={() =>
-              startTransition(async () => {
-                haptic("tap");
-                const d = await digestAction();
-                setDigest(
-                  d.groups
-                    .map(
-                      (g) =>
-                        `${g.priority} — ${g.items.map((i) => i.subject).join(" · ")}`,
-                    )
-                    .join("\n") || "Inbox is quiet.",
-                );
-                haptic("success");
-              })
+          <IconBtn
+            title={syncing ? "Refreshing…" : "Refresh mailbox"}
+            icon={
+              <RefreshCw
+                size={15}
+                className={syncing ? "animate-spin" : undefined}
+              />
             }
+            disabled={syncing || categorizing}
+            onClick={() => runSync()}
+          />
+
+          {/* AI mailbox actions, grouped */}
+          <div
+            className="flex flex-wrap items-center gap-0.5 rounded-full pl-2.5 pr-1.5 py-1"
+            style={{
+              background: "var(--mail-purple-dim)",
+              border: "1px solid rgba(139,92,246,0.28)",
+            }}
           >
-            Digest
-          </GhostBtn>
-          <GhostBtn
-            onClick={() =>
-              startTransition(async () => {
-                haptic("tap");
-                const n = await createFollowUpRemindersAction();
-                setStatus(`Follow-ups queued: ${n.length}`);
-                haptic("success");
-              })
-            }
-          >
-            Follow-ups
-          </GhostBtn>
-          <GhostBtn onClick={runBulkCleanup} disabled={pending}>
-            Cleanup
-          </GhostBtn>
-          <GhostBtn
-            onClick={() =>
-              startTransition(async () => {
-                haptic("tap");
-                const style = await refreshStyleAction();
-                setStatus(
-                  style
-                    ? `Style refreshed (${style.sampleCount} sent samples)`
-                    : "No sent samples for style",
-                );
-                haptic(style ? "success" : "warn");
-              })
-            }
-          >
-            Style
-          </GhostBtn>
-          <GhostBtn
+            <Sparkles
+              size={13}
+              className="mr-1 shrink-0"
+              style={{ color: "var(--accent-bright)" }}
+            />
+            <GhostBtn
+              bare
+              onClick={runCategorizeAll}
+              disabled={categorizing || syncing}
+            >
+              {categorizing
+                ? jobProgress?.current != null && jobProgress.total
+                  ? `${jobProgress.current}/${jobProgress.total}`
+                  : "Categorizing…"
+                : "Categorize"}
+            </GhostBtn>
+            <GhostBtn
+              bare
+              onClick={() =>
+                startTransition(async () => {
+                  haptic("tap");
+                  const d = await digestAction();
+                  setDigest(
+                    d.groups
+                      .map(
+                        (g) =>
+                          `${g.priority} — ${g.items.map((i) => i.subject).join(" · ")}`,
+                      )
+                      .join("\n") || "Inbox is quiet.",
+                  );
+                  haptic("success");
+                })
+              }
+            >
+              Digest
+            </GhostBtn>
+            <GhostBtn
+              bare
+              onClick={() =>
+                startTransition(async () => {
+                  haptic("tap");
+                  const n = await createFollowUpRemindersAction();
+                  setStatus(`Follow-ups queued: ${n.length}`);
+                  haptic("success");
+                })
+              }
+            >
+              Follow-ups
+            </GhostBtn>
+            <GhostBtn bare onClick={runBulkCleanup} disabled={pending}>
+              Cleanup
+            </GhostBtn>
+            <GhostBtn
+              bare
+              onClick={() =>
+                startTransition(async () => {
+                  haptic("tap");
+                  const style = await refreshStyleAction();
+                  setStatus(
+                    style
+                      ? `Style refreshed (${style.sampleCount} sent samples)`
+                      : "No sent samples for style",
+                  );
+                  haptic(style ? "success" : "warn");
+                })
+              }
+            >
+              Style
+            </GhostBtn>
+          </div>
+
+          <IconBtn
+            title="Auto-label rules"
+            icon={<SlidersHorizontal size={15} />}
             onClick={() =>
               startTransition(async () => {
                 haptic("tap");
@@ -1933,17 +2146,15 @@ export function MailClient({
                 setShowRules(true);
               })
             }
-          >
-            Rules
-          </GhostBtn>
-          <GhostBtn
+          />
+          <IconBtn
+            title="Signatures"
+            icon={<PenLine size={15} />}
             onClick={() => {
               setShowSignatures(true);
               haptic("tap");
             }}
-          >
-            Signatures
-          </GhostBtn>
+          />
         </div>
       </motion.header>
 
@@ -2258,8 +2469,55 @@ export function MailClient({
           initial={{ opacity: 0, x: -12 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ ...spring, delay: 0.05 }}
-          className="mail-panel flex min-h-0 flex-col overflow-hidden lg:col-span-2"
+          className={`mail-panel flex min-h-0 flex-col overflow-hidden ${foldersCollapsed ? "lg:col-span-1" : "lg:col-span-2"}`}
         >
+          <div
+            className="flex items-center justify-end px-1 pt-1"
+            style={{ borderBottom: "1px solid var(--mail-border)" }}
+          >
+            <IconBtn
+              title={foldersCollapsed ? "Expand folders" : "Collapse folders"}
+              icon={
+                foldersCollapsed ? (
+                  <ChevronsRight size={14} />
+                ) : (
+                  <ChevronsLeft size={14} />
+                )
+              }
+              onClick={() => setFoldersCollapsed((v) => !v)}
+            />
+          </div>
+          {foldersCollapsed ? (
+            <div className="min-h-0 flex-1 space-y-1.5 overflow-auto p-1.5">
+              <FolderRow
+                compact
+                name="Smart Inbox"
+                badge="★"
+                icon={<Star size={16} />}
+                active={activeFolder === SMART_INBOX_ID && !activeSmartLabel}
+                onClick={selectSmartInbox}
+              />
+              {systemFolders.map((f) => (
+                <FolderRow
+                  compact
+                  key={f.id}
+                  name={f.role === "INBOX" ? "All Inbox" : f.name}
+                  badge={f.role === "INBOX" ? "All" : f.role.slice(0, 3)}
+                  icon={systemFolderIcon(f.role)}
+                  active={f.id === activeFolder && !activeSmartLabel}
+                  onClick={() => selectFolder(f.id)}
+                />
+              ))}
+              <FolderRow
+                compact
+                name="Outbox"
+                badge="Out"
+                icon={<Clock3 size={16} />}
+                active={activeFolder === OUTBOX_ID && !activeSmartLabel}
+                onClick={selectOutbox}
+              />
+            </div>
+          ) : (
           <div className="min-h-0 flex-1 space-y-1 overflow-auto p-2">
             <FolderSection
               title="Mailboxes"
@@ -2369,8 +2627,9 @@ export function MailClient({
               </p>
             </FolderSection>
           </div>
+          )}
 
-          {reminders.length > 0 && (
+          {!foldersCollapsed && reminders.length > 0 && (
             <div style={{ borderTop: "1px solid var(--border)" }}>
               <div
                 className="px-3 py-2 text-[0.65rem] uppercase tracking-[0.18em]"
@@ -2425,7 +2684,7 @@ export function MailClient({
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ ...spring, delay: 0.08 }}
-          className="mail-panel flex min-h-0 flex-col overflow-hidden lg:col-span-3"
+          className={`mail-panel flex min-h-0 flex-col overflow-hidden ${foldersCollapsed ? "lg:col-span-4" : "lg:col-span-3"}`}
         >
           <div
             className="space-y-2.5 px-3 py-3"
@@ -2448,16 +2707,32 @@ export function MailClient({
                 {filteredThreads.length}
               </span>
             </div>
-            <input
-              className="mail-search"
-              placeholder={
-                searching
-                  ? "Searching…"
-                  : "Search anything — e.g. SBI POS machine…"
-              }
-              value={threadQuery}
-              onChange={(e) => setThreadQuery(e.target.value)}
-            />
+            <div className="relative">
+              <input
+                className="mail-search pr-8"
+                placeholder={
+                  searching
+                    ? "Searching…"
+                    : "Search anything — e.g. SBI POS machine…"
+                }
+                value={threadQuery}
+                onChange={(e) => setThreadQuery(e.target.value)}
+              />
+              {threadQuery.length > 0 && (
+                <button
+                  type="button"
+                  aria-label="Clear search"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 cursor-pointer rounded-full p-0.5 text-xs opacity-60 hover:opacity-100"
+                  style={{ color: "var(--mail-dim)" }}
+                  onClick={() => {
+                    setThreadQuery("");
+                    haptic("tap");
+                  }}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
             <div className="flex flex-wrap gap-1.5">
               {(
                 [
@@ -2646,6 +2921,7 @@ export function MailClient({
                 className="flex min-h-0 flex-1 flex-col"
               >
                 <div
+                  ref={toolbarMenusRef}
                   className="flex flex-wrap items-start justify-between gap-2 px-4 py-3"
                   style={{ borderBottom: "1px solid var(--border)" }}
                 >
@@ -2687,60 +2963,397 @@ export function MailClient({
                         })}
                       </div>
                     )}
+                    {selectedId &&
+                      !selectedId.startsWith("outbox") &&
+                      !composeFullscreen && (
+                        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                          <div className="relative">
+                            {(() => {
+                              const tone = priorityTone(selectedThread.priority) ?? {
+                                bg: "rgba(255,255,255,0.06)",
+                                fg: "var(--text-muted)",
+                              };
+                              return (
+                                <button
+                                  type="button"
+                                  disabled={pending}
+                                  className="flex h-8 cursor-pointer items-center gap-1 rounded-full px-3 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+                                  style={{
+                                    background: tone.bg,
+                                    color: tone.fg,
+                                    border: "1px solid var(--border-strong)",
+                                  }}
+                                  onClick={() => {
+                                    setShowPriorityMenu((v) => !v);
+                                    setShowMoveMenu(false);
+                                    setShowSnoozeMenu(false);
+                                    setShowMoreMenu(false);
+                                  }}
+                                >
+                                  {selectedThread.priority === "NONE"
+                                    ? "No priority"
+                                    : selectedThread.priority}
+                                  <ChevronDown size={12} />
+                                </button>
+                              );
+                            })()}
+                            {showPriorityMenu && (
+                              <ul
+                                className="absolute left-0 z-10 mt-1 w-36 overflow-auto rounded-xl p-1 text-xs shadow-lg"
+                                style={{
+                                  background: "var(--bg-elevated)",
+                                  border: "1px solid var(--border-strong)",
+                                }}
+                              >
+                                {["P1", "P2", "P3", "P4", "NONE"].map((p) => {
+                                  const tone = priorityTone(p);
+                                  return (
+                                    <li key={p}>
+                                      <button
+                                        type="button"
+                                        className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-white/5"
+                                        style={{ color: "var(--text)" }}
+                                        onClick={() => {
+                                          setShowPriorityMenu(false);
+                                          startTransition(async () => {
+                                            await setThreadPriority(
+                                              selectedId,
+                                              p,
+                                            );
+                                            setThreads((prev) =>
+                                              prev.map((x) =>
+                                                x.id === selectedId
+                                                  ? { ...x, priority: p }
+                                                  : x,
+                                              ),
+                                            );
+                                            setStatus(`Priority set to ${p}`);
+                                            haptic("tap");
+                                          });
+                                        }}
+                                      >
+                                        <span
+                                          className="h-2 w-2 shrink-0 rounded-full"
+                                          style={{
+                                            background: tone?.fg || "#71717a",
+                                          }}
+                                        />
+                                        {p === "NONE" ? "No priority" : p}
+                                      </button>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            )}
+                          </div>
+                          <IconBtn
+                            title={
+                              selectedThread.important
+                                ? "Unmark important"
+                                : "Mark important"
+                            }
+                            disabled={pending}
+                            icon={
+                              <Star
+                                size={15}
+                                fill={
+                                  selectedThread.important
+                                    ? "#fbbf24"
+                                    : "none"
+                                }
+                                color={
+                                  selectedThread.important
+                                    ? "#fbbf24"
+                                    : "currentColor"
+                                }
+                              />
+                            }
+                            onClick={() => {
+                              const next = !selectedThread.important;
+                              startTransition(async () => {
+                                await setThreadImportant(selectedId, next);
+                                setThreads((prev) =>
+                                  prev.map((x) =>
+                                    x.id === selectedId
+                                      ? { ...x, important: next }
+                                      : x,
+                                  ),
+                                );
+                                setStatus(
+                                  next ? "Marked important" : "Unmarked important",
+                                );
+                                haptic("tap");
+                              });
+                            }}
+                          />
+                        </div>
+                      )}
                   </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {/* AI stays in the thread header for docked compose; fullscreen has its own bottom bar */}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {/* Compact Gmail/Outlook-style icon toolbar. AI stays in the thread header for docked compose; fullscreen has its own bottom bar */}
                     {!composeFullscreen && (
                       <>
-                        <GhostBtn
-                          disabled={pending || !selectedId}
-                          onClick={trashSelected}
-                        >
-                          Trash
-                        </GhostBtn>
-                        <GhostBtn disabled={pending} onClick={runTriage}>
-                          Triage
-                        </GhostBtn>
-                        <GhostBtn disabled={pending} onClick={runSummarize}>
-                          Summarize
-                        </GhostBtn>
-                        <GhostBtn
-                          disabled={pending}
-                          onClick={() => {
-                            setShowCompose(true);
-                            runAiDraft();
-                          }}
-                        >
-                          AI Draft
-                        </GhostBtn>
-                        <GhostBtn disabled={pending} onClick={runExtractTasks}>
-                          Tasks
-                        </GhostBtn>
-                        <GhostBtn
-                          disabled={pending}
-                          onClick={() => {
-                            setShowCompose(true);
-                            runShorten();
-                          }}
-                        >
-                          Shorten
-                        </GhostBtn>
-                        <GhostBtn disabled={pending} onClick={runMeetingInvite}>
-                          Meeting ICS
-                        </GhostBtn>
-                        <GhostBtn
+                        <IconBtn
+                          title="Archive"
+                          icon={<ArchiveIcon size={15} />}
                           disabled={pending || !selectedId}
                           onClick={() => {
-                            const until = new Date(Date.now() + 24 * 60 * 60 * 1000);
                             startTransition(async () => {
-                              await snoozeThread(selectedId!, until.toISOString());
-                              setStatus("Snoozed until tomorrow");
+                              await archiveThreadAction(selectedId!);
+                              setThreads((prev) =>
+                                prev.filter((x) => x.id !== selectedId),
+                              );
+                              setSelectedId(null);
+                              setStatus("Archived");
                               haptic("success");
                             });
                           }}
-                        >
-                          Snooze 1d
-                        </GhostBtn>
+                        />
+                        <IconBtn
+                          title="Trash"
+                          danger
+                          icon={<Trash2 size={15} />}
+                          disabled={pending || !selectedId}
+                          onClick={trashSelected}
+                        />
+                        <div className="relative">
+                          <IconBtn
+                            title="Move to…"
+                            active={showMoveMenu}
+                            icon={<FolderInput size={15} />}
+                            disabled={pending || !selectedId}
+                            onClick={() => {
+                              setShowMoveMenu((v) => !v);
+                              setShowSnoozeMenu(false);
+                              setShowMoreMenu(false);
+                              setShowPriorityMenu(false);
+                            }}
+                          />
+                          {showMoveMenu && (
+                            <ul
+                              className="absolute left-0 z-10 mt-1 max-h-56 w-44 overflow-auto rounded-xl p-1 text-xs shadow-lg"
+                              style={{
+                                background: "var(--bg-elevated)",
+                                border: "1px solid var(--border-strong)",
+                              }}
+                            >
+                              {folderList
+                                .filter((f) => f.role !== "TRASH")
+                                .map((f) => (
+                                  <li key={f.id}>
+                                    <button
+                                      type="button"
+                                      className="w-full cursor-pointer rounded-lg px-2 py-1.5 text-left hover:bg-white/5"
+                                      style={{ color: "var(--text)" }}
+                                      onClick={() => {
+                                        setShowMoveMenu(false);
+                                        startTransition(async () => {
+                                          await moveThreadToFolderAction(
+                                            selectedId!,
+                                            f.id,
+                                          );
+                                          setThreads((prev) =>
+                                            prev.filter((x) => x.id !== selectedId),
+                                          );
+                                          setSelectedId(null);
+                                          setStatus(`Moved to ${f.name}`);
+                                          haptic("success");
+                                        });
+                                      }}
+                                    >
+                                      {f.name}
+                                    </button>
+                                  </li>
+                                ))}
+                            </ul>
+                          )}
+                        </div>
+                        <div className="relative">
+                          <IconBtn
+                            title="Snooze / remind me"
+                            active={showSnoozeMenu}
+                            icon={<BellRing size={15} />}
+                            disabled={pending || !selectedId}
+                            onClick={() => {
+                              setShowSnoozeMenu((v) => !v);
+                              setShowMoveMenu(false);
+                              setShowMoreMenu(false);
+                              setShowPriorityMenu(false);
+                            }}
+                          />
+                          {showSnoozeMenu && (
+                            <div
+                              className="absolute left-0 z-10 mt-1 w-64 space-y-2 rounded-xl p-2.5 text-xs shadow-lg"
+                              style={{
+                                background: "var(--bg-elevated)",
+                                border: "1px solid var(--border-strong)",
+                              }}
+                            >
+                              <button
+                                type="button"
+                                className="w-full cursor-pointer rounded-lg px-2 py-1.5 text-left hover:bg-white/5"
+                                style={{ color: "var(--text)" }}
+                                onClick={() => {
+                                  setShowSnoozeMenu(false);
+                                  const until = new Date(
+                                    Date.now() + 24 * 60 * 60 * 1000,
+                                  );
+                                  startTransition(async () => {
+                                    await snoozeThread(
+                                      selectedId!,
+                                      until.toISOString(),
+                                    );
+                                    setStatus("Snoozed until tomorrow");
+                                    haptic("success");
+                                  });
+                                }}
+                              >
+                                Tomorrow
+                              </button>
+                              <div className="flex gap-1.5">
+                                <input
+                                  type="datetime-local"
+                                  className="mail-search min-w-0 flex-1 py-1 text-[0.68rem]"
+                                  value={remindAt}
+                                  disabled={pending}
+                                  onChange={(e) => setRemindAt(e.target.value)}
+                                />
+                                <GhostBtn
+                                  disabled={pending || !selectedId || !remindAt}
+                                  onClick={() => {
+                                    const iso = new Date(remindAt).toISOString();
+                                    startTransition(async () => {
+                                      await snoozeThread(selectedId!, iso);
+                                      setRemindAt("");
+                                      setShowSnoozeMenu(false);
+                                      setStatus(
+                                        `Reminder set for ${formatWhen(iso)}`,
+                                      );
+                                      haptic("success");
+                                    });
+                                  }}
+                                >
+                                  Set
+                                </GhostBtn>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                        <div className="relative">
+                          <IconBtn
+                            title="More"
+                            active={showMoreMenu}
+                            icon={<MoreHorizontal size={15} />}
+                            disabled={pending}
+                            onClick={() => {
+                              setShowMoreMenu((v) => !v);
+                              setShowMoveMenu(false);
+                              setShowSnoozeMenu(false);
+                              setShowPriorityMenu(false);
+                            }}
+                          />
+                          {showMoreMenu && (
+                            <ul
+                              className="absolute left-0 z-10 mt-1 w-48 overflow-auto rounded-xl p-1 text-xs shadow-lg"
+                              style={{
+                                background: "var(--bg-elevated)",
+                                border: "1px solid var(--border-strong)",
+                              }}
+                            >
+                              {[
+                                {
+                                  label: "Triage",
+                                  onClick: runTriage,
+                                },
+                                {
+                                  label: "Summarize",
+                                  onClick: runSummarize,
+                                },
+                                {
+                                  label: "AI Draft",
+                                  onClick: () => {
+                                    setShowCompose(true);
+                                    runAiDraft();
+                                  },
+                                },
+                                {
+                                  label: "Tasks",
+                                  onClick: runExtractTasks,
+                                },
+                                {
+                                  label: "Shorten",
+                                  onClick: () => {
+                                    setShowCompose(true);
+                                    runShorten();
+                                  },
+                                },
+                                {
+                                  label: "Meeting ICS",
+                                  onClick: runMeetingInvite,
+                                },
+                                {
+                                  label: "Block sender",
+                                  danger: true,
+                                  onClick: () => {
+                                    const address = selectedThread.fromAddress;
+                                    if (!address) return;
+                                    const ok = window.confirm(
+                                      `Block ${address}? Future mail from this sender will be filtered on sync, and this thread moves to Trash now.`,
+                                    );
+                                    if (!ok) return;
+                                    startTransition(async () => {
+                                      await blockSenderAction({
+                                        address,
+                                        threadId: selectedId!,
+                                        confirmed: true,
+                                      });
+                                      setThreads((prev) =>
+                                        prev.filter((x) => x.id !== selectedId),
+                                      );
+                                      setSelectedId(null);
+                                      setStatus(`Blocked ${address}`);
+                                      haptic("success");
+                                    });
+                                  },
+                                },
+                              ].map((item, i, arr) => (
+                                <li key={item.label}>
+                                  {item.danger && i > 0 && !arr[i - 1]?.danger && (
+                                    <div
+                                      className="my-1"
+                                      style={{
+                                        borderTop: "1px solid var(--border-strong)",
+                                      }}
+                                    />
+                                  )}
+                                  {i === 0 && (
+                                    <p
+                                      className="px-2 pb-1 text-[0.6rem] font-semibold uppercase tracking-[0.14em]"
+                                      style={{ color: "var(--accent-bright)" }}
+                                    >
+                                      AI actions
+                                    </p>
+                                  )}
+                                  <button
+                                    type="button"
+                                    className="w-full cursor-pointer rounded-lg px-2 py-1.5 text-left hover:bg-white/5"
+                                    style={{
+                                      color: item.danger
+                                        ? "#f87171"
+                                        : "var(--text)",
+                                    }}
+                                    onClick={() => {
+                                      setShowMoreMenu(false);
+                                      item.onClick();
+                                    }}
+                                  >
+                                    {item.label}
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
                       </>
                     )}
                     <GhostBtn
@@ -2858,6 +3471,11 @@ export function MailClient({
                                   priority: c.priority,
                                   confirmed: true,
                                 });
+                                if (selectedId) {
+                                  void listTasksForThreadAction(selectedId)
+                                    .then((rows) => setThreadTasks(rows))
+                                    .catch(() => undefined);
+                                }
                                 setStatus(`Task created: ${c.title}`);
                                 haptic("success");
                               })
@@ -2870,6 +3488,31 @@ export function MailClient({
                     </motion.ul>
                   )}
                 </AnimatePresence>
+
+                {threadTasks.length > 0 && (
+                  <ul
+                    className="mx-4 mb-2 space-y-1 rounded-xl p-2"
+                    style={{
+                      background: "var(--bg-elevated)",
+                      border: "1px solid var(--border-strong)",
+                    }}
+                  >
+                    {threadTasks.map((t) => (
+                      <li
+                        key={t.id}
+                        className="flex items-center justify-between gap-2 px-1 text-xs"
+                        style={{ color: "var(--text-dim)" }}
+                      >
+                        <span className={t.status === "DONE" ? "line-through opacity-60" : ""}>
+                          {t.title}
+                        </span>
+                        <span className="shrink-0 opacity-70">
+                          {t.dueAt ? formatWhen(t.dueAt) : t.status}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
 
                 <AnimatePresence>
                   {showCompose && !composeFullscreen && (

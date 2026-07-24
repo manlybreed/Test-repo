@@ -152,6 +152,12 @@ export async function syncCeoMail(opts?: {
     );
   }
 
+  const blockedRows = await prisma.blockedSender.findMany({
+    where: { accountId: account.id },
+    select: { address: true },
+  });
+  const blockedSenders = new Set(blockedRows.map((b) => b.address.toLowerCase()));
+
   const client = await connectImap();
   let imported = 0;
   const newInboxThreadIds: string[] = [];
@@ -295,6 +301,16 @@ export async function syncCeoMail(opts?: {
             if (existingMsg) {
               lastUid = Math.max(lastUid, uid);
               continue;
+            }
+
+            if (role === "INBOX" && blockedSenders.size) {
+              const envFrom = (
+                msg.envelope?.from?.[0]?.address || ""
+              ).toLowerCase();
+              if (envFrom && blockedSenders.has(envFrom)) {
+                lastUid = Math.max(lastUid, uid);
+                continue;
+              }
             }
 
             const raw = msg.source;

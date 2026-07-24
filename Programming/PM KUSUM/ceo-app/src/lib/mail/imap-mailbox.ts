@@ -158,40 +158,41 @@ export async function markInboxMessagesSeen(input: {
   }
 }
 
-/** Move all IMAP messages in a thread into Trash (server-side). */
-export async function trashMailThread(input: {
+/**
+ * Move every IMAP message in a thread into a target mailbox path (server-side),
+ * dropping the local rows so the source view clears immediately — next sync
+ * re-imports into the target mailbox. Shared by trash/archive/move-to-folder.
+ */
+async function moveThreadMessagesToPath(input: {
   accountId: string;
   threadId: string;
+  targetPath: string;
+  targetRole: string;
 }) {
   const msgs = await prisma.mailMessage.findMany({
     where: { accountId: input.accountId, threadId: input.threadId },
     include: { folder: true },
   });
-  if (!msgs.length) throw new Error("No messages to trash");
+  if (!msgs.length) throw new Error("No messages to move");
 
   const { client } = await connectImap();
   try {
-    const trashPath = await resolveMailboxPath(
-      client,
-      input.accountId,
-      "TRASH",
-    );
     await prisma.mailFolder.upsert({
       where: {
-        accountId_path: { accountId: input.accountId, path: trashPath },
+        accountId_path: { accountId: input.accountId, path: input.targetPath },
       },
       create: {
         accountId: input.accountId,
-        path: trashPath,
-        name: trashPath.split(/[/.]/).pop() || "Trash",
-        role: "TRASH",
+        path: input.targetPath,
+        name: input.targetPath.split(/[/.]/).pop() || input.targetPath,
+        role: input.targetRole,
       },
-      update: { role: "TRASH" },
+      update: { role: input.targetRole },
     });
 
     const byFolder = new Map<string, number[]>();
     for (const m of msgs) {
-      if (m.folder.path === trashPath) continue;
+      if (m.folder.path === input.targetPath) continue;
       const list = byFolder.get(m.folder.path) || [];
       list.push(m.imapUid);
       byFolder.set(m.folder.path, list);
@@ -200,14 +201,14 @@ export async function trashMailThread(input: {
     for (const [path, uids] of byFolder) {
       const lock = await client.getMailboxLock(path);
       try {
-        await client.messageMove(uids.join(","), trashPath, { uid: true });
+        await client.messageMove(uids.join(","), input.targetPath, {
+          uid: true,
+        });
       } finally {
         lock.release();
       }
     }
 
-    // IMAP already moved copies — drop local rows so Inbox/Sent clear immediately.
-    // Next sync re-imports into Trash.
     await prisma.mailMessage.deleteMany({
       where: { threadId: input.threadId, accountId: input.accountId },
     });
@@ -215,8 +216,63 @@ export async function trashMailThread(input: {
       () => undefined,
     );
 
-    return { ok: true as const, trashPath };
+    return { ok: true as const, targetPath: input.targetPath };
   } finally {
     await client.logout().catch(() => undefined);
   }
+}
+
+/** Move all IMAP messages in a thread into Trash (server-side). */
+export async function trashMailThread(input: {
+  accountId: string;
+  threadId: string;
+}) {
+  const { client } = await connectImap();
+  const trashPath = await resolveMailboxPath(client, input.accountId, "TRASH");
+  await client.logout().catch(() => undefined);
+  const result = await moveThreadMessagesToPath({
+    ...input,
+    targetPath: trashPath,
+    targetRole: "TRASH",
+  });
+  return { ok: result.ok, trashPath: result.targetPath };
+}
+
+/** Move all IMAP messages in a thread into Archive (server-side). */
+export async function archiveMailThread(input: {
+  accountId: string;
+  threadId: string;
+}) {
+  const { client } = await connectImap();
+  const archivePath = await resolveMailboxPath(
+    client,
+    input.accountId,
+    "ARCHIVE",
+  );
+  await client.logout().catch(() => undefined);
+  const result = await moveThreadMessagesToPath({
+    ...input,
+    targetPath: archivePath,
+    targetRole: "ARCHIVE",
+  });
+  return { ok: result.ok, archivePath: result.targetPath };
+}
+
+/** Move all IMAP messages in a thread into an arbitrary existing folder (label or system mailbox). */
+export async function moveMailThreadToFolder(input: {
+  accountId: string;
+  threadId: string;
+  folderId: string;
+}) {
+  const folder = await prisma.mailFolder.findFirst({
+    where: { id: input.folderId, accountId: input.accountId },
+  });
+  if (!folder) throw new Error("Target folder not found");
+  const result = await moveThreadMessagesToPath({
+    accountId: input.accountId,
+    threadId: input.threadId,
+    targetPath: folder.path,
+    targetRole: folder.role,
+  });
+  return { ok: result.ok, path: result.targetPath };
 }

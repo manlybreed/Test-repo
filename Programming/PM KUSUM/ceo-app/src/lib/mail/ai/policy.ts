@@ -6,14 +6,18 @@
 export type MailAction =
   | "label"
   | "priority"
+  | "important"
   | "snooze"
   | "mark_read"
   | "draft"
   | "send"
   | "delete"
+  | "archive"
+  | "move"
   | "schedule_send"
   | "calendar_invite"
   | "unsubscribe"
+  | "block_sender"
   | "create_task";
 
 const IRREVERSIBLE: ReadonlySet<MailAction> = new Set([
@@ -22,6 +26,7 @@ const IRREVERSIBLE: ReadonlySet<MailAction> = new Set([
   "schedule_send",
   "calendar_invite",
   "unsubscribe",
+  "block_sender",
   "create_task",
 ]);
 

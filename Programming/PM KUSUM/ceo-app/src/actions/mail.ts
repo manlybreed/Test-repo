@@ -17,7 +17,9 @@ import {
 } from "@/lib/mail/ai/triage";
 import { createMailLabel } from "@/lib/mail/labels";
 import {
+  archiveMailThread,
   markInboxMessagesSeen,
+  moveMailThreadToFolder,
   trashMailThread,
 } from "@/lib/mail/imap-mailbox";
 import {
@@ -176,6 +178,110 @@ export async function trashThreadAction(threadId: string) {
   }).catch(() => undefined);
   revalidateMail();
   return result;
+}
+
+export async function archiveThreadAction(threadId: string) {
+  const { account } = await requireAccount();
+  assertAutonomy("archive");
+  if (threadId.startsWith("outbox:") || threadId.startsWith("outbox-item:")) {
+    throw new Error("Use Drafts/Outbox controls for local items");
+  }
+  const result = await archiveMailThread({ accountId: account.id, threadId });
+  void syncCeoMail({
+    userId: account.userId,
+    maxPerFolder: 40,
+    maxTriageNew: 0,
+  }).catch(() => undefined);
+  revalidateMail();
+  return result;
+}
+
+export async function moveThreadToFolderAction(
+  threadId: string,
+  folderId: string,
+) {
+  const { account } = await requireAccount();
+  assertAutonomy("move");
+  if (threadId.startsWith("outbox:") || threadId.startsWith("outbox-item:")) {
+    throw new Error("Use Drafts/Outbox controls for local items");
+  }
+  const result = await moveMailThreadToFolder({
+    accountId: account.id,
+    threadId,
+    folderId,
+  });
+  void syncCeoMail({
+    userId: account.userId,
+    maxPerFolder: 40,
+    maxTriageNew: 0,
+  }).catch(() => undefined);
+  revalidateMail();
+  return result;
+}
+
+export async function setThreadImportant(threadId: string, important: boolean) {
+  await requireAccount();
+  assertAutonomy("important");
+  await prisma.mailThread.update({
+    where: { id: threadId },
+    data: { important },
+  });
+  revalidateMail();
+}
+
+export async function listTasksForThreadAction(threadId: string) {
+  const { userId } = await requireAccount();
+  if (!userId) return [];
+  return prisma.task.findMany({
+    where: { userId, mailThreadId: threadId },
+    orderBy: [{ status: "asc" }, { dueAt: "asc" }],
+  });
+}
+
+export async function blockSenderAction(input: {
+  address: string;
+  /** Also move this currently-open thread to Trash. */
+  threadId?: string;
+  confirmed?: boolean;
+}) {
+  const { account } = await requireAccount();
+  assertAutonomy("block_sender", { confirmed: input.confirmed });
+  const address = input.address.trim().toLowerCase();
+  if (!address || !address.includes("@")) {
+    throw new Error("A valid email address is required");
+  }
+  const row = await prisma.blockedSender.upsert({
+    where: { accountId_address: { accountId: account.id, address } },
+    create: { accountId: account.id, address },
+    update: {},
+  });
+  if (
+    input.threadId &&
+    !input.threadId.startsWith("outbox:") &&
+    !input.threadId.startsWith("outbox-item:")
+  ) {
+    await trashMailThread({ accountId: account.id, threadId: input.threadId }).catch(
+      () => undefined,
+    );
+  }
+  revalidateMail();
+  return row;
+}
+
+export async function listBlockedSendersAction() {
+  const { account } = await requireAccount();
+  return prisma.blockedSender.findMany({
+    where: { accountId: account.id },
+    orderBy: { createdAt: "desc" },
+  });
+}
+
+export async function unblockSenderAction(id: string) {
+  const { account } = await requireAccount();
+  await prisma.blockedSender.deleteMany({
+    where: { id, accountId: account.id },
+  });
+  revalidateMail();
 }
 
 export async function listMailThreads(opts?: {
