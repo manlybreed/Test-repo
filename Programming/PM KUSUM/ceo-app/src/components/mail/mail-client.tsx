@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Archive as ArchiveIcon,
   BellRing,
+  CalendarClock,
   ChevronDown,
   ChevronsLeft,
   ChevronsRight,
@@ -15,10 +16,13 @@ import {
   Loader2,
   Mail as MailIcon,
   Maximize2,
+  Minimize2,
   Minus,
   MoreHorizontal,
   Paperclip,
   PenLine,
+  Save,
+  SendHorizontal,
   RefreshCw,
   Reply as ReplyIcon,
   Send,
@@ -27,6 +31,7 @@ import {
   Sparkles,
   Star,
   Trash2,
+  WandSparkles,
   X,
 } from "lucide-react";
 import { MailComposer } from "@/components/mail/composer";
@@ -734,10 +739,14 @@ function ReplyContextCard({
           click to collapse
         </span>
       </summary>
-      <div
-        className="mail-message-body mail-dark-adapt max-h-64 overflow-auto px-3.5 pb-3"
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
+      {/* Scroll lives on this wrapper — .mail-message-body sets
+          overflow-y:hidden (shell containment), which would clip the quote. */}
+      <div className="max-h-64 overflow-y-auto px-3.5 pb-3">
+        <div
+          className="mail-message-body mail-dark-adapt"
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      </div>
     </details>
   );
 }
@@ -786,6 +795,8 @@ export function MailClient({
   const [composeBrief, setComposeBrief] = useState("");
   /** Gmail-style: the AI assist panel opens from a sparkle toggle, not always-on. */
   const [showAiAssist, setShowAiAssist] = useState(false);
+  /** Schedule-send picker lives behind a clock icon, not inline in the bar. */
+  const [showSchedule, setShowSchedule] = useState(false);
   const [composeAttachments, setComposeAttachments] = useState<
     ComposeAttachment[]
   >([]);
@@ -880,14 +891,15 @@ export function MailClient({
   const [showMoveMenu, setShowMoveMenu] = useState(false);
   const [showPriorityMenu, setShowPriorityMenu] = useState(false);
   const [remindAt, setRemindAt] = useState("");
-  // Any open toolbar dropdown (Priority / Move to / Snooze / More) closes on a
-  // click anywhere except inside a menu (its trigger + list carry data-menu).
+  // Any open toolbar dropdown (Priority / Move to / Snooze / More / Schedule)
+  // closes on a click anywhere except inside a menu (trigger + list carry data-menu).
   useEffect(() => {
     if (
       !showMoveMenu &&
       !showSnoozeMenu &&
       !showMoreMenu &&
-      !showPriorityMenu
+      !showPriorityMenu &&
+      !showSchedule
     ) {
       return;
     }
@@ -898,10 +910,11 @@ export function MailClient({
       setShowSnoozeMenu(false);
       setShowMoreMenu(false);
       setShowPriorityMenu(false);
+      setShowSchedule(false);
     };
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
-  }, [showMoveMenu, showSnoozeMenu, showMoreMenu, showPriorityMenu]);
+  }, [showMoveMenu, showSnoozeMenu, showMoreMenu, showPriorityMenu, showSchedule]);
 
   const systemFolders = useMemo(
     () => pickSystemFolders(folderList),
@@ -2289,37 +2302,90 @@ export function MailClient({
               }}
             />
           )}
-          <GhostBtn disabled={pending} onClick={runAutocomplete}>
-            Autocomplete
-          </GhostBtn>
-          <label
-            className="flex items-center gap-1.5 text-[0.65rem]"
-            style={{ color: "var(--text-dim)" }}
-            title="Schedule send (AI-19)"
-          >
-            Send at
-            <input
-              type="datetime-local"
-              className="mail-search py-1 text-[0.65rem]"
-              value={sendAtLocal}
+          <IconBtn
+            title="Autocomplete — continue writing"
+            icon={<WandSparkles size={15} />}
+            disabled={pending}
+            onClick={runAutocomplete}
+          />
+          <div className="relative" data-menu>
+            <IconBtn
+              title={
+                sendAtLocal
+                  ? `Scheduled for ${formatWhen(new Date(sendAtLocal))}`
+                  : "Schedule send"
+              }
+              active={showSchedule || Boolean(sendAtLocal)}
+              icon={<CalendarClock size={15} />}
               disabled={sending}
-              onChange={(e) => setSendAtLocal(e.target.value)}
+              onClick={() => setShowSchedule((v) => !v)}
             />
-          </label>
-          <GhostBtn disabled={pending || sending} onClick={saveCurrentDraft}>
-            Save draft
-          </GhostBtn>
-          <GhostBtn
+            {showSchedule && (
+              <div
+                className="absolute bottom-full right-0 z-20 mb-2 w-64 space-y-2 rounded-xl p-2.5 shadow-lg"
+                style={{
+                  background: "var(--bg-elevated)",
+                  border: "1px solid var(--border-strong)",
+                }}
+              >
+                <p
+                  className="text-[0.62rem] font-semibold uppercase tracking-[0.14em]"
+                  style={{ color: "var(--text-dim)" }}
+                >
+                  Schedule send
+                </p>
+                <input
+                  type="datetime-local"
+                  className="mail-search w-full py-1 text-[0.7rem]"
+                  value={sendAtLocal}
+                  disabled={sending}
+                  onChange={(e) => setSendAtLocal(e.target.value)}
+                />
+                {sendAtLocal && (
+                  <button
+                    type="button"
+                    className="cursor-pointer text-[0.68rem] font-medium"
+                    style={{ color: "var(--text-muted)" }}
+                    onClick={() => {
+                      setSendAtLocal("");
+                      setShowSchedule(false);
+                      haptic("tap");
+                    }}
+                  >
+                    Clear schedule — send immediately
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          <IconBtn
+            title="Save draft"
+            icon={<Save size={15} />}
+            disabled={pending || sending}
+            onClick={saveCurrentDraft}
+          />
+          <IconBtn
             primary
+            size="lg"
+            title={
+              sending
+                ? "Sending…"
+                : sendAtLocal
+                  ? "Schedule send"
+                  : "Send (⌘↵)"
+            }
             disabled={sending || !to.trim()}
+            icon={
+              sending ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : sendAtLocal ? (
+                <CalendarClock size={16} />
+              ) : (
+                <SendHorizontal size={16} />
+              )
+            }
             onClick={sendCurrentDraft}
-          >
-            {sending
-              ? "Sending…"
-              : sendAtLocal
-                ? "Schedule"
-                : "Send"}
-          </GhostBtn>
+          />
         </div>
       </div>
     );
@@ -3936,17 +4002,6 @@ export function MailClient({
                           >
                             Reply
                           </p>
-                          <button
-                            type="button"
-                            className="cursor-pointer text-xs font-medium"
-                            style={{ color: "var(--text-muted)" }}
-                            onClick={() => {
-                              setShowCcBcc((v) => !v);
-                              haptic("tap");
-                            }}
-                          >
-                            {showCcBcc || cc || bcc ? "Hide Cc / Bcc" : "Cc / Bcc"}
-                          </button>
                         </div>
 
                         <div className="space-y-3 px-4 py-2">
@@ -3959,13 +4014,27 @@ export function MailClient({
                           >
                             <div className="mail-compose-field">
                               <label htmlFor="mail-to">To</label>
-                              <input
-                                id="mail-to"
-                                placeholder="name@company.com, …"
-                                value={to}
-                                onChange={(e) => setTo(e.target.value)}
-                                autoComplete="email"
-                              />
+                              <div className="flex items-center gap-2">
+                                <input
+                                  id="mail-to"
+                                  className="min-w-0 flex-1"
+                                  placeholder="name@company.com, …"
+                                  value={to}
+                                  onChange={(e) => setTo(e.target.value)}
+                                  autoComplete="email"
+                                />
+                                <button
+                                  type="button"
+                                  className="shrink-0 cursor-pointer text-[0.7rem] font-medium"
+                                  style={{ color: "var(--text-dim)" }}
+                                  onClick={() => {
+                                    setShowCcBcc((v) => !v);
+                                    haptic("tap");
+                                  }}
+                                >
+                                  {showCcBcc || cc || bcc ? "Cc / Bcc ▴" : "Cc / Bcc"}
+                                </button>
+                              </div>
                             </div>
                             {(showCcBcc || cc) && (
                               <div className="mail-compose-field">
@@ -4304,19 +4373,11 @@ export function MailClient({
                   From {accountInfo?.address}
                 </p>
               </div>
-              <div className="flex flex-wrap gap-2">
-                <GhostBtn
-                  onClick={() => {
-                    setShowCcBcc((v) => !v);
-                    haptic("tap");
-                  }}
-                >
-                  {showCcBcc || cc || bcc ? "Hide Cc / Bcc" : "Cc / Bcc"}
-                </GhostBtn>
-                <GhostBtn onClick={() => closeCompose("exit-fullscreen")}>
-                  Exit fullscreen
-                </GhostBtn>
-              </div>
+              <IconBtn
+                title="Exit fullscreen"
+                icon={<Minimize2 size={16} />}
+                onClick={() => closeCompose("exit-fullscreen")}
+              />
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col gap-3 px-6 py-4">
@@ -4329,12 +4390,27 @@ export function MailClient({
               >
                 <div className="mail-compose-field">
                   <label htmlFor="mail-to-fs">To</label>
-                  <input
-                    id="mail-to-fs"
-                    placeholder="name@company.com, …"
-                    value={to}
-                    onChange={(e) => setTo(e.target.value)}
-                  />
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="mail-to-fs"
+                      className="min-w-0 flex-1"
+                      placeholder="name@company.com, …"
+                      value={to}
+                      onChange={(e) => setTo(e.target.value)}
+                    />
+                    {/* Gmail-style: Cc/Bcc toggles from the To row, not the header */}
+                    <button
+                      type="button"
+                      className="shrink-0 cursor-pointer text-[0.7rem] font-medium"
+                      style={{ color: "var(--text-dim)" }}
+                      onClick={() => {
+                        setShowCcBcc((v) => !v);
+                        haptic("tap");
+                      }}
+                    >
+                      {showCcBcc || cc || bcc ? "Cc / Bcc ▴" : "Cc / Bcc"}
+                    </button>
+                  </div>
                 </div>
                 {(showCcBcc || cc) && (
                   <div className="mail-compose-field">
