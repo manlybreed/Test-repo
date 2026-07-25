@@ -689,6 +689,57 @@ function FormattedAnswer({
   );
 }
 
+/**
+ * Read-only preview of the message being replied to — shown in fullscreen
+ * compose (where the reader pane is hidden) so you keep the context in view.
+ */
+function ReplyContextCard({
+  message,
+  subject,
+}: {
+  message: MailMessageView;
+  subject?: string;
+}) {
+  const text = (
+    message.bodyText ||
+    message.bodyHtml
+      ?.replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ") ||
+    ""
+  )
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const who = message.fromName || message.fromAddress;
+  return (
+    <details
+      open
+      className="shrink-0 overflow-hidden rounded-xl"
+      style={{
+        background: "var(--bg-elevated)",
+        border: "1px solid var(--border-strong)",
+      }}
+    >
+      <summary
+        className="flex cursor-pointer list-none items-center gap-2 px-3.5 py-2 text-xs"
+        style={{ color: "var(--text-dim)" }}
+      >
+        <ReplyIcon size={13} style={{ color: "var(--accent-bright)" }} />
+        <span className="font-semibold" style={{ color: "var(--text-muted)" }}>
+          Replying to {who}
+        </span>
+        {subject ? <span className="truncate">· {subject}</span> : null}
+      </summary>
+      <div
+        className="max-h-36 overflow-auto whitespace-pre-wrap px-3.5 pb-3 text-xs leading-relaxed"
+        style={{ color: "var(--text-dim)" }}
+      >
+        {text.slice(0, 5000) || "(no text content)"}
+      </div>
+    </details>
+  );
+}
+
 export function MailClient({
   configured,
   account,
@@ -4174,6 +4225,15 @@ export function MailClient({
                   />
                 </div>
               </div>
+
+              {/* Fullscreen hides the reader, so surface the message being
+                  replied to as read-only context. */}
+              {isReplyContext() && messages.length > 0 && (
+                <ReplyContextCard
+                  message={messages[messages.length - 1]!}
+                  subject={selectedThread?.subject}
+                />
+              )}
 
               <ComposeAiAssist />
 
