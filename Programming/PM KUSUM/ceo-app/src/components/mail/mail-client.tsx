@@ -554,10 +554,44 @@ function IconBtn({
   );
 }
 
-/** Inline markdown: **bold** → <strong>, `code` → styled span. Safe (no HTML). */
-function renderInlineMarkdown(text: string): React.ReactNode[] {
-  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean);
+type InlineOpts = {
+  sources?: Map<string, AskCitation>;
+  onOpen?: (threadId: string) => void;
+};
+
+/**
+ * Inline markdown: **bold**, `code`, and [[messageId]] citation markers →
+ * a small clickable mail icon that opens that message's thread. Safe (no HTML).
+ */
+function renderInlineMarkdown(
+  text: string,
+  opts?: InlineOpts,
+): React.ReactNode[] {
+  const parts = text
+    .split(/(\*\*[^*]+\*\*|`[^`]+`|\[\[[^\]]+\]\])/g)
+    .filter(Boolean);
   return parts.map((p, i) => {
+    const cite = p.match(/^\[\[([^\]]+)\]\]$/);
+    if (cite) {
+      const ref = opts?.sources?.get(cite[1]!.trim());
+      if (!ref || !opts?.onOpen) return null;
+      return (
+        <button
+          key={i}
+          type="button"
+          title={`Open: ${ref.subject}`}
+          onClick={() => opts.onOpen!(ref.threadId)}
+          className="mx-0.5 inline-flex h-4 w-4 -translate-y-px cursor-pointer items-center justify-center rounded align-middle transition-colors hover:brightness-125"
+          style={{
+            background: "rgba(139,92,246,0.2)",
+            border: "1px solid rgba(139,92,246,0.4)",
+            color: "var(--accent-bright)",
+          }}
+        >
+          <MailIcon size={10} />
+        </button>
+      );
+    }
     const bold = p.match(/^\*\*([^*]+)\*\*$/);
     if (bold) {
       return (
@@ -582,8 +616,20 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
   });
 }
 
-/** Render a model answer with light markdown: numbered/bulleted lists, bold. */
-function FormattedAnswer({ text }: { text: string }) {
+/**
+ * Render a model answer with light markdown (numbered/bulleted lists, bold) and
+ * inline [[messageId]] citations rendered as clickable mail links.
+ */
+function FormattedAnswer({
+  text,
+  sources,
+  onOpen,
+}: {
+  text: string;
+  sources?: Map<string, AskCitation>;
+  onOpen?: (threadId: string) => void;
+}) {
+  const opts: InlineOpts = { sources, onOpen };
   const lines = text.split(/\r?\n/);
   return (
     <div
@@ -602,7 +648,7 @@ function FormattedAnswer({ text }: { text: string }) {
               >
                 {numbered[1]}.
               </span>
-              <span>{renderInlineMarkdown(numbered[2]!)}</span>
+              <span>{renderInlineMarkdown(numbered[2]!, opts)}</span>
             </div>
           );
         }
@@ -616,11 +662,11 @@ function FormattedAnswer({ text }: { text: string }) {
               >
                 •
               </span>
-              <span>{renderInlineMarkdown(bullet[1]!)}</span>
+              <span>{renderInlineMarkdown(bullet[1]!, opts)}</span>
             </div>
           );
         }
-        return <p key={i}>{renderInlineMarkdown(line)}</p>;
+        return <p key={i}>{renderInlineMarkdown(line, opts)}</p>;
       })}
     </div>
   );
@@ -701,6 +747,7 @@ export function MailClient({
   const [askA, setAskA] = useState("");
   const [askThinking, setAskThinking] = useState(false);
   const [askCitations, setAskCitations] = useState<AskCitation[]>([]);
+  const [askSources, setAskSources] = useState<AskCitation[]>([]);
   const [sendAtLocal, setSendAtLocal] = useState("");
   const [bulkSuggestions, setBulkSuggestions] = useState<
     { threadId: string; subject: string; priority: string; labels: string[] }[]
@@ -786,6 +833,19 @@ export function MailClient({
   const selectedThread =
     threads.find((t) => t.id === selectedId) ||
     (selectedThreadFallback?.id === selectedId ? selectedThreadFallback : null);
+
+  // Ask: map for resolving inline [[messageId]] citations, and whether the
+  // answer actually carries any (so the fallback source list can be hidden).
+  const askSourcesMap = useMemo(
+    () => new Map(askSources.map((s) => [s.messageId, s])),
+    [askSources],
+  );
+  const askHasInlineCitations = useMemo(() => {
+    if (!askSourcesMap.size || !askA) return false;
+    return [...askA.matchAll(/\[\[([^\]]+)\]\]/g)].some((m) =>
+      askSourcesMap.has(m[1]!.trim()),
+    );
+  }, [askA, askSourcesMap]);
 
   const filteredThreads = useMemo(() => {
     return threads.filter((t) => {
@@ -1777,6 +1837,7 @@ export function MailClient({
     setAskThinking(true);
     setAskA("");
     setAskCitations([]);
+    setAskSources([]);
     startTransition(async () => {
       haptic("tap");
       try {
@@ -1787,10 +1848,12 @@ export function MailClient({
           : await askMailAction(q);
         setAskA(a.answer);
         setAskCitations(a.citationRefs || []);
+        setAskSources(a.sourceRefs || []);
         haptic(a.notFound ? "warn" : "success");
       } catch (e) {
         setAskA(e instanceof Error ? e.message : "Ask failed — try again.");
         setAskCitations([]);
+        setAskSources([]);
         haptic("warn");
       } finally {
         setAskThinking(false);
@@ -3863,8 +3926,15 @@ export function MailClient({
                   exit={{ opacity: 0, height: 0 }}
                   className="mt-2 max-h-80 space-y-2.5 overflow-auto pr-1"
                 >
-                  <FormattedAnswer text={askA} />
-                  {askCitations.length > 0 && (
+                  <FormattedAnswer
+                    text={askA}
+                    sources={askSourcesMap}
+                    onOpen={(threadId) => {
+                      haptic("tap");
+                      openThread(threadId);
+                    }}
+                  />
+                  {!askHasInlineCitations && askCitations.length > 0 && (
                     <div className="space-y-1 pt-1">
                       <p
                         className="text-[0.6rem] font-semibold uppercase tracking-[0.14em]"
