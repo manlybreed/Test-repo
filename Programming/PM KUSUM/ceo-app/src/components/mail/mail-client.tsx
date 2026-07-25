@@ -12,6 +12,8 @@ import {
   FileText,
   FolderInput,
   Inbox as InboxIcon,
+  Loader2,
+  Mail as MailIcon,
   MoreHorizontal,
   PenLine,
   RefreshCw,
@@ -552,6 +554,78 @@ function IconBtn({
   );
 }
 
+/** Inline markdown: **bold** → <strong>, `code` → styled span. Safe (no HTML). */
+function renderInlineMarkdown(text: string): React.ReactNode[] {
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean);
+  return parts.map((p, i) => {
+    const bold = p.match(/^\*\*([^*]+)\*\*$/);
+    if (bold) {
+      return (
+        <strong key={i} style={{ color: "var(--text)", fontWeight: 600 }}>
+          {bold[1]}
+        </strong>
+      );
+    }
+    const code = p.match(/^`([^`]+)`$/);
+    if (code) {
+      return (
+        <code
+          key={i}
+          className="rounded px-1 text-[0.95em]"
+          style={{ background: "rgba(255,255,255,0.08)" }}
+        >
+          {code[1]}
+        </code>
+      );
+    }
+    return <span key={i}>{p}</span>;
+  });
+}
+
+/** Render a model answer with light markdown: numbered/bulleted lists, bold. */
+function FormattedAnswer({ text }: { text: string }) {
+  const lines = text.split(/\r?\n/);
+  return (
+    <div
+      className="space-y-1 text-xs leading-relaxed"
+      style={{ color: "var(--text-muted)" }}
+    >
+      {lines.map((line, i) => {
+        if (!line.trim()) return <div key={i} className="h-1.5" />;
+        const numbered = line.match(/^\s*(\d+)[.)]\s+(.*)/);
+        if (numbered) {
+          return (
+            <div key={i} className="flex gap-2">
+              <span
+                className="shrink-0 font-semibold"
+                style={{ color: "var(--accent-bright)" }}
+              >
+                {numbered[1]}.
+              </span>
+              <span>{renderInlineMarkdown(numbered[2]!)}</span>
+            </div>
+          );
+        }
+        const bullet = line.match(/^\s*[-*•]\s+(.*)/);
+        if (bullet) {
+          return (
+            <div key={i} className="flex gap-2">
+              <span
+                className="shrink-0"
+                style={{ color: "var(--accent-bright)" }}
+              >
+                •
+              </span>
+              <span>{renderInlineMarkdown(bullet[1]!)}</span>
+            </div>
+          );
+        }
+        return <p key={i}>{renderInlineMarkdown(line)}</p>;
+      })}
+    </div>
+  );
+}
+
 export function MailClient({
   configured,
   account,
@@ -625,6 +699,7 @@ export function MailClient({
   const [status, setStatus] = useState("");
   const [askQ, setAskQ] = useState("");
   const [askA, setAskA] = useState("");
+  const [askThinking, setAskThinking] = useState(false);
   const [askCitations, setAskCitations] = useState<AskCitation[]>([]);
   const [sendAtLocal, setSendAtLocal] = useState("");
   const [bulkSuggestions, setBulkSuggestions] = useState<
@@ -667,9 +742,8 @@ export function MailClient({
   const [showMoveMenu, setShowMoveMenu] = useState(false);
   const [showPriorityMenu, setShowPriorityMenu] = useState(false);
   const [remindAt, setRemindAt] = useState("");
-  const toolbarMenusRef = useRef<HTMLDivElement>(null);
-
-  // Click outside any open toolbar dropdown (Move to / Snooze / More / Priority) closes it
+  // Any open toolbar dropdown (Priority / Move to / Snooze / More) closes on a
+  // click anywhere except inside a menu (its trigger + list carry data-menu).
   useEffect(() => {
     if (
       !showMoveMenu &&
@@ -680,7 +754,8 @@ export function MailClient({
       return;
     }
     const onPointerDown = (e: MouseEvent) => {
-      if (toolbarMenusRef.current?.contains(e.target as Node)) return;
+      const el = e.target as HTMLElement | null;
+      if (el?.closest("[data-menu]")) return;
       setShowMoveMenu(false);
       setShowSnoozeMenu(false);
       setShowMoreMenu(false);
@@ -704,7 +779,13 @@ export function MailClient({
     [sigList],
   );
 
-  const selectedThread = threads.find((t) => t.id === selectedId) || null;
+  // Threads opened from an Ask citation may not be in the current folder list;
+  // hold a synthesized row so the reader still renders.
+  const [selectedThreadFallback, setSelectedThreadFallback] =
+    useState<Thread | null>(null);
+  const selectedThread =
+    threads.find((t) => t.id === selectedId) ||
+    (selectedThreadFallback?.id === selectedId ? selectedThreadFallback : null);
 
   const filteredThreads = useMemo(() => {
     return threads.filter((t) => {
@@ -875,6 +956,28 @@ export function MailClient({
         const msgs = t.messages as Msg[];
         setMessages(msgs);
         setStatus("");
+
+        // If this thread isn't in the current list (e.g. opened from an Ask
+        // citation in another folder), synthesize a row so the reader renders.
+        if (!threads.some((x) => x.id === id)) {
+          const last = msgs[msgs.length - 1];
+          setSelectedThreadFallback({
+            id: t.id,
+            subject: t.subject,
+            snippet: t.snippet ?? null,
+            lastMessageAt: t.lastMessageAt,
+            unreadCount: 0,
+            priority: t.priority,
+            important: t.important,
+            labelsJson: t.labelsJson,
+            fromName: last?.fromName ?? null,
+            fromAddress: last?.fromAddress ?? null,
+            hasAttachments: last?.hasAttachments ?? false,
+            answered: false,
+          });
+        } else {
+          setSelectedThreadFallback(null);
+        }
 
         if (folderRole === "INBOX" || inSmartInbox || !folder) {
           setThreads((prev) =>
@@ -1671,16 +1774,27 @@ export function MailClient({
   function runAsk(question: string) {
     const q = question.trim();
     if (!q) return;
+    setAskThinking(true);
+    setAskA("");
+    setAskCitations([]);
     startTransition(async () => {
       haptic("tap");
-      const lower = q.toLowerCase();
-      const recallMatch = lower.match(/^(recall|who is|about)\s+(.+)/i);
-      const a = recallMatch
-        ? await recallPersonAction(recallMatch[2]!.trim())
-        : await askMailAction(q);
-      setAskA(a.answer);
-      setAskCitations(a.citationRefs || []);
-      haptic("success");
+      try {
+        const lower = q.toLowerCase();
+        const recallMatch = lower.match(/^(recall|who is|about)\s+(.+)/i);
+        const a = recallMatch
+          ? await recallPersonAction(recallMatch[2]!.trim())
+          : await askMailAction(q);
+        setAskA(a.answer);
+        setAskCitations(a.citationRefs || []);
+        haptic(a.notFound ? "warn" : "success");
+      } catch (e) {
+        setAskA(e instanceof Error ? e.message : "Ask failed — try again.");
+        setAskCitations([]);
+        haptic("warn");
+      } finally {
+        setAskThinking(false);
+      }
     });
   }
 
@@ -2921,7 +3035,6 @@ export function MailClient({
                 className="flex min-h-0 flex-1 flex-col"
               >
                 <div
-                  ref={toolbarMenusRef}
                   className="flex flex-wrap items-start justify-between gap-2 px-4 py-3"
                   style={{ borderBottom: "1px solid var(--border)" }}
                 >
@@ -2967,7 +3080,7 @@ export function MailClient({
                       !selectedId.startsWith("outbox") &&
                       !composeFullscreen && (
                         <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                          <div className="relative">
+                          <div className="relative" data-menu>
                             {(() => {
                               const tone = priorityTone(selectedThread.priority) ?? {
                                 bg: "rgba(255,255,255,0.06)",
@@ -3116,7 +3229,7 @@ export function MailClient({
                           disabled={pending || !selectedId}
                           onClick={trashSelected}
                         />
-                        <div className="relative">
+                        <div className="relative" data-menu>
                           <IconBtn
                             title="Move to…"
                             active={showMoveMenu}
@@ -3168,7 +3281,7 @@ export function MailClient({
                             </ul>
                           )}
                         </div>
-                        <div className="relative">
+                        <div className="relative" data-menu>
                           <IconBtn
                             title="Snooze / remind me"
                             active={showSnoozeMenu}
@@ -3239,7 +3352,7 @@ export function MailClient({
                             </div>
                           )}
                         </div>
-                        <div className="relative">
+                        <div className="relative" data-menu>
                           <IconBtn
                             title="More"
                             active={showMoreMenu}
@@ -3715,6 +3828,7 @@ export function MailClient({
                 className="mail-search flex-1"
                 placeholder="Ask mailbox… or “recall Name”"
                 value={askQ}
+                disabled={askThinking}
                 onChange={(e) => setAskQ(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && askQ.trim()) runAsk(askQ);
@@ -3722,51 +3836,71 @@ export function MailClient({
               />
               <GhostBtn
                 primary
-                disabled={pending || !askQ.trim()}
+                disabled={askThinking || !askQ.trim()}
                 onClick={() => runAsk(askQ)}
               >
-                Ask
+                {askThinking ? "Thinking…" : "Ask"}
               </GhostBtn>
             </div>
-            <AnimatePresence>
-              {askA && (
+            <AnimatePresence mode="wait">
+              {askThinking ? (
                 <motion.div
+                  key="ask-thinking"
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  className="mt-2 flex items-center gap-2 text-xs"
+                  style={{ color: "var(--accent-bright)" }}
+                >
+                  <Loader2 size={14} className="animate-spin" />
+                  <span>Searching your mail &amp; reading the matches…</span>
+                </motion.div>
+              ) : askA ? (
+                <motion.div
+                  key="ask-answer"
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: "auto" }}
                   exit={{ opacity: 0, height: 0 }}
-                  className="mt-2 max-h-40 space-y-2 overflow-auto"
+                  className="mt-2 max-h-80 space-y-2.5 overflow-auto pr-1"
                 >
-                  <pre
-                    className="whitespace-pre-wrap font-sans text-xs"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    {askA}
-                  </pre>
+                  <FormattedAnswer text={askA} />
                   {askCitations.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {askCitations.map((c) => (
-                        <button
-                          key={c.messageId}
-                          type="button"
-                          className="cursor-pointer rounded-md px-2 py-1 text-[0.65rem] font-medium"
-                          style={{
-                            background: "rgba(139,92,246,0.15)",
-                            border: "1px solid rgba(139,92,246,0.35)",
-                            color: "var(--accent-bright)",
-                          }}
-                          title={c.subject}
-                          onClick={() => {
-                            haptic("tap");
-                            openThread(c.threadId);
-                          }}
-                        >
-                          {c.subject.slice(0, 36) || c.messageId.slice(0, 8)}
-                        </button>
-                      ))}
+                    <div className="space-y-1 pt-1">
+                      <p
+                        className="text-[0.6rem] font-semibold uppercase tracking-[0.14em]"
+                        style={{ color: "var(--mail-dim)" }}
+                      >
+                        Sources · click to open
+                      </p>
+                      <ul className="space-y-1">
+                        {askCitations.map((c) => (
+                          <li key={c.messageId}>
+                            <button
+                              type="button"
+                              className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-[0.7rem] font-medium transition-colors hover:brightness-125"
+                              style={{
+                                background: "rgba(139,92,246,0.12)",
+                                border: "1px solid rgba(139,92,246,0.3)",
+                                color: "var(--accent-bright)",
+                              }}
+                              title={`Open: ${c.subject}`}
+                              onClick={() => {
+                                haptic("tap");
+                                openThread(c.threadId);
+                              }}
+                            >
+                              <MailIcon size={13} className="shrink-0" />
+                              <span className="truncate">
+                                {c.subject || c.messageId.slice(0, 8)}
+                              </span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
                     </div>
                   )}
                 </motion.div>
-              )}
+              ) : null}
             </AnimatePresence>
           </div>
         </motion.section>
