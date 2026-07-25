@@ -956,9 +956,9 @@ export function MailClient({
   const composingDocked = showCompose && !composeFullscreen;
   const readerSpanClass = composingDocked
     ? foldersCollapsed
-      ? "lg:col-span-11"
-      : "lg:col-span-10"
-    : "lg:col-span-7";
+      ? "lg:col-span-[23]"
+      : "lg:col-span-[20]"
+    : "lg:col-span-[14]";
 
   const filteredThreads = useMemo(() => {
     return threads.filter((t) => {
@@ -2271,7 +2271,7 @@ export function MailClient({
   function ComposeActionBar({ mode }: { mode: "docked" | "fullscreen" }) {
     return (
       <div>
-        <AttachmentChips />
+        {AttachmentChips()}
         <div className="flex flex-wrap items-center justify-end gap-2">
           <span
             className="mr-auto text-[0.65rem]"
@@ -2534,32 +2534,23 @@ export function MailClient({
         className="hidden"
         onChange={(e) => onPickAttachments(e.target.files)}
       />
-      {/* Header */}
+      {/* Header — one compact row. The app shell already shows a "BluRidge ›
+          Mail" breadcrumb above this, so no title block is duplicated here. */}
       <motion.header
         initial={{ opacity: 0, y: -8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={spring}
-        className="flex flex-wrap items-end justify-between gap-3 px-2 pt-1"
+        className="flex flex-wrap items-center justify-between gap-3 px-2"
       >
-        <div>
-          <p
-            className="text-[0.65rem] font-semibold uppercase tracking-[0.24em]"
-            style={{
-              background: "var(--mail-grad)",
-              WebkitBackgroundClip: "text",
-              color: "transparent",
-            }}
-          >
-            BluRidge / Mail
-          </p>
+        <div className="min-w-0 flex items-baseline gap-2">
           <h1
-            className="mt-1 text-2xl font-semibold tracking-tight"
+            className="shrink-0 text-base font-semibold tracking-tight"
             style={{ color: "var(--mail-text)" }}
           >
             Command inbox
           </h1>
           <p
-            className="mt-1 text-xs"
+            className="truncate text-xs"
             style={{ color: "var(--mail-dim)" }}
             suppressHydrationWarning
           >
@@ -2993,14 +2984,16 @@ export function MailClient({
       </AnimatePresence>
 
       {/* Workspace */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 px-1 lg:grid-cols-12">
+      {/* 24-col base (not 12) so the collapsed rail can take a genuinely
+          narrow slice (1/24) instead of being stuck at the coarsest 1/12. */}
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 px-1 lg:grid-cols-[repeat(24,minmax(0,1fr))]">
         {/* Folders + labels */}
         <motion.aside
           layout
           initial={{ opacity: 0, x: -12 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ ...spring, delay: 0.05 }}
-          className={`mail-panel flex min-h-0 flex-col overflow-hidden ${foldersCollapsed ? "lg:col-span-1" : "lg:col-span-2"}`}
+          className={`mail-panel flex min-h-0 flex-col overflow-hidden ${foldersCollapsed ? "lg:col-span-[1]" : "lg:col-span-[4]"}`}
         >
           <div
             className="flex items-center justify-end px-1 pt-1"
@@ -3220,7 +3213,7 @@ export function MailClient({
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.97 }}
           transition={{ ...spring, delay: composingDocked ? 0 : 0.08 }}
-          className={`mail-panel flex min-h-0 flex-col overflow-hidden ${foldersCollapsed ? "lg:col-span-4" : "lg:col-span-3"}`}
+          className={`mail-panel flex min-h-0 flex-col overflow-hidden ${foldersCollapsed ? "lg:col-span-[9]" : "lg:col-span-[6]"}`}
         >
           <div
             className="space-y-2.5 px-3 py-3"
@@ -4080,7 +4073,7 @@ export function MailClient({
                                 transition={spring}
                                 className="overflow-hidden"
                               >
-                                <ComposeAiAssist />
+                                {ComposeAiAssist()}
                               </motion.div>
                             )}
                           </AnimatePresence>
@@ -4126,7 +4119,7 @@ export function MailClient({
                             background: "rgba(7,7,8,0.92)",
                           }}
                         >
-                          <ComposeActionBar mode="docked" />
+                          {ComposeActionBar({ mode: "docked" })}
                         </div>
                       </motion.div>
                     )}
@@ -4460,7 +4453,7 @@ export function MailClient({
                     transition={spring}
                     className="shrink-0 overflow-hidden"
                   >
-                    <ComposeAiAssist />
+                    {ComposeAiAssist()}
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -4512,7 +4505,7 @@ export function MailClient({
                 boxShadow: "0 -12px 40px rgba(0,0,0,0.35)",
               }}
             >
-              <ComposeActionBar mode="fullscreen" />
+              {ComposeActionBar({ mode: "fullscreen" })}
             </div>
           </motion.div>
         )}
