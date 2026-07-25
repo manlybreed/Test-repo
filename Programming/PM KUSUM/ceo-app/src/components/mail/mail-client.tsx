@@ -30,7 +30,11 @@ import {
   X,
 } from "lucide-react";
 import { MailComposer } from "@/components/mail/composer";
-import { MessageReader, type MailMessageView } from "@/components/mail/message-reader";
+import {
+  MessageReader,
+  prepareMailHtml,
+  type MailMessageView,
+} from "@/components/mail/message-reader";
 import {
   SignaturesPanel,
   type SignatureRow,
@@ -704,21 +708,9 @@ function ReplyContextCard({
   message: MailMessageView;
   subject?: string;
 }) {
-  const text = (
-    message.bodyText ||
-    message.bodyHtml
-      ?.replace(/<style[\s\S]*?<\/style>/gi, " ")
-      .replace(/<[^>]+>/g, " ") ||
-    ""
-  )
-    // Newsletters bury the text in tracking URLs — drop them for the preview.
-    .replace(/<https?:[^>]*>/g, "")
-    .replace(/https?:\/\/\S+/g, "")
-    .replace(/\[image:[^\]]*\]/gi, "")
-    .replace(/[ \t]{2,}/g, " ")
-    .replace(/ ?\n ?/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  // Same rich rendering as the reader pane (sanitized HTML, dark-adapted) —
+  // images/links intact instead of a stripped text dump.
+  const html = prepareMailHtml(message.bodyHtml, message.bodyText, "dark");
   const who = message.fromName || message.fromAddress;
   return (
     <details
@@ -738,17 +730,14 @@ function ReplyContextCard({
           Replying to {who}
         </span>
         {subject ? <span className="truncate">· {subject}</span> : null}
+        <span className="ml-auto text-[0.65rem]" style={{ color: "var(--text-dim)" }}>
+          click to collapse
+        </span>
       </summary>
       <div
-        className="max-h-40 overflow-auto whitespace-pre-wrap px-3.5 pb-3 leading-relaxed"
-        style={{
-          color: "var(--text-muted)",
-          fontFamily: "Arial, Helvetica, sans-serif",
-          fontSize: 14,
-        }}
-      >
-        {text.slice(0, 5000) || "(no text content)"}
-      </div>
+        className="mail-message-body mail-dark-adapt max-h-64 overflow-auto px-3.5 pb-3"
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
     </details>
   );
 }
@@ -802,6 +791,8 @@ export function MailClient({
   >([]);
   const [uploadingAtt, setUploadingAtt] = useState(false);
   const attachInputRef = useRef<HTMLInputElement>(null);
+  /** Gmail-style: the docked reply is an in-flow card at the end of the thread — scroll it into view when it opens. */
+  const composeCardRef = useRef<HTMLDivElement>(null);
   const [pending, startTransition] = useTransition();
   /** Mailbox/thread-list loads — must NOT share `pending` or compose buttons freeze */
   const [, startNavTransition] = useTransition();
@@ -852,6 +843,18 @@ export function MailClient({
   });
   const [digest, setDigest] = useState("");
   const [showCompose, setShowCompose] = useState(false);
+  // Bring the inline reply card into view when it opens (after layout settles).
+  useEffect(() => {
+    if (showCompose && !composeFullscreen) {
+      const t = window.setTimeout(() => {
+        composeCardRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "end",
+        });
+      }, 120);
+      return () => window.clearTimeout(t);
+    }
+  }, [showCompose, composeFullscreen]);
   const [threadFilter, setThreadFilter] = useState<"all" | "unread" | "priority">(
     "all",
   );
@@ -3908,6 +3911,157 @@ export function MailClient({
                       Loading thread…
                     </p>
                   )}
+
+                  {/* Gmail-style inline reply: an in-flow card at the end of
+                      the thread, inside the same scroll — nothing overlaps. */}
+                  <AnimatePresence>
+                    {showCompose && !composeFullscreen && (
+                      <motion.div
+                        ref={composeCardRef}
+                        initial={{ opacity: 0, y: 18, scale: 0.99 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: 12 }}
+                        transition={spring}
+                        className="overflow-hidden rounded-2xl"
+                        style={{
+                          border: "1px solid rgba(139,92,246,0.35)",
+                          background: "var(--bg)",
+                          boxShadow: "0 16px 44px rgba(0,0,0,0.4)",
+                        }}
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-3">
+                          <p
+                            className="text-xs font-semibold uppercase tracking-[0.16em]"
+                            style={{ color: "var(--accent-bright)" }}
+                          >
+                            Reply
+                          </p>
+                          <button
+                            type="button"
+                            className="cursor-pointer text-xs font-medium"
+                            style={{ color: "var(--text-muted)" }}
+                            onClick={() => {
+                              setShowCcBcc((v) => !v);
+                              haptic("tap");
+                            }}
+                          >
+                            {showCcBcc || cc || bcc ? "Hide Cc / Bcc" : "Cc / Bcc"}
+                          </button>
+                        </div>
+
+                        <div className="space-y-3 px-4 py-2">
+                          <div
+                            className="rounded-xl px-3.5 py-1"
+                            style={{
+                              background: "var(--bg-elevated)",
+                              border: "1px solid var(--border-strong)",
+                            }}
+                          >
+                            <div className="mail-compose-field">
+                              <label htmlFor="mail-to">To</label>
+                              <input
+                                id="mail-to"
+                                placeholder="name@company.com, …"
+                                value={to}
+                                onChange={(e) => setTo(e.target.value)}
+                                autoComplete="email"
+                              />
+                            </div>
+                            {(showCcBcc || cc) && (
+                              <div className="mail-compose-field">
+                                <label htmlFor="mail-cc">Cc</label>
+                                <input
+                                  id="mail-cc"
+                                  placeholder="Optional carbon copy"
+                                  value={cc}
+                                  onChange={(e) => setCc(e.target.value)}
+                                  autoComplete="email"
+                                />
+                              </div>
+                            )}
+                            {(showCcBcc || bcc) && (
+                              <div className="mail-compose-field">
+                                <label htmlFor="mail-bcc">Bcc</label>
+                                <input
+                                  id="mail-bcc"
+                                  placeholder="Optional blind copy"
+                                  value={bcc}
+                                  onChange={(e) => setBcc(e.target.value)}
+                                  autoComplete="email"
+                                />
+                              </div>
+                            )}
+                            <div className="mail-compose-field">
+                              <label htmlFor="mail-subject">Subject</label>
+                              <input
+                                id="mail-subject"
+                                placeholder="Subject"
+                                value={subject}
+                                onChange={(e) => setSubject(e.target.value)}
+                              />
+                            </div>
+                          </div>
+
+                          <AnimatePresence>
+                            {showAiAssist && (
+                              <motion.div
+                                initial={{ opacity: 0, height: 0, y: -6 }}
+                                animate={{ opacity: 1, height: "auto", y: 0 }}
+                                exit={{ opacity: 0, height: 0, y: -6 }}
+                                transition={spring}
+                                className="overflow-hidden"
+                              >
+                                <ComposeAiAssist />
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+
+                          {sigList.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-2 text-xs">
+                              <span style={{ color: "var(--text-dim)" }}>Signature</span>
+                              <select
+                                className="cursor-pointer rounded-lg px-2 py-1.5 outline-none"
+                                style={{
+                                  background: "var(--bg-elevated)",
+                                  border: "1px solid var(--border)",
+                                  color: "var(--text-muted)",
+                                }}
+                                defaultValue=""
+                                onChange={(e) => {
+                                  if (e.target.value) applySignature(e.target.value);
+                                  e.target.value = "";
+                                }}
+                              >
+                                <option value="">Insert…</option>
+                                {sigList.map((s) => (
+                                  <option key={s.id} value={s.id}>
+                                    {s.name}
+                                    {s.isDefault ? " (default)" : ""}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+
+                          <MailComposer
+                            initialHtml={composeHtml}
+                            onChange={setComposeHtml}
+                            minHeight={160}
+                          />
+                        </div>
+
+                        <div
+                          className="px-4 py-3"
+                          style={{
+                            borderTop: "1px solid var(--border)",
+                            background: "rgba(7,7,8,0.92)",
+                          }}
+                        >
+                          <ComposeActionBar mode="docked" />
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
 
                 <AnimatePresence>
@@ -3981,154 +4135,6 @@ export function MailClient({
                     ))}
                   </ul>
                 )}
-
-                <AnimatePresence>
-                  {showCompose && !composeFullscreen && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 24 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: 16 }}
-                      transition={spring}
-                      className="flex max-h-[74%] min-h-[340px] flex-col"
-                      style={{
-                        borderTop: "1px solid rgba(139,92,246,0.35)",
-                        background: "var(--bg)",
-                        boxShadow: "0 -18px 44px rgba(0,0,0,0.45)",
-                      }}
-                    >
-                      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 px-4 pt-3">
-                        <p
-                          className="text-xs font-semibold uppercase tracking-[0.16em]"
-                          style={{ color: "var(--accent-bright)" }}
-                        >
-                          Compose reply
-                        </p>
-                        <button
-                          type="button"
-                          className="cursor-pointer text-xs font-medium"
-                          style={{ color: "var(--text-muted)" }}
-                          onClick={() => {
-                            setShowCcBcc((v) => !v);
-                            haptic("tap");
-                          }}
-                        >
-                          {showCcBcc || cc || bcc ? "Hide Cc / Bcc" : "Cc / Bcc"}
-                        </button>
-                      </div>
-
-                      <div className="min-h-0 flex-1 space-y-3 overflow-auto px-4 py-2">
-                        <div
-                          className="rounded-xl px-3.5 py-1"
-                          style={{
-                            background: "var(--bg-elevated)",
-                            border: "1px solid var(--border-strong)",
-                          }}
-                        >
-                          <div className="mail-compose-field">
-                            <label htmlFor="mail-to">To</label>
-                            <input
-                              id="mail-to"
-                              placeholder="name@company.com, …"
-                              value={to}
-                              onChange={(e) => setTo(e.target.value)}
-                              autoComplete="email"
-                            />
-                          </div>
-                          {(showCcBcc || cc) && (
-                            <div className="mail-compose-field">
-                              <label htmlFor="mail-cc">Cc</label>
-                              <input
-                                id="mail-cc"
-                                placeholder="Optional carbon copy"
-                                value={cc}
-                                onChange={(e) => setCc(e.target.value)}
-                                autoComplete="email"
-                              />
-                            </div>
-                          )}
-                          {(showCcBcc || bcc) && (
-                            <div className="mail-compose-field">
-                              <label htmlFor="mail-bcc">Bcc</label>
-                              <input
-                                id="mail-bcc"
-                                placeholder="Optional blind copy"
-                                value={bcc}
-                                onChange={(e) => setBcc(e.target.value)}
-                                autoComplete="email"
-                              />
-                            </div>
-                          )}
-                          <div className="mail-compose-field">
-                            <label htmlFor="mail-subject">Subject</label>
-                            <input
-                              id="mail-subject"
-                              placeholder="Subject"
-                              value={subject}
-                              onChange={(e) => setSubject(e.target.value)}
-                            />
-                          </div>
-                        </div>
-
-                        <AnimatePresence>
-                          {showAiAssist && (
-                            <motion.div
-                              initial={{ opacity: 0, height: 0, y: -6 }}
-                              animate={{ opacity: 1, height: "auto", y: 0 }}
-                              exit={{ opacity: 0, height: 0, y: -6 }}
-                              transition={spring}
-                              className="overflow-hidden"
-                            >
-                              <ComposeAiAssist />
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-
-                        {sigList.length > 0 && (
-                          <div className="flex flex-wrap items-center gap-2 text-xs">
-                            <span style={{ color: "var(--text-dim)" }}>Signature</span>
-                            <select
-                              className="cursor-pointer rounded-lg px-2 py-1.5 outline-none"
-                              style={{
-                                background: "var(--bg-elevated)",
-                                border: "1px solid var(--border)",
-                                color: "var(--text-muted)",
-                              }}
-                              defaultValue=""
-                              onChange={(e) => {
-                                if (e.target.value) applySignature(e.target.value);
-                                e.target.value = "";
-                              }}
-                            >
-                              <option value="">Insert…</option>
-                              {sigList.map((s) => (
-                                <option key={s.id} value={s.id}>
-                                  {s.name}
-                                  {s.isDefault ? " (default)" : ""}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        )}
-
-                        <MailComposer
-                          initialHtml={composeHtml}
-                          onChange={setComposeHtml}
-                          minHeight={180}
-                        />
-                      </div>
-
-                      <div
-                        className="shrink-0 px-4 py-3"
-                        style={{
-                          borderTop: "1px solid var(--border)",
-                          background: "rgba(7,7,8,0.92)",
-                        }}
-                      >
-                        <ComposeActionBar mode="docked" />
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
               </motion.div>
             ) : (
               <motion.div
