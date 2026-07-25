@@ -69,6 +69,7 @@ import {
   saveDraftAction,
   listDraftsFolderAction,
   getDraftAction,
+  deleteDraftAction,
   refineDraftAction,
   createMailLabelAction,
   backfillSmartLabelsAction,
@@ -584,6 +585,46 @@ function IconBtn({
   );
 }
 
+/**
+ * The AI "sparkle" glyph, animated everywhere it appears (top command bar,
+ * compose send-bar toggle, AI assist panel header) — a slow twinkle/glow loop
+ * so it reads as "alive"/AI, not a static icon. Module-level so it never
+ * causes the nested-component remount issue.
+ */
+function AnimatedSparkle({
+  size = 14,
+  color = "var(--accent-bright)",
+  className,
+}: {
+  size?: number;
+  color?: string;
+  className?: string;
+}) {
+  return (
+    <motion.span
+      className={`inline-flex shrink-0 ${className || ""}`}
+      style={{ color }}
+      animate={{
+        rotate: [0, 12, -8, 0],
+        scale: [1, 1.16, 1],
+        filter: [
+          "drop-shadow(0 0 0px currentColor)",
+          "drop-shadow(0 0 4px currentColor)",
+          "drop-shadow(0 0 0px currentColor)",
+        ],
+      }}
+      transition={{
+        duration: 2.4,
+        repeat: Infinity,
+        ease: "easeInOut",
+        repeatDelay: 0.6,
+      }}
+    >
+      <Sparkles size={size} />
+    </motion.span>
+  );
+}
+
 type InlineOpts = {
   sources?: Map<string, AskCitation>;
   onOpen?: (threadId: string) => void;
@@ -831,6 +872,30 @@ export function MailClient({
   /** When false, a background draft save must not reattach draftId (e.g. after opening a thread). */
   const attachDraftIdRef = useRef(true);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  /**
+   * Snapshot of the auto-populated reply-context fields (To/Cc/Bcc/Subject/
+   * signature-only body) at the moment a thread/draft/new-compose opens.
+   * composeIsDirty() compares against this instead of raw truthy checks — a
+   * pre-filled "To: sender@x.com" is NOT dirty on its own; only an actual edit
+   * beyond what was auto-populated is. Fixes drafts being silently saved for
+   * threads the user only opened Reply on without typing anything.
+   */
+  const composeBaselineRef = useRef({
+    to: "",
+    cc: "",
+    bcc: "",
+    subject: "",
+    html: "",
+  });
+  function snapshotComposeBaseline(vals: {
+    to: string;
+    cc: string;
+    bcc: string;
+    subject: string;
+    html: string;
+  }) {
+    composeBaselineRef.current = vals;
+  }
   const [liveConnected, setLiveConnected] = useState(false);
   const [status, setStatus] = useState("");
   const [askQ, setAskQ] = useState("");
@@ -1168,6 +1233,13 @@ export function MailClient({
       setBcc("");
       setSubject(row?.subject || "");
       setComposeHtml(row?.bodyHtml || `<p></p>${defaultSig}`);
+      snapshotComposeBaseline({
+        to: (row?.toAddresses || []).join(", "),
+        cc: "",
+        bcc: "",
+        subject: row?.subject || "",
+        html: row?.bodyHtml || `<p></p>${defaultSig}`,
+      });
       setShowCompose(true);
       setComposeFullscreen(false);
       setStatus(
@@ -1254,13 +1326,23 @@ export function MailClient({
         const viewingDrafts = folderRole === "DRAFTS";
 
         if (viewingDrafts && last) {
-          setTo(parseAddrJson(last.toAddresses).join(", "));
-          setCc(parseAddrJson(last.ccAddresses).join(", "));
+          const draftTo = parseAddrJson(last.toAddresses).join(", ");
+          const draftCc = parseAddrJson(last.ccAddresses).join(", ");
+          const draftHtml = last.bodyHtml || `<p>${last.bodyText || ""}</p>`;
+          setTo(draftTo);
+          setCc(draftCc);
           setBcc("");
-          setShowCcBcc(Boolean(parseAddrJson(last.ccAddresses).length));
+          setShowCcBcc(Boolean(draftCc));
           setSubject(last.subject);
-          setComposeHtml(last.bodyHtml || `<p>${last.bodyText || ""}</p>`);
+          setComposeHtml(draftHtml);
           setComposeHeaders({});
+          snapshotComposeBaseline({
+            to: draftTo,
+            cc: draftCc,
+            bcc: "",
+            subject: last.subject,
+            html: draftHtml,
+          });
           setShowCompose(true);
           setStatus("Draft opened from mailbox — Save draft to keep edits");
           return;
@@ -1281,6 +1363,13 @@ export function MailClient({
         });
         setComposeHtml(`<p></p>${defaultSig}`);
         setComposeAttachments([]);
+        snapshotComposeBaseline({
+          to: reply.to,
+          cc: reply.cc,
+          bcc: "",
+          subject: reply.subject,
+          html: `<p></p>${defaultSig}`,
+        });
       } catch (e) {
         setStatus(e instanceof Error ? e.message : "Could not open thread");
         haptic("warn");
@@ -1365,6 +1454,13 @@ export function MailClient({
     setRefineNote("");
     setComposeBrief("");
     setComposeAttachments([]);
+    snapshotComposeBaseline({
+      to: "",
+      cc: "",
+      bcc: "",
+      subject: "",
+      html: `<p></p>${defaultSig}`,
+    });
     setShowCompose(true);
     setComposeFullscreen(true);
     setStatus("New message — add To, then AI Draft with a short brief");
@@ -1427,25 +1523,43 @@ export function MailClient({
         inReplyTo: d.inReplyTo || undefined,
         referencesHdr: d.referencesHdr || undefined,
       });
+      snapshotComposeBaseline({
+        to: d.to.join(", "),
+        cc: d.cc.join(", "),
+        bcc: d.bcc.join(", "),
+        subject: d.subject,
+        html: d.bodyHtml || `<p></p>${defaultSig}`,
+      });
       setStatus("Draft loaded — edit and Save or Send");
       haptic("success");
     });
   }
 
-  function composeIsDirty() {
-    const body = (composeHtml || "")
+  function normalizeComposeBody(html: string) {
+    return (html || "")
       .replace(/<div[^>]*data-mail-sig[\s\S]*?<\/div>/gi, "")
       .replace(/<style[\s\S]*?<\/style>/gi, "")
       .replace(/<[^>]+>/g, " ")
       .replace(/&nbsp;/gi, " ")
       .replace(/\s+/g, " ")
       .trim();
-    return Boolean(
-      to.trim() ||
-        cc.trim() ||
-        bcc.trim() ||
-        subject.trim() ||
-        (body && !/^best regards,?$/i.test(body)),
+  }
+
+  /**
+   * True only if the user has actually changed something from what was
+   * auto-populated when this compose context opened (see composeBaselineRef).
+   * A reply pre-filled with the sender's address and the default signature is
+   * not "dirty" on its own — that would silently draft-save every Reply the
+   * user opened and closed without typing a word.
+   */
+  function composeIsDirty() {
+    const b = composeBaselineRef.current;
+    return (
+      to.trim() !== b.to.trim() ||
+      cc.trim() !== b.cc.trim() ||
+      bcc.trim() !== b.bcc.trim() ||
+      subject.trim() !== b.subject.trim() ||
+      normalizeComposeBody(composeHtml) !== normalizeComposeBody(b.html)
     );
   }
 
@@ -1668,6 +1782,31 @@ export function MailClient({
       } catch (e) {
         setStatus(e instanceof Error ? e.message : "Trash failed");
         haptic("warn");
+        await reloadActiveView();
+      }
+    });
+  }
+
+  function discardDraft() {
+    if (!draftId) return;
+    const ok = window.confirm("Discard this draft? This cannot be undone.");
+    if (!ok) return;
+    const id = draftId;
+    setThreads((prev) => prev.filter((t) => t.id !== `outbox:${id}`));
+    setShowCompose(false);
+    setComposeFullscreen(false);
+    setDraftId(null);
+    setSelectedId(null);
+    setStatus("Discarding draft…");
+    startNavTransition(async () => {
+      try {
+        await deleteDraftAction(id);
+        setStatus("Draft discarded");
+        haptic("success");
+      } catch (e) {
+        setStatus(e instanceof Error ? e.message : "Could not discard draft");
+        haptic("warn");
+      } finally {
         await reloadActiveView();
       }
     });
@@ -2129,7 +2268,7 @@ export function MailClient({
         }}
       >
         <div className="flex items-center gap-1.5">
-          <Sparkles size={13} style={{ color: "var(--accent-bright)" }} />
+          <AnimatedSparkle size={13} />
           <span
             className="text-[0.68rem] font-semibold uppercase tracking-[0.16em]"
             style={{ color: "var(--accent-bright)" }}
@@ -2283,7 +2422,7 @@ export function MailClient({
           <IconBtn
             title={showAiAssist ? "Hide AI assist" : "AI assist — draft, tone, edits"}
             active={showAiAssist}
-            icon={<Sparkles size={15} />}
+            icon={<AnimatedSparkle size={15} color="currentColor" />}
             onClick={() => setShowAiAssist((v) => !v)}
           />
           <IconBtn
@@ -2358,6 +2497,14 @@ export function MailClient({
               </div>
             )}
           </div>
+          {draftId && (
+            <IconBtn
+              title="Discard draft"
+              icon={<Trash2 size={15} />}
+              disabled={sending}
+              onClick={discardDraft}
+            />
+          )}
           <IconBtn
             title="Save draft"
             icon={<Save size={15} />}
@@ -2585,11 +2732,7 @@ export function MailClient({
               border: "1px solid rgba(139,92,246,0.28)",
             }}
           >
-            <Sparkles
-              size={13}
-              className="mr-1 shrink-0"
-              style={{ color: "var(--accent-bright)" }}
-            />
+            <AnimatedSparkle size={13} className="mr-1" />
             <GhostBtn
               bare
               onClick={runCategorizeAll}
