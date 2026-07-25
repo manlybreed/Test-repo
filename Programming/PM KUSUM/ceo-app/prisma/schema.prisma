@@ -917,6 +917,8 @@ model MailOutbox {
   referencesHdr  String?
   /// DRAFT | QUEUED | SCHEDULED | SENT | FAILED | CANCELLED
   status         String   @default("DRAFT")
+  /// JSON [{path, filename, size, contentType}] — uploaded compose attachments
+  attachmentsJson String  @default("[]")
   sendAt         DateTime?
   undoUntil      DateTime?
   idempotencyKey String   @unique

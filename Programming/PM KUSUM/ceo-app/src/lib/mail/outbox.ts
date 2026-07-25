@@ -33,6 +33,21 @@ export async function flushOutboxItem(
   const cc = JSON.parse(row.ccAddresses || "[]") as string[];
   const bcc = JSON.parse(row.bccAddresses || "[]") as string[];
   const text = row.bodyText || htmlToText(row.bodyHtml);
+  let attachments: { filename: string; path: string; contentType?: string }[] = [];
+  try {
+    const parsed = JSON.parse(row.attachmentsJson || "[]") as {
+      path: string;
+      filename: string;
+      contentType: string | null;
+    }[];
+    attachments = parsed.map((a) => ({
+      filename: a.filename,
+      path: a.path,
+      contentType: a.contentType || undefined,
+    }));
+  } catch {
+    attachments = [];
+  }
 
   try {
     const info = await transport.sendMail({
@@ -45,6 +60,9 @@ export async function flushOutboxItem(
       text,
       inReplyTo: row.inReplyTo || undefined,
       references: row.referencesHdr || undefined,
+      // NOTE: attachments ride on the real SMTP send; the IMAP Sent-copy
+      // (appendSentMessage/buildRawMime) stays body-only for now.
+      attachments: attachments.length ? attachments : undefined,
     });
 
     // Keep Sent mailbox in sync even if SMTP server doesn't auto-copy

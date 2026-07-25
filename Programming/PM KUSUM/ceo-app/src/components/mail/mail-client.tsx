@@ -17,6 +17,7 @@ import {
   Maximize2,
   Minus,
   MoreHorizontal,
+  Paperclip,
   PenLine,
   RefreshCw,
   Reply as ReplyIcon,
@@ -26,6 +27,7 @@ import {
   Sparkles,
   Star,
   Trash2,
+  X,
 } from "lucide-react";
 import { MailComposer } from "@/components/mail/composer";
 import { MessageReader, type MailMessageView } from "@/components/mail/message-reader";
@@ -45,6 +47,8 @@ import {
   triageThreadAction,
   syncMailAction,
   sendMailAction,
+  uploadComposeAttachmentAction,
+  type ComposeAttachment,
   getMailThread,
   markThreadRead,
   digestAction,
@@ -707,7 +711,12 @@ function ReplyContextCard({
       .replace(/<[^>]+>/g, " ") ||
     ""
   )
+    // Newsletters bury the text in tracking URLs — drop them for the preview.
+    .replace(/<https?:[^>]*>/g, "")
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/\[image:[^\]]*\]/gi, "")
     .replace(/[ \t]{2,}/g, " ")
+    .replace(/ ?\n ?/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   const who = message.fromName || message.fromAddress;
@@ -721,18 +730,22 @@ function ReplyContextCard({
       }}
     >
       <summary
-        className="flex cursor-pointer list-none items-center gap-2 px-3.5 py-2 text-xs"
+        className="flex cursor-pointer list-none items-center gap-2 px-3.5 py-2 text-sm"
         style={{ color: "var(--text-dim)" }}
       >
-        <ReplyIcon size={13} style={{ color: "var(--accent-bright)" }} />
+        <ReplyIcon size={14} style={{ color: "var(--accent-bright)" }} />
         <span className="font-semibold" style={{ color: "var(--text-muted)" }}>
           Replying to {who}
         </span>
         {subject ? <span className="truncate">· {subject}</span> : null}
       </summary>
       <div
-        className="max-h-36 overflow-auto whitespace-pre-wrap px-3.5 pb-3 text-xs leading-relaxed"
-        style={{ color: "var(--text-dim)" }}
+        className="max-h-40 overflow-auto whitespace-pre-wrap px-3.5 pb-3 leading-relaxed"
+        style={{
+          color: "var(--text-muted)",
+          fontFamily: "Arial, Helvetica, sans-serif",
+          fontSize: 14,
+        }}
       >
         {text.slice(0, 5000) || "(no text content)"}
       </div>
@@ -782,6 +795,13 @@ export function MailClient({
   const [refineNote, setRefineNote] = useState("");
   /** Brief for AI Draft on a fresh (non-reply) email */
   const [composeBrief, setComposeBrief] = useState("");
+  /** Gmail-style: the AI assist panel opens from a sparkle toggle, not always-on. */
+  const [showAiAssist, setShowAiAssist] = useState(false);
+  const [composeAttachments, setComposeAttachments] = useState<
+    ComposeAttachment[]
+  >([]);
+  const [uploadingAtt, setUploadingAtt] = useState(false);
+  const attachInputRef = useRef<HTMLInputElement>(null);
   const [pending, startTransition] = useTransition();
   /** Mailbox/thread-list loads — must NOT share `pending` or compose buttons freeze */
   const [, startNavTransition] = useTransition();
@@ -1244,6 +1264,7 @@ export function MailClient({
           referencesHdr: reply.referencesHdr,
         });
         setComposeHtml(`<p></p>${defaultSig}`);
+        setComposeAttachments([]);
       } catch (e) {
         setStatus(e instanceof Error ? e.message : "Could not open thread");
         haptic("warn");
@@ -1327,6 +1348,7 @@ export function MailClient({
     setComposeHtml(`<p></p>${defaultSig}`);
     setRefineNote("");
     setComposeBrief("");
+    setComposeAttachments([]);
     setShowCompose(true);
     setComposeFullscreen(true);
     setStatus("New message — add To, then AI Draft with a short brief");
@@ -1509,6 +1531,30 @@ export function MailClient({
     if (shouldSave) autosaveDraftInBackground();
   }
 
+  function onPickAttachments(files: FileList | null) {
+    if (!files || !files.length) return;
+    const fd = new FormData();
+    for (const f of Array.from(files)) fd.append("files", f);
+    setUploadingAtt(true);
+    setStatus("Uploading attachment…");
+    void uploadComposeAttachmentAction(fd)
+      .then((uploaded) => {
+        setComposeAttachments((prev) => [...prev, ...uploaded]);
+        setStatus(
+          `${uploaded.length} attachment${uploaded.length === 1 ? "" : "s"} added`,
+        );
+        haptic("success");
+      })
+      .catch((e) => {
+        setStatus(e instanceof Error ? e.message : "Attachment upload failed");
+        haptic("warn");
+      })
+      .finally(() => {
+        setUploadingAtt(false);
+        if (attachInputRef.current) attachInputRef.current.value = "";
+      });
+  }
+
   function sendCurrentDraft() {
     const recipients = splitAddrs(to);
     if (!recipients.length) {
@@ -1548,6 +1594,7 @@ export function MailClient({
       inReplyTo: headers.inReplyTo,
       referencesHdr: headers.referencesHdr,
       draftId: draftId || undefined,
+      attachments: composeAttachments.length ? composeAttachments : undefined,
     })
       .then(async (row) => {
         if (row.status === "FAILED") {
@@ -1561,6 +1608,7 @@ export function MailClient({
         setDraftId(null);
         setComposeHeaders({});
         setComposeBrief("");
+        setComposeAttachments([]);
         setSendAtLocal("");
         haptic("success");
         await reloadActiveView();
@@ -2152,58 +2200,124 @@ export function MailClient({
     );
   }
 
-  /** Docked: Save + Send (+ autocomplete). Fullscreen: full AI toolkit. */
-  function ComposeActionBar({ mode }: { mode: "docked" | "fullscreen" }) {
+  /** Attached-file chips shared by both compose modes. */
+  function AttachmentChips() {
+    if (!composeAttachments.length && !uploadingAtt) return null;
     return (
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        <span
-          className="mr-auto text-[0.65rem]"
-          style={{ color: "var(--text-dim)" }}
-        >
-          From {accountInfo?.address}
-          {draftId ? " · draft saved" : ""}
-        </span>
-        {mode === "docked" && (
-          <GhostBtn
-            onClick={() => {
-              setComposeFullscreen(true);
-              haptic("tap");
+      <div className="flex flex-wrap items-center gap-1.5 pb-2">
+        {composeAttachments.map((a, i) => (
+          <motion.span
+            key={`${a.path}-${i}`}
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[0.68rem] font-medium"
+            style={{
+              background: "var(--bg-elevated)",
+              border: "1px solid var(--border-strong)",
+              color: "var(--text-muted)",
             }}
           >
-            Fullscreen
-          </GhostBtn>
+            <Paperclip size={11} className="shrink-0" />
+            <span className="max-w-44 truncate">{a.filename}</span>
+            <span style={{ color: "var(--text-dim)" }}>
+              {a.size > 1024 * 1024
+                ? `${(a.size / (1024 * 1024)).toFixed(1)} MB`
+                : `${Math.max(1, Math.round(a.size / 1024))} KB`}
+            </span>
+            <button
+              type="button"
+              title="Remove attachment"
+              className="cursor-pointer opacity-70 hover:opacity-100"
+              onClick={() => {
+                setComposeAttachments((prev) =>
+                  prev.filter((_, j) => j !== i),
+                );
+                haptic("tap");
+              }}
+            >
+              <X size={11} />
+            </button>
+          </motion.span>
+        ))}
+        {uploadingAtt && (
+          <span
+            className="flex items-center gap-1.5 text-[0.68rem]"
+            style={{ color: "var(--accent-bright)" }}
+          >
+            <Loader2 size={12} className="animate-spin" /> uploading…
+          </span>
         )}
-        <GhostBtn disabled={pending} onClick={runAutocomplete}>
-          Autocomplete
-        </GhostBtn>
-        <label
-          className="flex items-center gap-1.5 text-[0.65rem]"
-          style={{ color: "var(--text-dim)" }}
-          title="Schedule send (AI-19)"
-        >
-          Send at
-          <input
-            type="datetime-local"
-            className="mail-search py-1 text-[0.65rem]"
-            value={sendAtLocal}
-            disabled={sending}
-            onChange={(e) => setSendAtLocal(e.target.value)}
+      </div>
+    );
+  }
+
+  /** Send bar: AI toggle + attach + schedule + save + send (both modes). */
+  function ComposeActionBar({ mode }: { mode: "docked" | "fullscreen" }) {
+    return (
+      <div>
+        <AttachmentChips />
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <span
+            className="mr-auto text-[0.65rem]"
+            style={{ color: "var(--text-dim)" }}
+          >
+            From {accountInfo?.address}
+            {draftId ? " · draft saved" : ""}
+          </span>
+          <IconBtn
+            title={showAiAssist ? "Hide AI assist" : "AI assist — draft, tone, edits"}
+            active={showAiAssist}
+            icon={<Sparkles size={15} />}
+            onClick={() => setShowAiAssist((v) => !v)}
           />
-        </label>
-        <GhostBtn disabled={pending || sending} onClick={saveCurrentDraft}>
-          Save draft
-        </GhostBtn>
-        <GhostBtn
-          primary
-          disabled={sending || !to.trim()}
-          onClick={sendCurrentDraft}
-        >
-          {sending
-            ? "Sending…"
-            : sendAtLocal
-              ? "Schedule"
-              : "Send"}
-        </GhostBtn>
+          <IconBtn
+            title="Attach files"
+            icon={<Paperclip size={15} />}
+            disabled={uploadingAtt || sending}
+            onClick={() => attachInputRef.current?.click()}
+          />
+          {mode === "docked" && (
+            <IconBtn
+              title="Fullscreen compose"
+              icon={<Maximize2 size={15} />}
+              onClick={() => {
+                setComposeFullscreen(true);
+                haptic("tap");
+              }}
+            />
+          )}
+          <GhostBtn disabled={pending} onClick={runAutocomplete}>
+            Autocomplete
+          </GhostBtn>
+          <label
+            className="flex items-center gap-1.5 text-[0.65rem]"
+            style={{ color: "var(--text-dim)" }}
+            title="Schedule send (AI-19)"
+          >
+            Send at
+            <input
+              type="datetime-local"
+              className="mail-search py-1 text-[0.65rem]"
+              value={sendAtLocal}
+              disabled={sending}
+              onChange={(e) => setSendAtLocal(e.target.value)}
+            />
+          </label>
+          <GhostBtn disabled={pending || sending} onClick={saveCurrentDraft}>
+            Save draft
+          </GhostBtn>
+          <GhostBtn
+            primary
+            disabled={sending || !to.trim()}
+            onClick={sendCurrentDraft}
+          >
+            {sending
+              ? "Sending…"
+              : sendAtLocal
+                ? "Schedule"
+                : "Send"}
+          </GhostBtn>
+        </div>
       </div>
     );
   }
@@ -2343,6 +2457,14 @@ export function MailClient({
 
   return (
     <div className="mail-shell relative flex h-[calc(100vh-7.5rem)] min-h-[560px] flex-col gap-3 overflow-hidden">
+      {/* Shared hidden file input for compose attachments (docked + fullscreen) */}
+      <input
+        ref={attachInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => onPickAttachments(e.target.files)}
+      />
       {/* Header */}
       <motion.header
         initial={{ opacity: 0, y: -8 }}
@@ -3947,7 +4069,19 @@ export function MailClient({
                           </div>
                         </div>
 
-                        <ComposeAiAssist />
+                        <AnimatePresence>
+                          {showAiAssist && (
+                            <motion.div
+                              initial={{ opacity: 0, height: 0, y: -6 }}
+                              animate={{ opacity: 1, height: "auto", y: 0 }}
+                              exit={{ opacity: 0, height: 0, y: -6 }}
+                              transition={spring}
+                              className="overflow-hidden"
+                            >
+                              <ComposeAiAssist />
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
 
                         {sigList.length > 0 && (
                           <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -4235,7 +4369,19 @@ export function MailClient({
                 />
               )}
 
-              <ComposeAiAssist />
+              <AnimatePresence>
+                {showAiAssist && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0, y: -6 }}
+                    animate={{ opacity: 1, height: "auto", y: 0 }}
+                    exit={{ opacity: 0, height: 0, y: -6 }}
+                    transition={spring}
+                    className="shrink-0 overflow-hidden"
+                  >
+                    <ComposeAiAssist />
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
               {sigList.length > 0 && (
                 <div className="flex shrink-0 flex-wrap items-center gap-2 text-xs">

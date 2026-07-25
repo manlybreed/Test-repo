@@ -7,7 +7,7 @@ import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
 import TextAlign from "@tiptap/extension-text-align";
 import Highlight from "@tiptap/extension-highlight";
-import { TextStyle } from "@tiptap/extension-text-style";
+import { TextStyle, FontFamily, FontSize } from "@tiptap/extension-text-style";
 import { Color } from "@tiptap/extension-color";
 import { TableKit } from "@tiptap/extension-table";
 import { useEffect } from "react";
@@ -42,6 +42,8 @@ export function MailComposer({
       }),
       Underline,
       TextStyle,
+      FontFamily,
+      FontSize,
       Color,
       Highlight.configure({ multicolor: false }),
       TextAlign.configure({ types: ["heading", "paragraph"] }),
@@ -310,6 +312,57 @@ export function MailComposer({
           background: "rgba(0,0,0,0.22)",
         }}
       >
+        {/* Font family + size — Gmail-style; default is Sans Serif 14px */}
+        <select
+          title="Font"
+          className="cursor-pointer rounded-md px-1.5 py-1 text-[11px] outline-none"
+          style={{
+            background: "var(--bg-elevated)",
+            border: "1px solid var(--border)",
+            color: "var(--text-muted)",
+            maxWidth: 96,
+          }}
+          value={
+            (editor.getAttributes("textStyle").fontFamily as string) || ""
+          }
+          onChange={(e) => {
+            haptic("tap");
+            const v = e.target.value;
+            if (v) editor.chain().focus().setFontFamily(v).run();
+            else editor.chain().focus().unsetFontFamily().run();
+          }}
+        >
+          <option value="">Sans Serif</option>
+          <option value="Georgia, 'Times New Roman', serif">Serif</option>
+          <option value="'Courier New', monospace">Mono</option>
+          <option value="Verdana, sans-serif">Verdana</option>
+        </select>
+        <select
+          title="Text size"
+          className="cursor-pointer rounded-md px-1.5 py-1 text-[11px] outline-none"
+          style={{
+            background: "var(--bg-elevated)",
+            border: "1px solid var(--border)",
+            color: "var(--text-muted)",
+          }}
+          value={(editor.getAttributes("textStyle").fontSize as string) || ""}
+          onChange={(e) => {
+            haptic("tap");
+            const v = e.target.value;
+            if (v) editor.chain().focus().setFontSize(v).run();
+            else editor.chain().focus().unsetFontSize().run();
+          }}
+        >
+          <option value="">Normal</option>
+          <option value="12px">Small</option>
+          <option value="16px">Large</option>
+          <option value="18px">Larger</option>
+          <option value="24px">Huge</option>
+        </select>
+        <span
+          className="mx-0.5 h-5 w-px"
+          style={{ background: "var(--border-strong)" }}
+        />
         {tools.map((t, i) =>
           t.type === "sep" ? (
             <span
