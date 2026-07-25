@@ -14,9 +14,12 @@ import {
   Inbox as InboxIcon,
   Loader2,
   Mail as MailIcon,
+  Maximize2,
+  Minus,
   MoreHorizontal,
   PenLine,
   RefreshCw,
+  Reply as ReplyIcon,
   Send,
   ShieldAlert,
   SlidersHorizontal,
@@ -517,6 +520,8 @@ function IconBtn({
   disabled,
   danger,
   active,
+  primary,
+  size = "md",
 }: {
   icon: React.ReactNode;
   title: string;
@@ -524,30 +529,42 @@ function IconBtn({
   disabled?: boolean;
   danger?: boolean;
   active?: boolean;
+  /** Gradient CTA styling for a primary action (e.g. Reply). */
+  primary?: boolean;
+  size?: "md" | "lg";
 }) {
+  const dim = size === "lg" ? "h-9 w-9" : "h-8 w-8";
   return (
     <motion.button
       type="button"
       title={title}
       aria-label={title}
       disabled={disabled}
-      whileHover={{ y: -1, scale: 1.05 }}
-      whileTap={{ scale: 0.92 }}
+      whileHover={{ y: -1, scale: 1.06 }}
+      whileTap={{ scale: 0.9 }}
       transition={spring}
       onClick={() => {
         haptic(danger ? "warn" : "tap");
         onClick();
       }}
-      className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full disabled:cursor-not-allowed disabled:opacity-40"
-      style={{
-        background: active
-          ? "var(--mail-purple-dim)"
-          : danger
-            ? "rgba(239,68,68,0.12)"
-            : "var(--bg-elevated)",
-        color: active ? "#c4b5fd" : danger ? "#f87171" : "var(--text-muted)",
-        border: "1px solid var(--border-strong)",
-      }}
+      className={`flex ${dim} shrink-0 cursor-pointer items-center justify-center rounded-full disabled:cursor-not-allowed disabled:opacity-40 ${primary ? "mail-cta-primary" : ""}`}
+      style={
+        primary
+          ? { border: "none", color: "#fff" }
+          : {
+              background: active
+                ? "var(--mail-purple-dim)"
+                : danger
+                  ? "rgba(239,68,68,0.12)"
+                  : "var(--bg-elevated)",
+              color: active
+                ? "#c4b5fd"
+                : danger
+                  ? "#f87171"
+                  : "var(--text-muted)",
+              border: "1px solid var(--border-strong)",
+            }
+      }
     >
       {icon}
     </motion.button>
@@ -740,6 +757,7 @@ export function MailClient({
   }, []);
   /** When false, a background draft save must not reattach draftId (e.g. after opening a thread). */
   const attachDraftIdRef = useRef(true);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [liveConnected, setLiveConnected] = useState(false);
   const [status, setStatus] = useState("");
   const [askQ, setAskQ] = useState("");
@@ -846,6 +864,15 @@ export function MailClient({
     );
   }, [askA, askSourcesMap]);
 
+  // Focus mode: when a reply/compose is docked open, collapse the thread list
+  // and give the reader the freed columns (restores when the reply closes).
+  const composingDocked = showCompose && !composeFullscreen;
+  const readerSpanClass = composingDocked
+    ? foldersCollapsed
+      ? "lg:col-span-11"
+      : "lg:col-span-10"
+    : "lg:col-span-7";
+
   const filteredThreads = useMemo(() => {
     return threads.filter((t) => {
       if (threadFilter === "unread" && t.unreadCount <= 0) return false;
@@ -855,6 +882,96 @@ export function MailClient({
       return true;
     });
   }, [threads, threadFilter]);
+
+  function navigateThread(dir: 1 | -1) {
+    if (!filteredThreads.length) return;
+    const idx = filteredThreads.findIndex((t) => t.id === selectedId);
+    let next = idx === -1 ? (dir === 1 ? 0 : filteredThreads.length - 1) : idx + dir;
+    next = Math.max(0, Math.min(filteredThreads.length - 1, next));
+    const t = filteredThreads[next];
+    if (t) openThread(t.id);
+  }
+
+  // Keyboard shortcuts (Superhuman/Gmail-style). Fresh-closure ref so we
+  // subscribe once but always read current state.
+  const shortcutRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  shortcutRef.current = (e: KeyboardEvent) => {
+    const target = e.target as HTMLElement | null;
+    const typing =
+      target instanceof HTMLElement &&
+      Boolean(
+        target.closest(
+          "input, textarea, select, [contenteditable='true'], .ProseMirror",
+        ),
+      );
+    const meta = e.metaKey || e.ctrlKey;
+
+    if (meta && e.key === "Enter") {
+      if ((showCompose || composeFullscreen) && to.trim() && !sending) {
+        e.preventDefault();
+        sendCurrentDraft();
+      }
+      return;
+    }
+    if (e.key === "Escape") {
+      if (showMoveMenu || showSnoozeMenu || showMoreMenu || showPriorityMenu) {
+        setShowMoveMenu(false);
+        setShowSnoozeMenu(false);
+        setShowMoreMenu(false);
+        setShowPriorityMenu(false);
+      } else if (composeFullscreen) {
+        closeCompose("exit-fullscreen");
+      } else if (showCompose) {
+        closeCompose("hide");
+      } else if (target instanceof HTMLElement) {
+        target.blur();
+      }
+      return;
+    }
+    // Single-key shortcuts only fire outside text fields / modifiers.
+    if (typing || meta || e.altKey) return;
+
+    switch (e.key.toLowerCase()) {
+      case "r":
+        if (
+          selectedThread &&
+          !showCompose &&
+          !selectedId?.startsWith("outbox")
+        ) {
+          e.preventDefault();
+          setShowCompose(true);
+          haptic("tap");
+        }
+        break;
+      case "c":
+        e.preventDefault();
+        composeNew();
+        break;
+      case "j":
+        e.preventDefault();
+        navigateThread(1);
+        break;
+      case "k":
+        e.preventDefault();
+        navigateThread(-1);
+        break;
+      case "e":
+        if (selectedId && !selectedId.startsWith("outbox")) {
+          e.preventDefault();
+          archiveSelected();
+        }
+        break;
+      case "/":
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        break;
+    }
+  };
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => shortcutRef.current(e);
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, []);
 
   // Smart search: AI expands intent, then matches subject/body/sender@domain
   useEffect(() => {
@@ -1402,6 +1519,20 @@ export function MailClient({
         haptic("warn");
       })
       .finally(() => setSending(false));
+  }
+
+  function archiveSelected() {
+    if (!selectedId || selectedId.startsWith("outbox")) return;
+    const id = selectedId;
+    startTransition(async () => {
+      await archiveThreadAction(id);
+      setThreads((prev) => prev.filter((x) => x.id !== id));
+      setSelectedId(null);
+      setMessages([]);
+      setShowCompose(false);
+      setStatus("Archived");
+      haptic("success");
+    });
   }
 
   function trashSelected() {
@@ -2623,6 +2754,7 @@ export function MailClient({
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 px-1 lg:grid-cols-12">
         {/* Folders + labels */}
         <motion.aside
+          layout
           initial={{ opacity: 0, x: -12 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ ...spring, delay: 0.05 }}
@@ -2836,11 +2968,16 @@ export function MailClient({
           )}
         </motion.aside>
 
-        {/* Thread list */}
+        {/* Thread list — collapses into focus mode while composing a reply */}
+        <AnimatePresence mode="popLayout">
+          {!composingDocked && (
         <motion.section
+          key="thread-list"
+          layout
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ ...spring, delay: 0.08 }}
+          exit={{ opacity: 0, scale: 0.97 }}
+          transition={{ ...spring, delay: composingDocked ? 0 : 0.08 }}
           className={`mail-panel flex min-h-0 flex-col overflow-hidden ${foldersCollapsed ? "lg:col-span-4" : "lg:col-span-3"}`}
         >
           <div
@@ -2866,11 +3003,12 @@ export function MailClient({
             </div>
             <div className="relative">
               <input
+                ref={searchInputRef}
                 className="mail-search pr-8"
                 placeholder={
                   searching
                     ? "Searching…"
-                    : "Search anything — e.g. SBI POS machine…"
+                    : "Search mail  ·  press /  ·  e.g. SBI POS machine…"
                 }
                 value={threadQuery}
                 onChange={(e) => setThreadQuery(e.target.value)}
@@ -3059,13 +3197,16 @@ export function MailClient({
             )}
           </motion.ul>
         </motion.section>
+          )}
+        </AnimatePresence>
 
         {/* Reader + compose */}
         <motion.section
+          layout
           initial={{ opacity: 0, x: 16 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ ...spring, delay: 0.12 }}
-          className="mail-panel relative flex min-h-0 flex-col overflow-hidden lg:col-span-7"
+          className={`mail-panel relative flex min-h-0 flex-col overflow-hidden ${readerSpanClass}`}
         >
           <AnimatePresence mode="wait">
             {selectedId && selectedThread ? (
@@ -3250,20 +3391,10 @@ export function MailClient({
                     {!composeFullscreen && (
                       <>
                         <IconBtn
-                          title="Archive"
+                          title="Archive (E)"
                           icon={<ArchiveIcon size={15} />}
                           disabled={pending || !selectedId}
-                          onClick={() => {
-                            startTransition(async () => {
-                              await archiveThreadAction(selectedId!);
-                              setThreads((prev) =>
-                                prev.filter((x) => x.id !== selectedId),
-                              );
-                              setSelectedId(null);
-                              setStatus("Archived");
-                              haptic("success");
-                            });
-                          }}
+                          onClick={archiveSelected}
                         />
                         <IconBtn
                           title="Trash"
@@ -3512,29 +3643,37 @@ export function MailClient({
                         </div>
                       </>
                     )}
-                    <GhostBtn
-                      primary
-                      onClick={() => {
-                        if (showCompose) {
-                          closeCompose("hide");
-                        } else {
-                          setShowCompose(true);
-                          haptic("tap");
-                        }
-                      }}
-                    >
-                      {showCompose ? "Hide reply" : "Reply"}
-                    </GhostBtn>
-                    {!showCompose && (
-                      <GhostBtn
-                        onClick={() => {
-                          setShowCompose(true);
-                          setComposeFullscreen(true);
-                          haptic("tap");
-                        }}
-                      >
-                        Reply fullscreen
-                      </GhostBtn>
+                    {showCompose ? (
+                      <IconBtn
+                        primary
+                        size="lg"
+                        title="Minimize reply"
+                        icon={<Minus size={16} />}
+                        onClick={() => closeCompose("hide")}
+                      />
+                    ) : (
+                      <>
+                        <IconBtn
+                          primary
+                          size="lg"
+                          title="Reply (R)"
+                          icon={<ReplyIcon size={16} />}
+                          onClick={() => {
+                            setShowCompose(true);
+                            haptic("tap");
+                          }}
+                        />
+                        <IconBtn
+                          size="lg"
+                          title="Reply in fullscreen"
+                          icon={<Maximize2 size={15} />}
+                          onClick={() => {
+                            setShowCompose(true);
+                            setComposeFullscreen(true);
+                            haptic("tap");
+                          }}
+                        />
+                      </>
                     )}
                   </div>
                 </div>
