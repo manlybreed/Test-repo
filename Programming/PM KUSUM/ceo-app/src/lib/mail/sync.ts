@@ -21,6 +21,8 @@ import {
   reconcileThreadFlagLabels,
 } from "@/lib/mail/threads-query";
 import { publishMailLive } from "@/lib/mail/live-bus";
+import { upsertContactsFromMessage } from "@/lib/mail/contacts";
+import { rechunkMessage } from "@/lib/mail/chunking";
 import path from "path";
 import fs from "fs/promises";
 
@@ -482,6 +484,19 @@ export async function syncCeoMail(opts?: {
                 });
               }
             }
+
+            // Phase R2: fold sender/recipients into the contact index.
+            await upsertContactsFromMessage({
+              accountId: account.id,
+              fromAddress: fromAddr,
+              fromName,
+              toAddresses: toList.map((a) => ({ address: a })),
+              subject,
+              date,
+            }).catch(() => undefined);
+
+            // Phase R3: chunk the body now (attachment chunks added post-extract).
+            await rechunkMessage(created.id).catch(() => undefined);
 
             if (roleBumpsThread(role) && date >= thread.lastMessageAt) {
               await prisma.mailThread.update({

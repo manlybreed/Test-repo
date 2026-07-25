@@ -771,6 +771,7 @@ model MailAccount {
   syncStates    MailSyncState[]
   autonomy      MailAutonomySettings?
   blockedSenders BlockedSender[]
+  contacts      MailContact[]
 }
 
 model MailFolder {
@@ -848,16 +849,42 @@ model MailMessage {
   rawPath       String?
   /// Denormalized for FTS helper queries
   searchText    String?
+  /// NOTE: a weighted+unaccent expression GIN index (mail_message_tsv_idx) is
+  /// created idempotently by ensureMailFtsIndex() raw SQL (Phase R1). It is a
+  /// non-schema expression index, so `db push` leaves it in place (unlike a
+  /// stored column, which Prisma reconciles and drops).
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   attachments   MailAttachment[]
   aiCache       MailAiCache[]
+
+  chunks        MailChunk[]
 
   @@unique([folderId, imapUid])
   @@index([accountId, date])
   @@index([threadId])
   @@index([rfcMessageId])
   @@index([fromAddress])
+}
+
+/// Phase R3 — retrieval chunks (~1000 chars, 150 overlap) of body + attachment
+/// text, quoted-reply tails stripped. FTS-indexed (mail_chunk_tsv_idx, raw SQL)
+/// so a fact buried deep in a long thread/PDF is findable; citations point at
+/// the parent messageId. Regenerated at sync (rechunkMessage).
+model MailChunk {
+  id        String   @id @default(cuid())
+  accountId String
+  messageId String
+  message   MailMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  threadId  String
+  ord       Int
+  /// body | attachment
+  source    String   @default("body")
+  content   String
+  createdAt DateTime @default(now())
+
+  @@index([messageId])
+  @@index([accountId])
 }
 
 model MailAttachment {
@@ -981,6 +1008,31 @@ model MailLabelRule {
   updatedAt   DateTime @updatedAt
 
   @@index([accountId, enabled])
+}
+
+/// Phase R2 — people/contact index. Aggregated per correspondent so "who sent…"
+/// and recall resolve a name to an address without scanning every message.
+/// Populated incrementally at sync (upsertContactsFromMessage) + one-time backfill.
+model MailContact {
+  id                 String   @id @default(cuid())
+  accountId          String
+  account            MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  /// lowercased email address
+  address            String
+  /// best / most-recent display name
+  displayName        String?
+  /// JSON array of display-name variants seen in From/To/Cc
+  namesJson          String   @default("[]")
+  /// messages FROM this address (primary "who sent" signal)
+  messageCount       Int      @default(0)
+  lastMessageAt      DateTime?
+  /// JSON array of a few recent subjects for instant recall snippets
+  sampleSubjectsJson String   @default("[]")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([accountId, address])
+  @@index([accountId, lastMessageAt])
 }
 
 model BlockedSender {

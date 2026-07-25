@@ -57,4 +57,34 @@ describe("mail search", () => {
     });
     expect(score).toBeGreaterThan(30);
   });
+
+  it("applies a recency prior: fresh mail outranks an equal old match (R1)", () => {
+    const base = {
+      query: "SBI POS machine",
+      subject: "SBI POS machine installation",
+      snippet: "Please arrange the terminal",
+    };
+    const fresh = scoreSearchHit({ ...base, date: new Date() });
+    const old = scoreSearchHit({
+      ...base,
+      date: new Date(Date.now() - 400 * 86_400_000),
+    });
+    expect(fresh).toBeGreaterThan(old);
+    // Floored, not zeroed — a >1yr-old strong match keeps ≥40% of its score.
+    expect(old).toBeGreaterThan(fresh * 0.39);
+  });
+
+  it("recency is opt-in: omitting date leaves the score undecayed (R1)", () => {
+    const withoutDate = scoreSearchHit({
+      query: "invoice",
+      subject: "Tax invoice PF/2627",
+    });
+    const freshDated = scoreSearchHit({
+      query: "invoice",
+      subject: "Tax invoice PF/2627",
+      date: new Date(),
+    });
+    // Same order of magnitude; no-date path must not decay.
+    expect(withoutDate).toBeGreaterThanOrEqual(freshDated);
+  });
 });

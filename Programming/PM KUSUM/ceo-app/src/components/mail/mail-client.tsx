@@ -12,6 +12,8 @@ import {
   FileText,
   FolderInput,
   Inbox as InboxIcon,
+  Loader2,
+  Mail as MailIcon,
   MoreHorizontal,
   PenLine,
   RefreshCw,
@@ -552,6 +554,124 @@ function IconBtn({
   );
 }
 
+type InlineOpts = {
+  sources?: Map<string, AskCitation>;
+  onOpen?: (threadId: string) => void;
+};
+
+/**
+ * Inline markdown: **bold**, `code`, and [[messageId]] citation markers →
+ * a small clickable mail icon that opens that message's thread. Safe (no HTML).
+ */
+function renderInlineMarkdown(
+  text: string,
+  opts?: InlineOpts,
+): React.ReactNode[] {
+  const parts = text
+    .split(/(\*\*[^*]+\*\*|`[^`]+`|\[\[[^\]]+\]\])/g)
+    .filter(Boolean);
+  return parts.map((p, i) => {
+    const cite = p.match(/^\[\[([^\]]+)\]\]$/);
+    if (cite) {
+      const ref = opts?.sources?.get(cite[1]!.trim());
+      if (!ref || !opts?.onOpen) return null;
+      return (
+        <button
+          key={i}
+          type="button"
+          title={`Open: ${ref.subject}`}
+          onClick={() => opts.onOpen!(ref.threadId)}
+          className="mx-0.5 inline-flex h-4 w-4 -translate-y-px cursor-pointer items-center justify-center rounded align-middle transition-colors hover:brightness-125"
+          style={{
+            background: "rgba(139,92,246,0.2)",
+            border: "1px solid rgba(139,92,246,0.4)",
+            color: "var(--accent-bright)",
+          }}
+        >
+          <MailIcon size={10} />
+        </button>
+      );
+    }
+    const bold = p.match(/^\*\*([^*]+)\*\*$/);
+    if (bold) {
+      return (
+        <strong key={i} style={{ color: "var(--text)", fontWeight: 600 }}>
+          {bold[1]}
+        </strong>
+      );
+    }
+    const code = p.match(/^`([^`]+)`$/);
+    if (code) {
+      return (
+        <code
+          key={i}
+          className="rounded px-1 text-[0.95em]"
+          style={{ background: "rgba(255,255,255,0.08)" }}
+        >
+          {code[1]}
+        </code>
+      );
+    }
+    return <span key={i}>{p}</span>;
+  });
+}
+
+/**
+ * Render a model answer with light markdown (numbered/bulleted lists, bold) and
+ * inline [[messageId]] citations rendered as clickable mail links.
+ */
+function FormattedAnswer({
+  text,
+  sources,
+  onOpen,
+}: {
+  text: string;
+  sources?: Map<string, AskCitation>;
+  onOpen?: (threadId: string) => void;
+}) {
+  const opts: InlineOpts = { sources, onOpen };
+  const lines = text.split(/\r?\n/);
+  return (
+    <div
+      className="space-y-1 text-xs leading-relaxed"
+      style={{ color: "var(--text-muted)" }}
+    >
+      {lines.map((line, i) => {
+        if (!line.trim()) return <div key={i} className="h-1.5" />;
+        const numbered = line.match(/^\s*(\d+)[.)]\s+(.*)/);
+        if (numbered) {
+          return (
+            <div key={i} className="flex gap-2">
+              <span
+                className="shrink-0 font-semibold"
+                style={{ color: "var(--accent-bright)" }}
+              >
+                {numbered[1]}.
+              </span>
+              <span>{renderInlineMarkdown(numbered[2]!, opts)}</span>
+            </div>
+          );
+        }
+        const bullet = line.match(/^\s*[-*•]\s+(.*)/);
+        if (bullet) {
+          return (
+            <div key={i} className="flex gap-2">
+              <span
+                className="shrink-0"
+                style={{ color: "var(--accent-bright)" }}
+              >
+                •
+              </span>
+              <span>{renderInlineMarkdown(bullet[1]!, opts)}</span>
+            </div>
+          );
+        }
+        return <p key={i}>{renderInlineMarkdown(line, opts)}</p>;
+      })}
+    </div>
+  );
+}
+
 export function MailClient({
   configured,
   account,
@@ -591,7 +711,6 @@ export function MailClient({
     inReplyTo?: string;
     referencesHdr?: string;
   }>({});
-  const [showDraftRefine, setShowDraftRefine] = useState(false);
   const [refineNote, setRefineNote] = useState("");
   /** Brief for AI Draft on a fresh (non-reply) email */
   const [composeBrief, setComposeBrief] = useState("");
@@ -625,7 +744,9 @@ export function MailClient({
   const [status, setStatus] = useState("");
   const [askQ, setAskQ] = useState("");
   const [askA, setAskA] = useState("");
+  const [askThinking, setAskThinking] = useState(false);
   const [askCitations, setAskCitations] = useState<AskCitation[]>([]);
+  const [askSources, setAskSources] = useState<AskCitation[]>([]);
   const [sendAtLocal, setSendAtLocal] = useState("");
   const [bulkSuggestions, setBulkSuggestions] = useState<
     { threadId: string; subject: string; priority: string; labels: string[] }[]
@@ -667,9 +788,8 @@ export function MailClient({
   const [showMoveMenu, setShowMoveMenu] = useState(false);
   const [showPriorityMenu, setShowPriorityMenu] = useState(false);
   const [remindAt, setRemindAt] = useState("");
-  const toolbarMenusRef = useRef<HTMLDivElement>(null);
-
-  // Click outside any open toolbar dropdown (Move to / Snooze / More / Priority) closes it
+  // Any open toolbar dropdown (Priority / Move to / Snooze / More) closes on a
+  // click anywhere except inside a menu (its trigger + list carry data-menu).
   useEffect(() => {
     if (
       !showMoveMenu &&
@@ -680,7 +800,8 @@ export function MailClient({
       return;
     }
     const onPointerDown = (e: MouseEvent) => {
-      if (toolbarMenusRef.current?.contains(e.target as Node)) return;
+      const el = e.target as HTMLElement | null;
+      if (el?.closest("[data-menu]")) return;
       setShowMoveMenu(false);
       setShowSnoozeMenu(false);
       setShowMoreMenu(false);
@@ -704,7 +825,26 @@ export function MailClient({
     [sigList],
   );
 
-  const selectedThread = threads.find((t) => t.id === selectedId) || null;
+  // Threads opened from an Ask citation may not be in the current folder list;
+  // hold a synthesized row so the reader still renders.
+  const [selectedThreadFallback, setSelectedThreadFallback] =
+    useState<Thread | null>(null);
+  const selectedThread =
+    threads.find((t) => t.id === selectedId) ||
+    (selectedThreadFallback?.id === selectedId ? selectedThreadFallback : null);
+
+  // Ask: map for resolving inline [[messageId]] citations, and whether the
+  // answer actually carries any (so the fallback source list can be hidden).
+  const askSourcesMap = useMemo(
+    () => new Map(askSources.map((s) => [s.messageId, s])),
+    [askSources],
+  );
+  const askHasInlineCitations = useMemo(() => {
+    if (!askSourcesMap.size || !askA) return false;
+    return [...askA.matchAll(/\[\[([^\]]+)\]\]/g)].some((m) =>
+      askSourcesMap.has(m[1]!.trim()),
+    );
+  }, [askA, askSourcesMap]);
 
   const filteredThreads = useMemo(() => {
     return threads.filter((t) => {
@@ -876,6 +1016,28 @@ export function MailClient({
         setMessages(msgs);
         setStatus("");
 
+        // If this thread isn't in the current list (e.g. opened from an Ask
+        // citation in another folder), synthesize a row so the reader renders.
+        if (!threads.some((x) => x.id === id)) {
+          const last = msgs[msgs.length - 1];
+          setSelectedThreadFallback({
+            id: t.id,
+            subject: t.subject,
+            snippet: t.snippet ?? null,
+            lastMessageAt: t.lastMessageAt,
+            unreadCount: 0,
+            priority: t.priority,
+            important: t.important,
+            labelsJson: t.labelsJson,
+            fromName: last?.fromName ?? null,
+            fromAddress: last?.fromAddress ?? null,
+            hasAttachments: last?.hasAttachments ?? false,
+            answered: false,
+          });
+        } else {
+          setSelectedThreadFallback(null);
+        }
+
         if (folderRole === "INBOX" || inSmartInbox || !folder) {
           setThreads((prev) =>
             prev.map((x) => (x.id === id ? { ...x, unreadCount: 0 } : x)),
@@ -995,7 +1157,6 @@ export function MailClient({
     setShowCcBcc(false);
     setSubject("");
     setComposeHtml(`<p></p>${defaultSig}`);
-    setShowDraftRefine(false);
     setRefineNote("");
     setComposeBrief("");
     setShowCompose(true);
@@ -1174,7 +1335,6 @@ export function MailClient({
     } else {
       setShowCompose(false);
       setComposeFullscreen(false);
-      setShowDraftRefine(false);
       setRefineNote("");
     }
     haptic("tap");
@@ -1232,7 +1392,6 @@ export function MailClient({
         setComposeFullscreen(false);
         setDraftId(null);
         setComposeHeaders({});
-        setShowDraftRefine(false);
         setComposeBrief("");
         setSendAtLocal("");
         haptic("success");
@@ -1293,35 +1452,25 @@ export function MailClient({
           });
           if (d?.html) {
             setComposeHtml(d.html);
-            setShowDraftRefine(true);
             setRefineNote("");
           }
           if (d?.subject) setSubject(d.subject);
           setStatus(
             d?.html
-              ? "AI draft ready — pick a change below or keep as-is"
+              ? "AI reply drafted — refine with the presets or edit directly"
               : "AI draft unavailable",
           );
           haptic(d?.html ? "success" : "warn");
           return;
         }
 
-        // Fresh compose — need a brief (what the email is about)
-        const brief =
-          composeBrief.trim() ||
-          subject.trim() ||
-          (await Promise.resolve(
-            window.prompt(
-              "What should this email say? (e.g. Intro BluRidge and propose a 20‑min call next week)",
-            ),
-          ))?.trim();
-
+        // Fresh compose — the AI assist box supplies the instruction.
+        const brief = composeBrief.trim() || subject.trim();
         if (!brief) {
-          setStatus("Add a short brief for AI Draft, then try again");
+          setStatus("Tell AI what to write in the AI assist box, then hit Draft");
           haptic("warn");
           return;
         }
-        setComposeBrief(brief);
 
         const d = await draftNewMailAction({
           to: splitAddrs(to),
@@ -1331,13 +1480,12 @@ export function MailClient({
         });
         if (d?.html) {
           setComposeHtml(d.html);
-          setShowDraftRefine(true);
           setRefineNote("");
         }
         if (d?.subject) setSubject(d.subject);
         setStatus(
           d?.html
-            ? "AI draft ready — pick a change below or keep as-is"
+            ? "AI draft ready — refine with the presets or edit directly"
             : "AI draft unavailable",
         );
         haptic(d?.html ? "success" : "warn");
@@ -1671,16 +1819,30 @@ export function MailClient({
   function runAsk(question: string) {
     const q = question.trim();
     if (!q) return;
+    setAskThinking(true);
+    setAskA("");
+    setAskCitations([]);
+    setAskSources([]);
     startTransition(async () => {
       haptic("tap");
-      const lower = q.toLowerCase();
-      const recallMatch = lower.match(/^(recall|who is|about)\s+(.+)/i);
-      const a = recallMatch
-        ? await recallPersonAction(recallMatch[2]!.trim())
-        : await askMailAction(q);
-      setAskA(a.answer);
-      setAskCitations(a.citationRefs || []);
-      haptic("success");
+      try {
+        const lower = q.toLowerCase();
+        const recallMatch = lower.match(/^(recall|who is|about)\s+(.+)/i);
+        const a = recallMatch
+          ? await recallPersonAction(recallMatch[2]!.trim())
+          : await askMailAction(q);
+        setAskA(a.answer);
+        setAskCitations(a.citationRefs || []);
+        setAskSources(a.sourceRefs || []);
+        haptic(a.notFound ? "warn" : "success");
+      } catch (e) {
+        setAskA(e instanceof Error ? e.message : "Ask failed — try again.");
+        setAskCitations([]);
+        setAskSources([]);
+        haptic("warn");
+      } finally {
+        setAskThinking(false);
+      }
     });
   }
 
@@ -1698,56 +1860,72 @@ export function MailClient({
     });
   }
 
-  function DraftRefinePanel() {
-    if (!showDraftRefine) return null;
+  /**
+   * Always-visible AI writing surface for compose (docked + fullscreen).
+   * Instruction → draft the reply / first mail, tone presets + a free-text
+   * "exact change" box to reshape the current draft.
+   */
+  function ComposeAiAssist() {
+    const replying = isReplyContext();
+    const chip =
+      "cursor-pointer rounded-full px-2.5 py-1 text-[0.66rem] font-medium transition-opacity disabled:opacity-50";
+    const chipStyle = {
+      background: "rgba(255,255,255,0.06)",
+      border: "1px solid var(--border-strong)",
+      color: "var(--text-muted)",
+    } as const;
     return (
       <div
-        className="space-y-2.5 rounded-xl px-3.5 py-3"
+        className="shrink-0 space-y-2.5 rounded-xl px-3.5 py-3"
         style={{
           background: "rgba(139,92,246,0.1)",
           border: "1px solid rgba(139,92,246,0.28)",
         }}
       >
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <div>
-            <p
-              className="text-xs font-semibold"
-              style={{ color: "var(--accent-bright)" }}
-            >
-              What should we change?
-            </p>
-            <p className="mt-0.5 text-[0.7rem]" style={{ color: "var(--text-dim)" }}>
-              Drafted in default warm-professional tone. Pick a preset or describe
-              an edit.
-            </p>
-          </div>
-          <button
-            type="button"
-            className="cursor-pointer text-[0.7rem] font-medium"
-            style={{ color: "var(--text-muted)" }}
-            disabled={pending}
-            onClick={() => {
-              setShowDraftRefine(false);
-              setRefineNote("");
-              setStatus("Keeping draft as-is");
-              haptic("tap");
-            }}
+        <div className="flex items-center gap-1.5">
+          <Sparkles size={13} style={{ color: "var(--accent-bright)" }} />
+          <span
+            className="text-[0.68rem] font-semibold uppercase tracking-[0.16em]"
+            style={{ color: "var(--accent-bright)" }}
           >
-            Keep as-is
-          </button>
+            AI assist
+          </span>
         </div>
-        <div className="flex flex-wrap gap-1.5">
+        {/* Instruction → generate the draft (reply or first mail) */}
+        <div className="flex gap-2">
+          <input
+            className="mail-search min-w-0 flex-1 text-xs"
+            placeholder={
+              replying
+                ? "How should I reply? e.g. politely decline, ask for pricing…"
+                : "What should this email say? e.g. intro BluRidge, propose a 20-min call…"
+            }
+            value={composeBrief}
+            disabled={pending}
+            onChange={(e) => setComposeBrief(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                runAiDraft();
+              }
+            }}
+          />
+          <GhostBtn primary disabled={pending} onClick={runAiDraft}>
+            {pending ? "Drafting…" : replying ? "Draft reply" : "Draft"}
+          </GhostBtn>
+        </div>
+        {/* One-tap tone/shape presets + Hindi — reshape the current draft */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[0.62rem]" style={{ color: "var(--text-dim)" }}>
+            Adjust:
+          </span>
           {DRAFT_REFINE_PRESETS.map((p) => (
             <button
               key={p.id}
               type="button"
               disabled={pending}
-              className="cursor-pointer rounded-full px-2.5 py-1 text-[0.68rem] font-medium transition-opacity disabled:opacity-50"
-              style={{
-                background: "rgba(255,255,255,0.06)",
-                border: "1px solid var(--border-strong)",
-                color: "var(--text-muted)",
-              }}
+              className={chip}
+              style={chipStyle}
               onClick={() => {
                 haptic("tap");
                 applyDraftRefine(p.id);
@@ -1756,11 +1934,21 @@ export function MailClient({
               {p.label}
             </button>
           ))}
+          <button
+            type="button"
+            disabled={pending}
+            className={chip}
+            style={chipStyle}
+            onClick={runMultilingualHindi}
+          >
+            Hindi
+          </button>
         </div>
+        {/* Free-text exact edit */}
         <div className="flex gap-2">
           <input
             className="mail-search min-w-0 flex-1 text-xs"
-            placeholder="Or type a change… e.g. mention the Friday call"
+            placeholder="Or type an exact change… e.g. mention the Friday call, add my number"
             value={refineNote}
             disabled={pending}
             onChange={(e) => setRefineNote(e.target.value)}
@@ -1806,37 +1994,6 @@ export function MailClient({
         <GhostBtn disabled={pending} onClick={runAutocomplete}>
           Autocomplete
         </GhostBtn>
-        <GhostBtn disabled={pending} onClick={runAiDraft}>
-          AI Draft
-        </GhostBtn>
-        {mode === "fullscreen" && (
-          <>
-            <GhostBtn disabled={pending} onClick={runShorten}>
-              Shorten
-            </GhostBtn>
-            <GhostBtn disabled={pending} onClick={() => runRewrite("soften")}>
-              Soften
-            </GhostBtn>
-            <GhostBtn disabled={pending} onClick={() => runRewrite("formalize")}>
-              Formalize
-            </GhostBtn>
-            <GhostBtn disabled={pending} onClick={runMultilingualHindi}>
-              Hindi
-            </GhostBtn>
-            <GhostBtn disabled={pending || !selectedId} onClick={runExtractTasks}>
-              Tasks
-            </GhostBtn>
-            <GhostBtn disabled={pending || !selectedId} onClick={runTriage}>
-              Triage
-            </GhostBtn>
-            <GhostBtn disabled={pending || !selectedId} onClick={runSummarize}>
-              Summarize
-            </GhostBtn>
-            <GhostBtn disabled={pending} onClick={runMeetingInvite}>
-              Meeting ICS
-            </GhostBtn>
-          </>
-        )}
         <label
           className="flex items-center gap-1.5 text-[0.65rem]"
           style={{ color: "var(--text-dim)" }}
@@ -2921,7 +3078,6 @@ export function MailClient({
                 className="flex min-h-0 flex-1 flex-col"
               >
                 <div
-                  ref={toolbarMenusRef}
                   className="flex flex-wrap items-start justify-between gap-2 px-4 py-3"
                   style={{ borderBottom: "1px solid var(--border)" }}
                 >
@@ -2967,7 +3123,7 @@ export function MailClient({
                       !selectedId.startsWith("outbox") &&
                       !composeFullscreen && (
                         <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                          <div className="relative">
+                          <div className="relative" data-menu>
                             {(() => {
                               const tone = priorityTone(selectedThread.priority) ?? {
                                 bg: "rgba(255,255,255,0.06)",
@@ -3116,7 +3272,7 @@ export function MailClient({
                           disabled={pending || !selectedId}
                           onClick={trashSelected}
                         />
-                        <div className="relative">
+                        <div className="relative" data-menu>
                           <IconBtn
                             title="Move to…"
                             active={showMoveMenu}
@@ -3168,7 +3324,7 @@ export function MailClient({
                             </ul>
                           )}
                         </div>
-                        <div className="relative">
+                        <div className="relative" data-menu>
                           <IconBtn
                             title="Snooze / remind me"
                             active={showSnoozeMenu}
@@ -3239,7 +3395,7 @@ export function MailClient({
                             </div>
                           )}
                         </div>
-                        <div className="relative">
+                        <div className="relative" data-menu>
                           <IconBtn
                             title="More"
                             active={showMoreMenu}
@@ -3521,11 +3677,11 @@ export function MailClient({
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: 16 }}
                       transition={spring}
-                      className="flex max-h-[58%] min-h-[280px] flex-col"
+                      className="flex max-h-[74%] min-h-[340px] flex-col"
                       style={{
-                        borderTop: "1px solid var(--border)",
-                        background:
-                          "linear-gradient(180deg, rgba(139,92,246,0.08), transparent 40%)",
+                        borderTop: "1px solid rgba(139,92,246,0.35)",
+                        background: "var(--bg)",
+                        boxShadow: "0 -18px 44px rgba(0,0,0,0.45)",
                       }}
                     >
                       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 px-4 pt-3">
@@ -3599,24 +3755,9 @@ export function MailClient({
                               onChange={(e) => setSubject(e.target.value)}
                             />
                           </div>
-                          {!isReplyContext() && (
-                            <div className="mail-compose-field">
-                              <label htmlFor="mail-brief">AI brief</label>
-                              <input
-                                id="mail-brief"
-                                placeholder="What should this email say?"
-                                value={composeBrief}
-                                onChange={(e) => setComposeBrief(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter") {
-                                    e.preventDefault();
-                                    runAiDraft();
-                                  }
-                                }}
-                              />
-                            </div>
-                          )}
                         </div>
+
+                        <ComposeAiAssist />
 
                         {sigList.length > 0 && (
                           <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -3650,8 +3791,6 @@ export function MailClient({
                           onChange={setComposeHtml}
                           minHeight={180}
                         />
-
-                        <DraftRefinePanel />
                       </div>
 
                       <div
@@ -3715,6 +3854,7 @@ export function MailClient({
                 className="mail-search flex-1"
                 placeholder="Ask mailbox… or “recall Name”"
                 value={askQ}
+                disabled={askThinking}
                 onChange={(e) => setAskQ(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && askQ.trim()) runAsk(askQ);
@@ -3722,51 +3862,78 @@ export function MailClient({
               />
               <GhostBtn
                 primary
-                disabled={pending || !askQ.trim()}
+                disabled={askThinking || !askQ.trim()}
                 onClick={() => runAsk(askQ)}
               >
-                Ask
+                {askThinking ? "Thinking…" : "Ask"}
               </GhostBtn>
             </div>
-            <AnimatePresence>
-              {askA && (
+            <AnimatePresence mode="wait">
+              {askThinking ? (
                 <motion.div
+                  key="ask-thinking"
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  className="mt-2 flex items-center gap-2 text-xs"
+                  style={{ color: "var(--accent-bright)" }}
+                >
+                  <Loader2 size={14} className="animate-spin" />
+                  <span>Searching your mail &amp; reading the matches…</span>
+                </motion.div>
+              ) : askA ? (
+                <motion.div
+                  key="ask-answer"
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: "auto" }}
                   exit={{ opacity: 0, height: 0 }}
-                  className="mt-2 max-h-40 space-y-2 overflow-auto"
+                  className="mt-2 max-h-80 space-y-2.5 overflow-auto pr-1"
                 >
-                  <pre
-                    className="whitespace-pre-wrap font-sans text-xs"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    {askA}
-                  </pre>
-                  {askCitations.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {askCitations.map((c) => (
-                        <button
-                          key={c.messageId}
-                          type="button"
-                          className="cursor-pointer rounded-md px-2 py-1 text-[0.65rem] font-medium"
-                          style={{
-                            background: "rgba(139,92,246,0.15)",
-                            border: "1px solid rgba(139,92,246,0.35)",
-                            color: "var(--accent-bright)",
-                          }}
-                          title={c.subject}
-                          onClick={() => {
-                            haptic("tap");
-                            openThread(c.threadId);
-                          }}
-                        >
-                          {c.subject.slice(0, 36) || c.messageId.slice(0, 8)}
-                        </button>
-                      ))}
+                  <FormattedAnswer
+                    text={askA}
+                    sources={askSourcesMap}
+                    onOpen={(threadId) => {
+                      haptic("tap");
+                      openThread(threadId);
+                    }}
+                  />
+                  {!askHasInlineCitations && askCitations.length > 0 && (
+                    <div className="space-y-1 pt-1">
+                      <p
+                        className="text-[0.6rem] font-semibold uppercase tracking-[0.14em]"
+                        style={{ color: "var(--mail-dim)" }}
+                      >
+                        Sources · click to open
+                      </p>
+                      <ul className="space-y-1">
+                        {askCitations.map((c) => (
+                          <li key={c.messageId}>
+                            <button
+                              type="button"
+                              className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-[0.7rem] font-medium transition-colors hover:brightness-125"
+                              style={{
+                                background: "rgba(139,92,246,0.12)",
+                                border: "1px solid rgba(139,92,246,0.3)",
+                                color: "var(--accent-bright)",
+                              }}
+                              title={`Open: ${c.subject}`}
+                              onClick={() => {
+                                haptic("tap");
+                                openThread(c.threadId);
+                              }}
+                            >
+                              <MailIcon size={13} className="shrink-0" />
+                              <span className="truncate">
+                                {c.subject || c.messageId.slice(0, 8)}
+                              </span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
                     </div>
                   )}
                 </motion.div>
-              )}
+              ) : null}
             </AnimatePresence>
           </div>
         </motion.section>
@@ -3867,24 +4034,9 @@ export function MailClient({
                     onChange={(e) => setSubject(e.target.value)}
                   />
                 </div>
-                {!isReplyContext() && (
-                  <div className="mail-compose-field">
-                    <label htmlFor="mail-brief-fs">AI brief</label>
-                    <input
-                      id="mail-brief-fs"
-                      placeholder="What should this email say?"
-                      value={composeBrief}
-                      onChange={(e) => setComposeBrief(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          runAiDraft();
-                        }
-                      }}
-                    />
-                  </div>
-                )}
               </div>
+
+              <ComposeAiAssist />
 
               {sigList.length > 0 && (
                 <div className="flex shrink-0 flex-wrap items-center gap-2 text-xs">
@@ -3922,10 +4074,6 @@ export function MailClient({
                   fullscreenActive
                   onFullscreen={() => closeCompose("exit-fullscreen")}
                 />
-              </div>
-
-              <div className="shrink-0 px-1 pb-1">
-                <DraftRefinePanel />
               </div>
             </div>
 

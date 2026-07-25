@@ -1,6 +1,7 @@
 import fs from "fs/promises";
 import { prisma } from "@/lib/prisma";
 import { claudeJson, fenceMailData, getAnthropic } from "@/lib/mail/ai/claude";
+import { rechunkMessage } from "@/lib/mail/chunking";
 
 /** AI-13: extract text from PDF/DOCX/text attachments. */
 export async function extractAttachmentText(attachmentId: string) {
@@ -42,13 +43,16 @@ export async function extractAttachmentText(attachmentId: string) {
       });
     }
 
-    return prisma.mailAttachment.update({
+    const updated = await prisma.mailAttachment.update({
       where: { id: attachmentId },
       data: {
         extractedText: text.slice(0, 100_000),
         extractStatus: "DONE",
       },
     });
+    // Phase R3: fold the freshly-extracted attachment text into the chunk index.
+    await rechunkMessage(updated.messageId).catch(() => undefined);
+    return updated;
   } catch {
     return prisma.mailAttachment.update({
       where: { id: attachmentId },

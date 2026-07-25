@@ -196,6 +196,18 @@ export function buildThreadSearchAnd(
   return required.map((token) => groupClause(synonymVariants(token)));
 }
 
+/**
+ * Recency multiplier (Phase R1): exp(-ageDays/180), floored so a strong old
+ * match still surfaces. 0d→1.0, 30d→~0.85, 90d→~0.61, ≥~1yr→floor 0.4.
+ */
+function recencyFactor(date: string | Date | null | undefined): number {
+  if (!date) return 1;
+  const t = new Date(date).getTime();
+  if (Number.isNaN(t)) return 1;
+  const ageDays = Math.max(0, (Date.now() - t) / 86_400_000);
+  return Math.max(0.4, Math.exp(-ageDays / 180));
+}
+
 /** Higher = better. Used after SQL fetch. */
 export function scoreSearchHit(opts: {
   query: string;
@@ -204,6 +216,8 @@ export function scoreSearchHit(opts: {
   fromAddress?: string | null;
   fromName?: string | null;
   searchBlob?: string | null;
+  /** When provided, applies a recency prior to the final score. */
+  date?: string | Date | null;
   plan?: SearchPlanLike | null;
 }): number {
   const tokens = tokenizeSearchQuery(opts.query);
@@ -251,5 +265,5 @@ export function scoreSearchHit(opts: {
   ).length;
   if (groups.length && subjectHits === groups.length) score += 30;
 
-  return score;
+  return score * recencyFactor(opts.date);
 }

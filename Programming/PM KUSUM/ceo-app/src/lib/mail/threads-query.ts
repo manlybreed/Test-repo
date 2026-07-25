@@ -367,6 +367,7 @@ export async function queryThreadsForView(opts: {
           snippet: row.snippet,
           fromAddress: row.fromAddress,
           fromName: row.fromName,
+          date: row.lastMessageAt,
           plan: searchPlan,
         }),
       }))
