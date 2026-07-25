@@ -1191,28 +1191,6 @@ export function MailClient({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [configured, activeFolder, activeSmartLabel]);
 
-  if (!configured) {
-    return (
-      <motion.div
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="rounded-2xl p-8"
-        style={{
-          background: "var(--bg-panel)",
-          border: "1px solid rgba(245,158,11,0.35)",
-        }}
-      >
-        <h2 className="text-lg font-semibold" style={{ color: "var(--warning)" }}>
-          Connect CEO mailbox
-        </h2>
-        <p className="mt-2 text-sm" style={{ color: "var(--text-muted)" }}>
-          Set <code>CEO_MAIL_USER</code> / <code>CEO_MAIL_PASS</code> for
-          akshay@thebluridge.com in <code>.env.local</code>, then restart the app.
-        </p>
-      </motion.div>
-    );
-  }
-
   function openThread(id: string) {
     if ((showCompose || composeFullscreen) && composeIsDirty()) {
       autosaveDraftInBackground({ attachId: false });
@@ -2670,6 +2648,28 @@ export function MailClient({
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [configured, liveConnected]);
+
+  if (!configured) {
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="rounded-2xl p-8"
+        style={{
+          background: "var(--bg-panel)",
+          border: "1px solid rgba(245,158,11,0.35)",
+        }}
+      >
+        <h2 className="text-lg font-semibold" style={{ color: "var(--warning)" }}>
+          Connect CEO mailbox
+        </h2>
+        <p className="mt-2 text-sm" style={{ color: "var(--text-muted)" }}>
+          Set <code>CEO_MAIL_USER</code> / <code>CEO_MAIL_PASS</code> for
+          akshay@thebluridge.com in <code>.env.local</code>, then restart the app.
+        </p>
+      </motion.div>
+    );
+  }
 
   return (
     <div className="mail-shell relative flex h-[calc(100vh-7.5rem)] min-h-[560px] flex-col gap-3 overflow-hidden">
