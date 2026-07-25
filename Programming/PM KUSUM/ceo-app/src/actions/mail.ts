@@ -559,6 +559,60 @@ export async function deleteSignature(id: string) {
   return { ok: true };
 }
 
+export type ComposeAttachment = {
+  /** Server-side storage path (never a client-supplied path). */
+  path: string;
+  filename: string;
+  size: number;
+  contentType: string | null;
+};
+
+const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024; // 15 MB per file
+const MAX_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024; // 25 MB per mail (Gmail-like)
+
+/**
+ * Upload compose attachments (FormData "files"). Stored under
+ * storage/mail/outgoing/<uuid>/ and referenced at send time.
+ */
+export async function uploadComposeAttachmentAction(
+  formData: FormData,
+): Promise<ComposeAttachment[]> {
+  const { account } = await requireAccount();
+  const files = formData
+    .getAll("files")
+    .filter((f): f is File => f instanceof File);
+  if (!files.length) return [];
+
+  const { default: path } = await import("path");
+  const { promises: fs } = await import("fs");
+
+  const storageRoot = process.env.STORAGE_ROOT || "./storage";
+  const dir = path.join(storageRoot, "mail", "outgoing", account.id, randomUUID());
+  await fs.mkdir(dir, { recursive: true });
+
+  const out: ComposeAttachment[] = [];
+  let total = 0;
+  for (const file of files) {
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      throw new Error(`${file.name} is over the 15 MB per-file limit`);
+    }
+    total += file.size;
+    if (total > MAX_TOTAL_ATTACHMENT_BYTES) {
+      throw new Error("Attachments exceed the 25 MB total limit");
+    }
+    const safeName = file.name.replace(/[^\w.\- ()]/g, "_").slice(0, 120) || "attachment";
+    const filePath = path.join(dir, safeName);
+    await fs.writeFile(filePath, Buffer.from(await file.arrayBuffer()));
+    out.push({
+      path: filePath,
+      filename: safeName,
+      size: file.size,
+      contentType: file.type || null,
+    });
+  }
+  return out;
+}
+
 export async function sendMailAction(input: {
   to: string[];
   cc?: string[];
@@ -571,9 +625,28 @@ export async function sendMailAction(input: {
   sendAt?: string | null;
   /** If sending a previously saved draft, remove it from Drafts */
   draftId?: string;
+  /** Uploaded attachments (from uploadComposeAttachmentAction) */
+  attachments?: ComposeAttachment[];
 }) {
   const { account } = await requireAccount();
   if (!input.confirmed) throw new Error("Send requires confirmation");
+
+  // Attachment paths must live inside THIS account's upload dir — client-echoed
+  // paths must never be able to reference arbitrary server files.
+  if (input.attachments?.length) {
+    const { default: path } = await import("path");
+    const storageRoot = process.env.STORAGE_ROOT || "./storage";
+    const allowedRoot = path.resolve(
+      path.join(storageRoot, "mail", "outgoing", account.id),
+    );
+    for (const att of input.attachments) {
+      const resolved = path.resolve(att.path);
+      if (!resolved.startsWith(allowedRoot + path.sep)) {
+        throw new Error("Invalid attachment reference");
+      }
+      att.path = resolved;
+    }
+  }
 
   const status = input.sendAt ? "SCHEDULED" : "QUEUED";
   if (input.sendAt) {
@@ -593,6 +666,7 @@ export async function sendMailAction(input: {
       bodyText: htmlToText(input.bodyHtml),
       inReplyTo: input.inReplyTo || null,
       referencesHdr: input.referencesHdr || null,
+      attachmentsJson: JSON.stringify(input.attachments || []),
       status,
       sendAt: input.sendAt ? new Date(input.sendAt) : new Date(),
       undoUntil: new Date(Date.now() + 30_000),

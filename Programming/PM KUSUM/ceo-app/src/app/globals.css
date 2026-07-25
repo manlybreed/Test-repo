@@ -232,8 +232,10 @@ body {
 /* Mail composer (TipTap) */
 .mail-composer-prose {
   color: var(--text);
-  font-size: 0.975rem;
-  line-height: 1.65;
+  /* Email-standard body: 14px sans-serif (Gmail default is Arial "Normal") */
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
   padding: 1rem 1.15rem 1.25rem;
   outline: none;
 }
