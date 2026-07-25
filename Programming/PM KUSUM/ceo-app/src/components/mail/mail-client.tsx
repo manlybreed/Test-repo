@@ -711,7 +711,6 @@ export function MailClient({
     inReplyTo?: string;
     referencesHdr?: string;
   }>({});
-  const [showDraftRefine, setShowDraftRefine] = useState(false);
   const [refineNote, setRefineNote] = useState("");
   /** Brief for AI Draft on a fresh (non-reply) email */
   const [composeBrief, setComposeBrief] = useState("");
@@ -1158,7 +1157,6 @@ export function MailClient({
     setShowCcBcc(false);
     setSubject("");
     setComposeHtml(`<p></p>${defaultSig}`);
-    setShowDraftRefine(false);
     setRefineNote("");
     setComposeBrief("");
     setShowCompose(true);
@@ -1337,7 +1335,6 @@ export function MailClient({
     } else {
       setShowCompose(false);
       setComposeFullscreen(false);
-      setShowDraftRefine(false);
       setRefineNote("");
     }
     haptic("tap");
@@ -1395,7 +1392,6 @@ export function MailClient({
         setComposeFullscreen(false);
         setDraftId(null);
         setComposeHeaders({});
-        setShowDraftRefine(false);
         setComposeBrief("");
         setSendAtLocal("");
         haptic("success");
@@ -1456,35 +1452,25 @@ export function MailClient({
           });
           if (d?.html) {
             setComposeHtml(d.html);
-            setShowDraftRefine(true);
             setRefineNote("");
           }
           if (d?.subject) setSubject(d.subject);
           setStatus(
             d?.html
-              ? "AI draft ready — pick a change below or keep as-is"
+              ? "AI reply drafted — refine with the presets or edit directly"
               : "AI draft unavailable",
           );
           haptic(d?.html ? "success" : "warn");
           return;
         }
 
-        // Fresh compose — need a brief (what the email is about)
-        const brief =
-          composeBrief.trim() ||
-          subject.trim() ||
-          (await Promise.resolve(
-            window.prompt(
-              "What should this email say? (e.g. Intro BluRidge and propose a 20‑min call next week)",
-            ),
-          ))?.trim();
-
+        // Fresh compose — the AI assist box supplies the instruction.
+        const brief = composeBrief.trim() || subject.trim();
         if (!brief) {
-          setStatus("Add a short brief for AI Draft, then try again");
+          setStatus("Tell AI what to write in the AI assist box, then hit Draft");
           haptic("warn");
           return;
         }
-        setComposeBrief(brief);
 
         const d = await draftNewMailAction({
           to: splitAddrs(to),
@@ -1494,13 +1480,12 @@ export function MailClient({
         });
         if (d?.html) {
           setComposeHtml(d.html);
-          setShowDraftRefine(true);
           setRefineNote("");
         }
         if (d?.subject) setSubject(d.subject);
         setStatus(
           d?.html
-            ? "AI draft ready — pick a change below or keep as-is"
+            ? "AI draft ready — refine with the presets or edit directly"
             : "AI draft unavailable",
         );
         haptic(d?.html ? "success" : "warn");
@@ -1875,56 +1860,72 @@ export function MailClient({
     });
   }
 
-  function DraftRefinePanel() {
-    if (!showDraftRefine) return null;
+  /**
+   * Always-visible AI writing surface for compose (docked + fullscreen).
+   * Instruction → draft the reply / first mail, tone presets + a free-text
+   * "exact change" box to reshape the current draft.
+   */
+  function ComposeAiAssist() {
+    const replying = isReplyContext();
+    const chip =
+      "cursor-pointer rounded-full px-2.5 py-1 text-[0.66rem] font-medium transition-opacity disabled:opacity-50";
+    const chipStyle = {
+      background: "rgba(255,255,255,0.06)",
+      border: "1px solid var(--border-strong)",
+      color: "var(--text-muted)",
+    } as const;
     return (
       <div
-        className="space-y-2.5 rounded-xl px-3.5 py-3"
+        className="shrink-0 space-y-2.5 rounded-xl px-3.5 py-3"
         style={{
           background: "rgba(139,92,246,0.1)",
           border: "1px solid rgba(139,92,246,0.28)",
         }}
       >
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <div>
-            <p
-              className="text-xs font-semibold"
-              style={{ color: "var(--accent-bright)" }}
-            >
-              What should we change?
-            </p>
-            <p className="mt-0.5 text-[0.7rem]" style={{ color: "var(--text-dim)" }}>
-              Drafted in default warm-professional tone. Pick a preset or describe
-              an edit.
-            </p>
-          </div>
-          <button
-            type="button"
-            className="cursor-pointer text-[0.7rem] font-medium"
-            style={{ color: "var(--text-muted)" }}
-            disabled={pending}
-            onClick={() => {
-              setShowDraftRefine(false);
-              setRefineNote("");
-              setStatus("Keeping draft as-is");
-              haptic("tap");
-            }}
+        <div className="flex items-center gap-1.5">
+          <Sparkles size={13} style={{ color: "var(--accent-bright)" }} />
+          <span
+            className="text-[0.68rem] font-semibold uppercase tracking-[0.16em]"
+            style={{ color: "var(--accent-bright)" }}
           >
-            Keep as-is
-          </button>
+            AI assist
+          </span>
         </div>
-        <div className="flex flex-wrap gap-1.5">
+        {/* Instruction → generate the draft (reply or first mail) */}
+        <div className="flex gap-2">
+          <input
+            className="mail-search min-w-0 flex-1 text-xs"
+            placeholder={
+              replying
+                ? "How should I reply? e.g. politely decline, ask for pricing…"
+                : "What should this email say? e.g. intro BluRidge, propose a 20-min call…"
+            }
+            value={composeBrief}
+            disabled={pending}
+            onChange={(e) => setComposeBrief(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                runAiDraft();
+              }
+            }}
+          />
+          <GhostBtn primary disabled={pending} onClick={runAiDraft}>
+            {pending ? "Drafting…" : replying ? "Draft reply" : "Draft"}
+          </GhostBtn>
+        </div>
+        {/* One-tap tone/shape presets + Hindi — reshape the current draft */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[0.62rem]" style={{ color: "var(--text-dim)" }}>
+            Adjust:
+          </span>
           {DRAFT_REFINE_PRESETS.map((p) => (
             <button
               key={p.id}
               type="button"
               disabled={pending}
-              className="cursor-pointer rounded-full px-2.5 py-1 text-[0.68rem] font-medium transition-opacity disabled:opacity-50"
-              style={{
-                background: "rgba(255,255,255,0.06)",
-                border: "1px solid var(--border-strong)",
-                color: "var(--text-muted)",
-              }}
+              className={chip}
+              style={chipStyle}
               onClick={() => {
                 haptic("tap");
                 applyDraftRefine(p.id);
@@ -1933,11 +1934,21 @@ export function MailClient({
               {p.label}
             </button>
           ))}
+          <button
+            type="button"
+            disabled={pending}
+            className={chip}
+            style={chipStyle}
+            onClick={runMultilingualHindi}
+          >
+            Hindi
+          </button>
         </div>
+        {/* Free-text exact edit */}
         <div className="flex gap-2">
           <input
             className="mail-search min-w-0 flex-1 text-xs"
-            placeholder="Or type a change… e.g. mention the Friday call"
+            placeholder="Or type an exact change… e.g. mention the Friday call, add my number"
             value={refineNote}
             disabled={pending}
             onChange={(e) => setRefineNote(e.target.value)}
@@ -1983,37 +1994,6 @@ export function MailClient({
         <GhostBtn disabled={pending} onClick={runAutocomplete}>
           Autocomplete
         </GhostBtn>
-        <GhostBtn disabled={pending} onClick={runAiDraft}>
-          AI Draft
-        </GhostBtn>
-        {mode === "fullscreen" && (
-          <>
-            <GhostBtn disabled={pending} onClick={runShorten}>
-              Shorten
-            </GhostBtn>
-            <GhostBtn disabled={pending} onClick={() => runRewrite("soften")}>
-              Soften
-            </GhostBtn>
-            <GhostBtn disabled={pending} onClick={() => runRewrite("formalize")}>
-              Formalize
-            </GhostBtn>
-            <GhostBtn disabled={pending} onClick={runMultilingualHindi}>
-              Hindi
-            </GhostBtn>
-            <GhostBtn disabled={pending || !selectedId} onClick={runExtractTasks}>
-              Tasks
-            </GhostBtn>
-            <GhostBtn disabled={pending || !selectedId} onClick={runTriage}>
-              Triage
-            </GhostBtn>
-            <GhostBtn disabled={pending || !selectedId} onClick={runSummarize}>
-              Summarize
-            </GhostBtn>
-            <GhostBtn disabled={pending} onClick={runMeetingInvite}>
-              Meeting ICS
-            </GhostBtn>
-          </>
-        )}
         <label
           className="flex items-center gap-1.5 text-[0.65rem]"
           style={{ color: "var(--text-dim)" }}
@@ -3697,11 +3677,11 @@ export function MailClient({
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: 16 }}
                       transition={spring}
-                      className="flex max-h-[58%] min-h-[280px] flex-col"
+                      className="flex max-h-[74%] min-h-[340px] flex-col"
                       style={{
-                        borderTop: "1px solid var(--border)",
-                        background:
-                          "linear-gradient(180deg, rgba(139,92,246,0.08), transparent 40%)",
+                        borderTop: "1px solid rgba(139,92,246,0.35)",
+                        background: "var(--bg)",
+                        boxShadow: "0 -18px 44px rgba(0,0,0,0.45)",
                       }}
                     >
                       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 px-4 pt-3">
@@ -3775,24 +3755,9 @@ export function MailClient({
                               onChange={(e) => setSubject(e.target.value)}
                             />
                           </div>
-                          {!isReplyContext() && (
-                            <div className="mail-compose-field">
-                              <label htmlFor="mail-brief">AI brief</label>
-                              <input
-                                id="mail-brief"
-                                placeholder="What should this email say?"
-                                value={composeBrief}
-                                onChange={(e) => setComposeBrief(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter") {
-                                    e.preventDefault();
-                                    runAiDraft();
-                                  }
-                                }}
-                              />
-                            </div>
-                          )}
                         </div>
+
+                        <ComposeAiAssist />
 
                         {sigList.length > 0 && (
                           <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -3826,8 +3791,6 @@ export function MailClient({
                           onChange={setComposeHtml}
                           minHeight={180}
                         />
-
-                        <DraftRefinePanel />
                       </div>
 
                       <div
@@ -4071,24 +4034,9 @@ export function MailClient({
                     onChange={(e) => setSubject(e.target.value)}
                   />
                 </div>
-                {!isReplyContext() && (
-                  <div className="mail-compose-field">
-                    <label htmlFor="mail-brief-fs">AI brief</label>
-                    <input
-                      id="mail-brief-fs"
-                      placeholder="What should this email say?"
-                      value={composeBrief}
-                      onChange={(e) => setComposeBrief(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          runAiDraft();
-                        }
-                      }}
-                    />
-                  </div>
-                )}
               </div>
+
+              <ComposeAiAssist />
 
               {sigList.length > 0 && (
                 <div className="flex shrink-0 flex-wrap items-center gap-2 text-xs">
@@ -4126,10 +4074,6 @@ export function MailClient({
                   fullscreenActive
                   onFullscreen={() => closeCompose("exit-fullscreen")}
                 />
-              </div>
-
-              <div className="shrink-0 px-1 pb-1">
-                <DraftRefinePanel />
               </div>
             </div>
 
