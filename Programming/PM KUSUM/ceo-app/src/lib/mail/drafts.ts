@@ -4,6 +4,33 @@ import { getCeoMailConfig } from "@/lib/mail/ceo-config";
 import { htmlToText } from "@/lib/mail/normalize";
 import { buildRawMime } from "@/lib/mail/mime";
 import { randomUUID } from "crypto";
+import { publishMailLive } from "@/lib/mail/live-bus";
+
+// Deleting a draft's IMAP message directly (outside the IDLE watcher's own
+// EXPUNGE handling, which doesn't watch the Drafts folder) leaves the synced
+// MailMessage/MailThread cache stale until the next full mailbox sync. Mirror
+// idle-watcher.ts's applyExpunge() here so the thread list reflects the
+// deletion immediately instead of showing a ghost draft.
+async function evictCachedMessage(
+  accountId: string,
+  path: string,
+  uid: number,
+) {
+  const folder = await prisma.mailFolder.findFirst({
+    where: { accountId, path },
+    select: { id: true },
+  });
+  if (!folder) return;
+  const msg = await prisma.mailMessage.findUnique({
+    where: { folderId_imapUid: { folderId: folder.id, imapUid: uid } },
+    select: { id: true, threadId: true },
+  });
+  if (!msg) return;
+  await prisma.mailMessage.delete({ where: { id: msg.id } });
+  const { recomputeThreadDenorm } = await import("@/lib/mail/threads-query");
+  await recomputeThreadDenorm(msg.threadId).catch(() => undefined);
+  publishMailLive({ type: "mail:updated", accountId, imported: 0, folderRole: "EXPUNGE" });
+}
 
 function parseImapDraftRef(raw: string | null | undefined): {
   path: string;
@@ -111,6 +138,7 @@ export async function saveMailDraft(input: {
         } finally {
           lock.release();
         }
+        await evictCachedMessage(input.accountId, prevRef.path, prevRef.uid);
       } catch {
         /* old draft may already be gone */
       }
@@ -210,6 +238,7 @@ export async function deleteLocalDraft(accountId: string, draftId: string) {
         } finally {
           lock.release();
         }
+        await evictCachedMessage(accountId, ref.path, ref.uid);
       } finally {
         await client.logout().catch(() => undefined);
       }
