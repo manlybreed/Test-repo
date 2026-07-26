@@ -2,6 +2,7 @@
 
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import Blockquote from "@tiptap/extension-blockquote";
 import Underline from "@tiptap/extension-underline";
 import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -13,6 +14,94 @@ import { TableKit } from "@tiptap/extension-table";
 import { useEffect } from "react";
 import { motion } from "framer-motion";
 import { haptic } from "@/components/mail/haptics";
+
+/**
+ * Quoted reply history (and forwarded messages) land in the document as a
+ * real <blockquote> so the full content still goes out with the sent mail —
+ * but showing it expanded by default buries the new text under someone
+ * else's entire message.
+ *
+ * The collapsed/expanded flag is a genuine ProseMirror node attribute (not
+ * NodeView-local DOM/closure state) deliberately: ProseMirror recreates
+ * NodeViews far more often than it seems like it should (cursor moves,
+ * decoration recalculation, unrelated transactions elsewhere in the doc),
+ * and a NodeView has no durable memory of its own across that churn — only
+ * the document model does. `renderHTML` deliberately drops the attribute,
+ * so it's purely an editing-UI concern and never leaks into the sent HTML.
+ */
+const CollapsibleBlockquote = Blockquote.extend({
+  addAttributes() {
+    return {
+      collapsed: {
+        default: false,
+        // Content freshly toggled on via the toolbar's Quote button has no
+        // HTML to parse and gets the plain `default` above (expanded, so
+        // the user can see what they're typing). Content loaded from a
+        // reply/forward *is* parsed HTML — collapse it only if it actually
+        // carries real quoted text.
+        parseHTML: (element: HTMLElement) =>
+          (element.textContent || "").trim().length > 0,
+        renderHTML: () => ({}),
+      },
+    };
+  },
+  addNodeView() {
+    return ({ node, getPos, editor }) => {
+      const wrapper = document.createElement("div");
+      wrapper.className = "mail-quote-node";
+
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.contentEditable = "false";
+      toggle.textContent = "•••";
+      toggle.style.cssText =
+        "cursor:pointer;border:none;background:rgba(255,255,255,0.06);" +
+        "color:var(--text-dim,#9aa);border-radius:999px;padding:2px 10px;" +
+        "font-size:12px;line-height:1.6;margin-bottom:4px;display:inline-block;";
+
+      const content = document.createElement("blockquote");
+
+      function render(collapsed: boolean) {
+        content.style.display = collapsed ? "none" : "";
+        toggle.title = collapsed ? "Show trimmed content" : "Hide trimmed content";
+      }
+      render(Boolean(node.attrs.collapsed));
+
+      toggle.addEventListener("mousedown", (e) => e.preventDefault());
+      toggle.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const pos = getPos();
+        if (typeof pos !== "number") return;
+        const current = editor.state.doc.nodeAt(pos);
+        if (!current) return;
+        editor.view.dispatch(
+          editor.state.tr.setNodeAttribute(pos, "collapsed", !current.attrs.collapsed),
+        );
+      });
+
+      wrapper.appendChild(toggle);
+      wrapper.appendChild(content);
+
+      return {
+        dom: wrapper,
+        contentDOM: content,
+        update: (updatedNode) => {
+          if (updatedNode.type !== node.type) return false;
+          render(Boolean(updatedNode.attrs.collapsed));
+          return true;
+        },
+        // The toggle button lives outside contentDOM, so ProseMirror's
+        // MutationObserver would otherwise see its title/style mutations as
+        // unexpected external drift. Ignore mutations to our own chrome
+        // only — anything inside contentDOM (actual quoted-text edits)
+        // still needs to reach ProseMirror normally.
+        ignoreMutation: (mutation: { target: EventTarget | null }) =>
+          !content.contains(mutation.target as Node),
+      };
+    };
+  },
+});
 
 type Tool =
   | { type: "btn"; id: string; label: string; title: string; active?: boolean; run: () => void }
@@ -39,7 +128,9 @@ export function MailComposer({
     extensions: [
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
+        blockquote: false,
       }),
+      CollapsibleBlockquote,
       Underline,
       TextStyle,
       FontFamily,
