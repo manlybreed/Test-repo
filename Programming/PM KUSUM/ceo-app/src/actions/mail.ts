@@ -30,6 +30,7 @@ import {
   recomputeThreadDenorm,
   resolveSystemFolder,
 } from "@/lib/mail/threads-query";
+import { parseSearchOperators } from "@/lib/mail/mail-search";
 import { summarizeThread } from "@/lib/mail/ai/summarize";
 import { askMailbox, recallPerson, searchMail } from "@/lib/mail/ai/ask";
 import { buildInboxDigest } from "@/lib/mail/ai/digest";
@@ -375,15 +376,29 @@ export async function searchThreadsAction(query: string) {
   const q = query.trim();
   if (q.length < 2) return [];
 
+  const { freeText, whereFragments } = parseSearchOperators(q);
+
+  if (!freeText) {
+    // Operators only (e.g. "is:unread has:attachment") — nothing to rank,
+    // so just filter + sort by date instead of running AI-expand on "".
+    const { rows } = await queryThreadsForView({
+      accountId: account.id,
+      extraWhere: whereFragments,
+      take: 80,
+    });
+    return rows;
+  }
+
   const { expandSearchQuery, lexicalSearchPlan, rerankSearchHits } =
     await import("@/lib/mail/ai/search-expand");
 
-  const plan = await expandSearchQuery(q);
+  const plan = await expandSearchQuery(freeText);
 
   let { rows } = await queryThreadsForView({
     accountId: account.id,
-    query: q,
+    query: freeText,
     searchPlan: plan,
+    extraWhere: whereFragments,
     take: 80,
   });
 
@@ -391,8 +406,9 @@ export async function searchThreadsAction(query: string) {
   if (!rows.length && plan.mustGroups.length > 1) {
     ({ rows } = await queryThreadsForView({
       accountId: account.id,
-      query: q,
-      searchPlan: lexicalSearchPlan(q),
+      query: freeText,
+      searchPlan: lexicalSearchPlan(freeText),
+      extraWhere: whereFragments,
       take: 80,
     }));
   }
@@ -400,7 +416,7 @@ export async function searchThreadsAction(query: string) {
   if (rows.length < 2) return rows;
 
   const ordered = await rerankSearchHits({
-    query: q,
+    query: freeText,
     intent: plan.intent,
     candidates: rows.map((r) => ({
       id: r.id,

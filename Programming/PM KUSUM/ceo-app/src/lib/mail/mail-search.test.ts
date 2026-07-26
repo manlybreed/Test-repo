@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildThreadSearchAnd,
+  parseSearchOperators,
   scoreSearchHit,
   synonymVariants,
   tokenizeSearchQuery,
@@ -86,5 +87,65 @@ describe("mail search", () => {
     });
     // Same order of magnitude; no-date path must not decay.
     expect(withoutDate).toBeGreaterThanOrEqual(freshDated);
+  });
+});
+
+describe("search operators", () => {
+  it("strips a single operator and leaves no free text", () => {
+    const { freeText, whereFragments } = parseSearchOperators("is:unread");
+    expect(freeText).toBe("");
+    expect(whereFragments).toEqual([{ unreadCount: { gt: 0 } }]);
+  });
+
+  it("mixes operators with free text, preserving the remainder", () => {
+    const { freeText, whereFragments } = parseSearchOperators(
+      "from:sbi loan status has:attachment",
+    );
+    expect(freeText).toBe("loan status");
+    expect(whereFragments).toHaveLength(2);
+  });
+
+  it("parses from: to fromAddress/fromName OR clause", () => {
+    const { whereFragments } = parseSearchOperators("from:sbi.co.in");
+    expect(whereFragments[0]).toMatchObject({
+      messages: {
+        some: {
+          OR: [
+            { fromAddress: { contains: "sbi.co.in", mode: "insensitive" } },
+            { fromName: { contains: "sbi.co.in", mode: "insensitive" } },
+          ],
+        },
+      },
+    });
+  });
+
+  it("supports quoted operator values", () => {
+    const { freeText, whereFragments } = parseSearchOperators(
+      'from:"State Bank" invoice',
+    );
+    expect(freeText).toBe("invoice");
+    expect(whereFragments).toHaveLength(1);
+  });
+
+  it("parses before:/after: as date-range filters on lastMessageAt", () => {
+    const { whereFragments } = parseSearchOperators(
+      "after:2026-01-01 before:2026-06-01",
+    );
+    expect(whereFragments).toEqual([
+      { lastMessageAt: { gte: new Date("2026-01-01") } },
+      { lastMessageAt: { lt: new Date("2026-06-01") } },
+    ]);
+  });
+
+  it("leaves unrecognized key:value pairs as literal free text", () => {
+    const { freeText, whereFragments } = parseSearchOperators("priority:high");
+    expect(freeText).toBe("priority:high");
+    expect(whereFragments).toEqual([]);
+  });
+
+  it("is a no-op for plain free-text queries", () => {
+    const { freeText, whereFragments } = parseSearchOperators("SBI POS machine");
+    expect(freeText).toBe("SBI POS machine");
+    expect(whereFragments).toEqual([]);
   });
 });

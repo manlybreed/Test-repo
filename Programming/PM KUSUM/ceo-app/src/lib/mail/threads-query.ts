@@ -205,6 +205,8 @@ export async function queryThreadsForView(opts: {
   take?: number;
   /** Page offset (non-search views only — search always returns its top-ranked take). */
   skip?: number;
+  /** Extra Prisma where fragments ANDed in as-is (e.g. parsed search operators). */
+  extraWhere?: object[];
 }): Promise<{ rows: ThreadListRow[]; total: number }> {
   const take = opts.take ?? 150;
   const skip = opts.skip ?? 0;
@@ -289,6 +291,7 @@ export async function queryThreadsForView(opts: {
       ...excludeSmartInbox,
       ...smartInboxBulkGuard,
       ...searchAnd,
+      ...(opts.extraWhere || []),
     ],
   };
 
