@@ -6,7 +6,9 @@ import {
   Archive as ArchiveIcon,
   BellRing,
   CalendarClock,
+  Check,
   ChevronDown,
+  Keyboard,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
@@ -94,6 +96,9 @@ import {
   snoozeThread,
   archiveThreadAction,
   moveThreadToFolderAction,
+  archiveThreadsAction,
+  trashThreadsAction,
+  moveThreadsToFolderAction,
   setThreadImportant,
   listTasksForThreadAction,
   blockSenderAction,
@@ -1026,6 +1031,11 @@ export function MailClient({
   const [searching, setSearching] = useState(false);
   const [threadPage, setThreadPage] = useState(1);
   const [threadTotal, setThreadTotal] = useState(0);
+  const [selectedThreadIds, setSelectedThreadIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [showBulkMoveMenu, setShowBulkMoveMenu] = useState(false);
+  const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   const [activeSmartLabel, setActiveSmartLabel] = useState<SmartLabel | null>(
     null,
   );
@@ -1054,7 +1064,8 @@ export function MailClient({
       !showSnoozeMenu &&
       !showMoreMenu &&
       !showPriorityMenu &&
-      !showSchedule
+      !showSchedule &&
+      !showBulkMoveMenu
     ) {
       return;
     }
@@ -1066,10 +1077,18 @@ export function MailClient({
       setShowMoreMenu(false);
       setShowPriorityMenu(false);
       setShowSchedule(false);
+      setShowBulkMoveMenu(false);
     };
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
-  }, [showMoveMenu, showSnoozeMenu, showMoreMenu, showPriorityMenu, showSchedule]);
+  }, [
+    showMoveMenu,
+    showSnoozeMenu,
+    showMoreMenu,
+    showPriorityMenu,
+    showSchedule,
+    showBulkMoveMenu,
+  ]);
 
   const systemFolders = useMemo(
     () => pickSystemFolders(folderList),
@@ -1156,7 +1175,11 @@ export function MailClient({
       return;
     }
     if (e.key === "Escape") {
-      if (showMoveMenu || showSnoozeMenu || showMoreMenu || showPriorityMenu) {
+      if (showShortcutHelp) {
+        setShowShortcutHelp(false);
+      } else if (selectedThreadIds.size > 0) {
+        setSelectedThreadIds(new Set());
+      } else if (showMoveMenu || showSnoozeMenu || showMoreMenu || showPriorityMenu) {
         setShowMoveMenu(false);
         setShowSnoozeMenu(false);
         setShowMoreMenu(false);
@@ -1203,9 +1226,46 @@ export function MailClient({
           archiveSelected();
         }
         break;
+      case "a":
+        if (
+          selectedThread &&
+          !showCompose &&
+          !selectedId?.startsWith("outbox")
+        ) {
+          e.preventDefault();
+          replyAll();
+        }
+        break;
+      case "f":
+        if (
+          selectedThread &&
+          !showCompose &&
+          !selectedId?.startsWith("outbox")
+        ) {
+          e.preventDefault();
+          composeForward();
+        }
+        break;
+      case "x":
+        if (selectedId && !selectedId.startsWith("outbox")) {
+          e.preventDefault();
+          toggleThreadSelected(selectedId);
+          haptic("tap");
+        }
+        break;
+      case "#":
+        if (selectedId && !selectedId.startsWith("outbox")) {
+          e.preventDefault();
+          trashSelected();
+        }
+        break;
       case "/":
         e.preventDefault();
         searchInputRef.current?.focus();
+        break;
+      case "?":
+        e.preventDefault();
+        setShowShortcutHelp(true);
         break;
     }
   };
@@ -1275,6 +1335,7 @@ export function MailClient({
   useEffect(() => {
     if (!configured) return;
     if (threadQuery.trim().length >= 2) return;
+    setSelectedThreadIds(new Set());
     startNavTransition(async () => {
       await reloadActiveView(threadPage);
     });
@@ -1559,6 +1620,7 @@ export function MailClient({
     setActiveSmartLabel(null);
     setThreadQuery("");
     setThreadPage(1);
+    setSelectedThreadIds(new Set());
     setActiveFolder(SMART_INBOX_ID);
     if (!(showCompose || composeFullscreen)) {
       setSelectedId(null);
@@ -1607,6 +1669,7 @@ export function MailClient({
     setActiveSmartLabel(null);
     setThreadQuery("");
     setThreadPage(1);
+    setSelectedThreadIds(new Set());
     setActiveFolder(OUTBOX_ID);
     if (!(showCompose || composeFullscreen)) {
       setSelectedId(null);
@@ -1620,6 +1683,7 @@ export function MailClient({
     setActiveSmartLabel(null);
     setThreadQuery("");
     setThreadPage(1);
+    setSelectedThreadIds(new Set());
     setActiveFolder(folderId);
     if (!(showCompose || composeFullscreen)) {
       setSelectedId(null);
@@ -1917,6 +1981,72 @@ export function MailClient({
     });
   }
 
+  function toggleThreadSelected(id: string) {
+    setSelectedThreadIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function selectAllOnPage() {
+    setSelectedThreadIds(new Set(filteredThreads.map((t) => t.id)));
+    haptic("tap");
+  }
+
+  function clearThreadSelection() {
+    setSelectedThreadIds(new Set());
+  }
+
+  function bulkArchive() {
+    const ids = Array.from(selectedThreadIds);
+    if (!ids.length) return;
+    startTransition(async () => {
+      await archiveThreadsAction(ids);
+      setThreads((prev) => prev.filter((t) => !selectedThreadIds.has(t.id)));
+      setSelectedThreadIds(new Set());
+      setStatus(`Archived ${ids.length} thread${ids.length === 1 ? "" : "s"}`);
+      haptic("success");
+    });
+  }
+
+  function bulkTrash() {
+    const ids = Array.from(selectedThreadIds);
+    if (!ids.length) return;
+    const ok = window.confirm(
+      `Move ${ids.length} thread${ids.length === 1 ? "" : "s"} to Trash?`,
+    );
+    if (!ok) return;
+    setThreads((prev) => prev.filter((t) => !selectedThreadIds.has(t.id)));
+    setSelectedThreadIds(new Set());
+    setStatus("Moving to Trash…");
+    startNavTransition(async () => {
+      try {
+        await trashThreadsAction(ids);
+        setStatus(`Moved ${ids.length} to Trash`);
+        haptic("success");
+      } catch (e) {
+        setStatus(e instanceof Error ? e.message : "Trash failed");
+        haptic("warn");
+        await reloadActiveView();
+      }
+    });
+  }
+
+  function bulkMoveTo(folderId: string, folderName: string) {
+    const ids = Array.from(selectedThreadIds);
+    if (!ids.length) return;
+    setShowBulkMoveMenu(false);
+    setThreads((prev) => prev.filter((t) => !selectedThreadIds.has(t.id)));
+    setSelectedThreadIds(new Set());
+    startTransition(async () => {
+      await moveThreadsToFolderAction(ids, folderId);
+      setStatus(`Moved ${ids.length} to ${folderName}`);
+      haptic("success");
+    });
+  }
+
   /**
    * Always-available escape hatch from compose — mirrors Gmail's compose
    * trash icon. If a draft was already persisted, delete it server-side;
@@ -2107,6 +2237,7 @@ export function MailClient({
     haptic("tap");
     setThreadQuery("");
     setThreadPage(1);
+    setSelectedThreadIds(new Set());
     setActiveSmartLabel(label);
     setActiveFolder(null);
     if (!(showCompose || composeFullscreen)) {
@@ -2988,6 +3119,14 @@ export function MailClient({
               haptic("tap");
             }}
           />
+          <IconBtn
+            title="Keyboard shortcuts (?)"
+            icon={<Keyboard size={15} />}
+            onClick={() => {
+              setShowShortcutHelp(true);
+              haptic("tap");
+            }}
+          />
         </div>
       </motion.header>
 
@@ -3596,6 +3735,85 @@ export function MailClient({
                 </button>
               ))}
             </div>
+            <AnimatePresence>
+              {selectedThreadIds.size > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, y: -6, height: 0 }}
+                  animate={{ opacity: 1, y: 0, height: "auto" }}
+                  exit={{ opacity: 0, y: -6, height: 0 }}
+                  transition={spring}
+                  className="flex flex-wrap items-center gap-1.5 overflow-hidden rounded-lg px-2 py-1.5"
+                  style={{ background: "var(--mail-purple-dim)" }}
+                >
+                  <span
+                    className="text-[0.68rem] font-semibold"
+                    style={{ color: "#c4b5fd" }}
+                  >
+                    {selectedThreadIds.size} selected
+                  </span>
+                  {selectedThreadIds.size < filteredThreads.length && (
+                    <button
+                      type="button"
+                      className="cursor-pointer text-[0.65rem] font-medium underline"
+                      style={{ color: "#c4b5fd" }}
+                      onClick={selectAllOnPage}
+                    >
+                      Select all {filteredThreads.length}
+                    </button>
+                  )}
+                  <div className="ml-auto flex items-center gap-1">
+                    <IconBtn
+                      title="Archive selected"
+                      icon={<ArchiveIcon size={14} />}
+                      onClick={bulkArchive}
+                    />
+                    <IconBtn
+                      title="Trash selected"
+                      danger
+                      icon={<Trash2 size={14} />}
+                      onClick={bulkTrash}
+                    />
+                    <div className="relative" data-menu>
+                      <IconBtn
+                        title="Move selected to…"
+                        active={showBulkMoveMenu}
+                        icon={<FolderInput size={14} />}
+                        onClick={() => setShowBulkMoveMenu((v) => !v)}
+                      />
+                      {showBulkMoveMenu && (
+                        <ul
+                          className="absolute right-0 z-10 mt-1 max-h-56 w-44 overflow-auto rounded-xl p-1 text-xs shadow-lg"
+                          style={{
+                            background: "var(--bg-elevated)",
+                            border: "1px solid var(--border-strong)",
+                          }}
+                        >
+                          {folderList
+                            .filter((f) => f.role !== "TRASH")
+                            .map((f) => (
+                              <li key={f.id}>
+                                <button
+                                  type="button"
+                                  className="w-full cursor-pointer rounded-lg px-2 py-1.5 text-left hover:bg-white/5"
+                                  style={{ color: "var(--text)" }}
+                                  onClick={() => bulkMoveTo(f.id, f.name)}
+                                >
+                                  {f.name}
+                                </button>
+                              </li>
+                            ))}
+                        </ul>
+                      )}
+                    </div>
+                    <IconBtn
+                      title="Clear selection"
+                      icon={<X size={14} />}
+                      onClick={clearThreadSelection}
+                    />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
           <motion.ul
             variants={listStagger}
@@ -3625,6 +3843,38 @@ export function MailClient({
                     className={`mail-thread-card ${active ? "is-active" : ""} ${featured ? "is-featured" : ""}`}
                   >
                     <div className="flex items-start gap-2.5">
+                      <span
+                        role="checkbox"
+                        aria-checked={selectedThreadIds.has(t.id)}
+                        aria-label="Select thread"
+                        tabIndex={0}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleThreadSelected(t.id);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            toggleThreadSelected(t.id);
+                          }
+                        }}
+                        className="mt-1.5 flex shrink-0 cursor-pointer items-center justify-center rounded"
+                        style={{
+                          width: 16,
+                          height: 16,
+                          border: selectedThreadIds.has(t.id)
+                            ? "none"
+                            : "1.5px solid var(--mail-border)",
+                          background: selectedThreadIds.has(t.id)
+                            ? "var(--accent-bright)"
+                            : "transparent",
+                        }}
+                      >
+                        {selectedThreadIds.has(t.id) && (
+                          <Check size={11} color="#fff" strokeWidth={3} />
+                        )}
+                      </span>
                       <div className="relative shrink-0">
                         {t.unreadCount > 0 && (
                           <span
@@ -4878,6 +5128,82 @@ export function MailClient({
             >
               {ComposeActionBar({ mode: "fullscreen" })}
             </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showShortcutHelp && (
+          <motion.div
+            key="shortcut-help"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            style={{ background: "rgba(0,0,0,0.6)" }}
+            onClick={() => setShowShortcutHelp(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 8 }}
+              transition={spring}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-lg rounded-2xl p-5"
+              style={{
+                background: "var(--bg-elevated)",
+                border: "1px solid var(--border-strong)",
+              }}
+            >
+              <div className="mb-3 flex items-center justify-between">
+                <h2
+                  className="text-sm font-semibold"
+                  style={{ color: "var(--text)" }}
+                >
+                  Keyboard shortcuts
+                </h2>
+                <IconBtn
+                  title="Close"
+                  icon={<X size={14} />}
+                  onClick={() => setShowShortcutHelp(false)}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
+                {(
+                  [
+                    ["c", "Compose"],
+                    ["r", "Reply"],
+                    ["a", "Reply all"],
+                    ["f", "Forward"],
+                    ["e", "Archive"],
+                    ["#", "Trash"],
+                    ["x", "Select thread"],
+                    ["j", "Next thread"],
+                    ["k", "Previous thread"],
+                    ["/", "Search"],
+                    ["⌘/Ctrl + Enter", "Send"],
+                    ["Esc", "Close / deselect"],
+                    ["?", "This help"],
+                  ] as const
+                ).map(([key, label]) => (
+                  <div
+                    key={label}
+                    className="flex items-center justify-between gap-2"
+                  >
+                    <span style={{ color: "var(--text-muted)" }}>{label}</span>
+                    <kbd
+                      className="rounded px-1.5 py-0.5 text-[0.7rem]"
+                      style={{
+                        background: "rgba(255,255,255,0.08)",
+                        color: "var(--text)",
+                      }}
+                    >
+                      {key}
+                    </kbd>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
