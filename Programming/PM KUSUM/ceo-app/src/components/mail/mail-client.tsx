@@ -61,6 +61,8 @@ import {
   triageThreadAction,
   syncMailAction,
   sendMailAction,
+  flushQueuedSendAction,
+  cancelScheduledSend,
   uploadComposeAttachmentAction,
   forwardMessageAttachmentsAction,
   type ComposeAttachment,
@@ -84,6 +86,7 @@ import {
   trashThreadAction,
   multilingualDraftAction,
   recallPersonAction,
+  findContactsAction,
   refreshStyleAction,
   summarizeAttachmentAction,
   buildMeetingInviteAction,
@@ -718,6 +721,151 @@ function AnimatedSparkle({
   );
 }
 
+type ContactSuggestion = { address: string; displayName: string | null };
+
+/** The comma/semicolon-separated fragment currently being typed, plus everything before it. */
+function lastRecipientFragment(value: string) {
+  const idx = Math.max(value.lastIndexOf(","), value.lastIndexOf(";"));
+  const prefix = idx >= 0 ? `${value.slice(0, idx + 1)} ` : "";
+  const fragment = (idx >= 0 ? value.slice(idx + 1) : value).trim();
+  return { prefix, fragment };
+}
+
+/**
+ * A To/Cc/Bcc input with a contact-suggestion dropdown. Module-level (not
+ * nested inside MailClient) so it never remounts/loses focus on parent
+ * re-renders — the same fix that was needed for the AI-assist panel.
+ */
+function RecipientAutocomplete({
+  id,
+  value,
+  onChange,
+  placeholder,
+  wrapClassName,
+}: {
+  id?: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  wrapClassName?: string;
+}) {
+  const [suggestions, setSuggestions] = useState<ContactSuggestion[]>([]);
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onDocClick = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
+  function scheduleLookup(v: string) {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    const { fragment } = lastRecipientFragment(v);
+    if (fragment.length < 2) {
+      setSuggestions([]);
+      setOpen(false);
+      return;
+    }
+    debounceRef.current = setTimeout(() => {
+      void findContactsAction(fragment)
+        .then((rows) => {
+          setSuggestions(rows);
+          setOpen(rows.length > 0);
+          setActiveIndex(0);
+        })
+        .catch(() => {
+          setSuggestions([]);
+          setOpen(false);
+        });
+    }, 200);
+  }
+
+  function acceptSuggestion(s: ContactSuggestion) {
+    const { prefix } = lastRecipientFragment(value);
+    const insertion = s.displayName ? `${s.displayName} <${s.address}>` : s.address;
+    onChange(`${prefix}${insertion}, `);
+    setOpen(false);
+    setSuggestions([]);
+  }
+
+  return (
+    <div ref={wrapRef} className={`relative ${wrapClassName || ""}`}>
+      <input
+        id={id}
+        placeholder={placeholder}
+        value={value}
+        autoComplete="email"
+        onChange={(e) => {
+          onChange(e.target.value);
+          scheduleLookup(e.target.value);
+        }}
+        onKeyDown={(e) => {
+          if (!open || !suggestions.length) return;
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setActiveIndex((i) => Math.min(i + 1, suggestions.length - 1));
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setActiveIndex((i) => Math.max(i - 1, 0));
+          } else if (e.key === "Enter" || e.key === "Tab") {
+            e.preventDefault();
+            e.stopPropagation();
+            acceptSuggestion(suggestions[activeIndex]!);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            setOpen(false);
+          }
+        }}
+      />
+      {open && suggestions.length > 0 && (
+        <ul
+          className="absolute left-0 top-full z-20 mt-1 max-h-48 w-72 overflow-auto rounded-xl p-1 text-xs shadow-lg"
+          style={{
+            background: "var(--bg-elevated)",
+            border: "1px solid var(--border-strong)",
+          }}
+        >
+          {suggestions.map((s, i) => (
+            <li key={s.address}>
+              <button
+                type="button"
+                className="w-full cursor-pointer rounded-lg px-2 py-1.5 text-left hover:bg-white/5"
+                style={{
+                  background:
+                    i === activeIndex ? "var(--mail-purple-dim)" : "transparent",
+                  color: "var(--text)",
+                }}
+                onMouseEnter={() => setActiveIndex(i)}
+                onClick={() => acceptSuggestion(s)}
+              >
+                <div className="truncate font-medium">
+                  {s.displayName || s.address}
+                </div>
+                {s.displayName && (
+                  <div
+                    className="truncate text-[0.65rem]"
+                    style={{ color: "var(--text-dim)" }}
+                  >
+                    {s.address}
+                  </div>
+                )}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 type InlineOpts = {
   sources?: Map<string, AskCitation>;
   onOpen?: (threadId: string) => void;
@@ -944,6 +1092,13 @@ export function MailClient({
   const [syncing, setSyncing] = useState(false);
   const [categorizing, setCategorizing] = useState(false);
   const [sending, setSending] = useState(false);
+  const [pendingSend, setPendingSend] = useState<{
+    outboxId: string;
+    to: string;
+  } | null>(null);
+  const pendingSendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   /** Visible Sync / Categorize progress (bar under header). */
   const [jobProgress, setJobProgress] = useState<{
     kind: "sync" | "categorize";
@@ -1926,15 +2081,40 @@ export function MailClient({
           haptic("warn");
           return;
         }
-        setStatus(scheduledIso ? "Scheduled" : "Sent");
         setShowCompose(false);
         setComposeFullscreen(false);
         setDraftId(null);
         setComposeHeaders({});
         setComposeBrief("");
-        setComposeAttachments([]);
         setSendAtLocal("");
         haptic("success");
+
+        if (!scheduledIso) {
+          // Undo-Send window — held QUEUED server-side; this client timer
+          // is what actually triggers the real dispatch (or never does, if
+          // the user hits Undo first).
+          setStatus(`Sending to ${recipients[0]}${recipients.length > 1 ? ` +${recipients.length - 1}` : ""}…`);
+          setPendingSend({ outboxId: row.id, to: recipients.join(", ") });
+          if (pendingSendTimerRef.current) clearTimeout(pendingSendTimerRef.current);
+          const outboxId = row.id;
+          pendingSendTimerRef.current = setTimeout(() => {
+            void flushQueuedSendAction(outboxId)
+              .then(() => {
+                setPendingSend((p) => (p?.outboxId === outboxId ? null : p));
+                setStatus("Sent");
+                void reloadActiveView();
+              })
+              .catch((e) => {
+                setPendingSend((p) => (p?.outboxId === outboxId ? null : p));
+                setStatus(e instanceof Error ? e.message : "Send failed");
+                haptic("warn");
+              });
+          }, 10_000);
+          return;
+        }
+
+        setStatus("Scheduled");
+        setComposeAttachments([]);
         await reloadActiveView();
       })
       .catch((e) => {
@@ -1942,6 +2122,28 @@ export function MailClient({
         haptic("warn");
       })
       .finally(() => setSending(false));
+  }
+
+  function undoSend() {
+    if (!pendingSend) return;
+    if (pendingSendTimerRef.current) {
+      clearTimeout(pendingSendTimerRef.current);
+      pendingSendTimerRef.current = null;
+    }
+    const id = pendingSend.outboxId;
+    setPendingSend(null);
+    startTransition(async () => {
+      try {
+        await cancelScheduledSend(id);
+        setStatus("Send cancelled");
+        haptic("success");
+        setShowCompose(true);
+      } catch {
+        // Lost the race at the edge of the undo window — it already went out.
+        setStatus("Too late — already sent");
+        haptic("warn");
+      }
+    });
   }
 
   function archiveSelected() {
@@ -4629,13 +4831,12 @@ export function MailClient({
                             <div className="mail-compose-field">
                               <label htmlFor="mail-to">To</label>
                               <div className="flex items-center gap-2">
-                                <input
+                                <RecipientAutocomplete
                                   id="mail-to"
-                                  className="min-w-0 flex-1"
+                                  wrapClassName="min-w-0 flex-1"
                                   placeholder="name@company.com, …"
                                   value={to}
-                                  onChange={(e) => setTo(e.target.value)}
-                                  autoComplete="email"
+                                  onChange={setTo}
                                 />
                                 <button
                                   type="button"
@@ -4653,24 +4854,24 @@ export function MailClient({
                             {(showCcBcc || cc) && (
                               <div className="mail-compose-field">
                                 <label htmlFor="mail-cc">Cc</label>
-                                <input
+                                <RecipientAutocomplete
                                   id="mail-cc"
+                                  wrapClassName="min-w-0"
                                   placeholder="Optional carbon copy"
                                   value={cc}
-                                  onChange={(e) => setCc(e.target.value)}
-                                  autoComplete="email"
+                                  onChange={setCc}
                                 />
                               </div>
                             )}
                             {(showCcBcc || bcc) && (
                               <div className="mail-compose-field">
                                 <label htmlFor="mail-bcc">Bcc</label>
-                                <input
+                                <RecipientAutocomplete
                                   id="mail-bcc"
+                                  wrapClassName="min-w-0"
                                   placeholder="Optional blind copy"
                                   value={bcc}
-                                  onChange={(e) => setBcc(e.target.value)}
-                                  autoComplete="email"
+                                  onChange={setBcc}
                                 />
                               </div>
                             )}
@@ -5005,12 +5206,12 @@ export function MailClient({
                 <div className="mail-compose-field">
                   <label htmlFor="mail-to-fs">To</label>
                   <div className="flex items-center gap-2">
-                    <input
+                    <RecipientAutocomplete
                       id="mail-to-fs"
-                      className="min-w-0 flex-1"
+                      wrapClassName="min-w-0 flex-1"
                       placeholder="name@company.com, …"
                       value={to}
-                      onChange={(e) => setTo(e.target.value)}
+                      onChange={setTo}
                     />
                     {/* Gmail-style: Cc/Bcc toggles from the To row, not the header */}
                     <button
@@ -5029,20 +5230,22 @@ export function MailClient({
                 {(showCcBcc || cc) && (
                   <div className="mail-compose-field">
                     <label htmlFor="mail-cc-fs">Cc</label>
-                    <input
+                    <RecipientAutocomplete
                       id="mail-cc-fs"
+                      wrapClassName="min-w-0"
                       value={cc}
-                      onChange={(e) => setCc(e.target.value)}
+                      onChange={setCc}
                     />
                   </div>
                 )}
                 {(showCcBcc || bcc) && (
                   <div className="mail-compose-field">
                     <label htmlFor="mail-bcc-fs">Bcc</label>
-                    <input
+                    <RecipientAutocomplete
                       id="mail-bcc-fs"
+                      wrapClassName="min-w-0"
                       value={bcc}
-                      onChange={(e) => setBcc(e.target.value)}
+                      onChange={setBcc}
                     />
                   </div>
                 )}
@@ -5204,6 +5407,38 @@ export function MailClient({
                 ))}
               </div>
             </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {pendingSend && (
+          <motion.div
+            key="undo-send-toast"
+            initial={{ opacity: 0, y: 20, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 20, scale: 0.96 }}
+            transition={spring}
+            className="fixed bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-full px-4 py-2.5 shadow-lg"
+            style={{
+              background: "var(--bg-elevated)",
+              border: "1px solid var(--border-strong)",
+            }}
+          >
+            <span className="text-sm" style={{ color: "var(--text)" }}>
+              Sending to {pendingSend.to}…
+            </span>
+            <button
+              type="button"
+              className="cursor-pointer rounded-full px-3 py-1 text-sm font-semibold"
+              style={{
+                background: "var(--mail-purple-dim)",
+                color: "#c4b5fd",
+              }}
+              onClick={undoSend}
+            >
+              Undo
+            </button>
           </motion.div>
         )}
       </AnimatePresence>
