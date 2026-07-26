@@ -49,6 +49,19 @@ const CollapsibleBlockquote = Blockquote.extend({
     return ({ node, getPos, editor }) => {
       const wrapper = document.createElement("div");
       wrapper.className = "mail-quote-node";
+      // Only `content` (the blockquote, our contentDOM) is a real editable
+      // island. Without this, the browser treats the gap around the toggle
+      // button as plain contentEditable text (inherited from the ProseMirror
+      // root) and will happily drop a native caret there — any typing that
+      // lands in that gap gets inserted as a raw DOM text node next to the
+      // button. `ignoreMutation` below tells ProseMirror to disregard
+      // mutations outside contentDOM (so it doesn't churn the NodeView over
+      // our own button's cosmetic changes), which means that stray text is
+      // never reconciled into the document model: it renders on screen but
+      // is silently absent from editor.getHTML() — and therefore from the
+      // sent mail. Marking the wrapper non-editable removes the gap as a
+      // possible caret target in the first place.
+      wrapper.contentEditable = "false";
 
       const toggle = document.createElement("button");
       toggle.type = "button";
@@ -60,6 +73,7 @@ const CollapsibleBlockquote = Blockquote.extend({
         "font-size:12px;line-height:1.6;margin-bottom:4px;display:inline-block;";
 
       const content = document.createElement("blockquote");
+      content.contentEditable = "true";
 
       function render(collapsed: boolean) {
         content.style.display = collapsed ? "none" : "";
