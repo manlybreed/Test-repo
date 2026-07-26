@@ -851,6 +851,8 @@ export async function sendMailAction(input: {
   draftId?: string;
   /** Uploaded attachments (from uploadComposeAttachmentAction) */
   attachments?: ComposeAttachment[];
+  /** Undo-Send window, in seconds — clamped to a sane range. Default 10. */
+  undoWindowSeconds?: number;
 }) {
   const { account } = await requireAccount();
   if (!input.confirmed) throw new Error("Send requires confirmation");
@@ -882,7 +884,8 @@ export async function sendMailAction(input: {
   // Immediate sends get a real Undo window: held QUEUED here, actually
   // dispatched later by flushQueuedSendAction once the client-side undo
   // countdown elapses (or dropped by cancelScheduledSend if the user undoes).
-  const undoWindowMs = 10_000;
+  const undoWindowMs =
+    Math.max(3, Math.min(60, input.undoWindowSeconds ?? 10)) * 1000;
   const row = await prisma.mailOutbox.create({
     data: {
       accountId: account.id,
