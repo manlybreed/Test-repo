@@ -1035,17 +1035,12 @@ function ReplyContextCard({
         </span>
         {subject ? <span className="truncate">· {subject}</span> : null}
         <span
-          className="ml-auto flex shrink-0 items-center gap-1 text-[0.65rem]"
-          style={{ color: "var(--text-dim)" }}
+          title={open ? "Hide trimmed content" : "Show trimmed content"}
+          aria-label={open ? "Hide trimmed content" : "Show trimmed content"}
+          className="ml-auto flex shrink-0 items-center justify-center rounded-full px-1.5 py-0.5"
+          style={{ color: "var(--text-dim)", background: "rgba(255,255,255,0.06)" }}
         >
-          {open ? "Collapse" : "Show quoted message"}
-          <ChevronDown
-            size={13}
-            style={{
-              transform: open ? "rotate(180deg)" : "none",
-              transition: "transform 0.15s",
-            }}
-          />
+          <MoreHorizontal size={14} />
         </span>
       </summary>
       {/* Scroll lives on this wrapper — .mail-message-body sets
