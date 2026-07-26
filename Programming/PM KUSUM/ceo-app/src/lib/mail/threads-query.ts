@@ -21,6 +21,8 @@ export type ThreadListRow = {
   subject: string;
   snippet: string | null;
   lastMessageAt: Date;
+  /** When moved to Trash — retention metadata only, never used for sort/display date. */
+  trashedAt: Date | null;
   unreadCount: number;
   priority: string;
   important: boolean;
@@ -128,6 +130,7 @@ function toRow(
     subject: string;
     snippet: string | null;
     lastMessageAt: Date;
+    trashedAt: Date | null;
     unreadCount: number;
     priority: string;
     important: boolean;
@@ -147,6 +150,7 @@ function toRow(
     subject: preview?.subject || t.subject,
     snippet: preview?.snippet ?? t.snippet,
     lastMessageAt: preview?.date || t.lastMessageAt,
+    trashedAt: t.trashedAt,
     unreadCount: folderRole === "INBOX" ? t.unreadCount : 0,
     priority: t.priority,
     important: t.important,
@@ -310,6 +314,7 @@ export async function queryThreadsForView(opts: {
       subject: true,
       snippet: true,
       lastMessageAt: true,
+      trashedAt: true,
       unreadCount: true,
       priority: true,
       important: true,

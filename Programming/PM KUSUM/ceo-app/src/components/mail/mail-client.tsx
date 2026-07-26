@@ -131,6 +131,7 @@ type Thread = {
   subject: string;
   snippet: string | null;
   lastMessageAt: string | Date;
+  trashedAt?: string | Date | null;
   unreadCount: number;
   priority: string;
   important?: boolean;
@@ -376,6 +377,25 @@ function formatSyncedAgo(d: string | Date, nowMs: number) {
   const diffHr = Math.round(diffMin / 60);
   if (diffHr < 24) return `synced ${diffHr}h ago`;
   return `synced ${formatWhen(date)}`;
+}
+
+/**
+ * "Deleted Xh/d ago" for the Trash view — retention context, not a sort key.
+ * The thread list itself still sorts/displays by lastMessageAt (original
+ * sent/received date), same as Gmail/Outlook/Apple Mail: trashing a message
+ * doesn't change when it was sent.
+ */
+function formatDeletedAgo(d: string | Date) {
+  const date = new Date(d);
+  if (Number.isNaN(date.getTime())) return "";
+  const diffSec = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+  if (diffSec < 60) return "Deleted just now";
+  const diffMin = Math.round(diffSec / 60);
+  if (diffMin < 60) return `Deleted ${diffMin}m ago`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `Deleted ${diffHr}h ago`;
+  const diffDay = Math.round(diffHr / 24);
+  return `Deleted ${diffDay}d ago`;
 }
 
 function FolderSection({
@@ -1279,6 +1299,7 @@ export function MailClient({
             subject: t.subject,
             snippet: t.snippet ?? null,
             lastMessageAt: t.lastMessageAt,
+            trashedAt: t.trashedAt,
             unreadCount: 0,
             priority: t.priority,
             important: t.important,
@@ -3434,7 +3455,10 @@ export function MailClient({
             animate="show"
             className="min-h-0 flex-1 overflow-auto py-1"
           >
-            {filteredThreads.map((t, idx) => {
+            {(() => {
+              const viewingTrash =
+                folderList.find((f) => f.id === activeFolder)?.role === "TRASH";
+              return filteredThreads.map((t, idx) => {
               const active = selectedId === t.id;
               const tone = priorityTone(t.priority);
               const labels = parseLabelsJson(t.labelsJson);
@@ -3529,6 +3553,15 @@ export function MailClient({
                         >
                           {t.snippet || "—"}
                         </p>
+                        {viewingTrash && t.trashedAt && (
+                          <p
+                            className="mt-0.5 text-[0.65rem]"
+                            style={{ color: "var(--mail-dim)" }}
+                            suppressHydrationWarning
+                          >
+                            {formatDeletedAgo(t.trashedAt)}
+                          </p>
+                        )}
                         {(tone || labels.length > 0) && (
                           <div className="mt-1.5 flex flex-wrap gap-1">
                             {tone && (
@@ -3560,7 +3593,8 @@ export function MailClient({
                   </motion.button>
                 </motion.li>
               );
-            })}
+              });
+            })()}
             {!filteredThreads.length && (
               <li className="p-6 text-center text-sm" style={{ color: "var(--mail-dim)" }}>
                 <p className="mb-3">
