@@ -1119,6 +1119,26 @@ export function MailClient({
   const [pendingSend, setPendingSend] = useState<{
     outboxId: string;
     to: string;
+    /**
+     * Full compose state at the moment Send was clicked, held so Undo can
+     * restore it exactly — including which view (docked vs fullscreen) it
+     * was in. Without this, undo only flipped showCompose back on while
+     * composeFullscreen stayed reset to false from the send handler, so a
+     * fullscreen compose (which has no docked equivalent outside an open
+     * thread) silently reopened as nothing at all.
+     */
+    snapshot: {
+      to: string;
+      cc: string;
+      bcc: string;
+      subject: string;
+      composeHtml: string;
+      composeHeaders: { inReplyTo?: string; referencesHdr?: string };
+      composeBrief: string;
+      draftId: string | null;
+      composeFullscreen: boolean;
+      composeAttachments: ComposeAttachment[];
+    };
   } | null>(null);
   const pendingSendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -2057,7 +2077,12 @@ export function MailClient({
     const shouldSave = composeIsDirty();
     if (mode === "exit-fullscreen") {
       setComposeFullscreen(false);
-      if (!selectedId) setShowCompose(true);
+      // "Docked" only has somewhere to render as an inline reply card
+      // inside an open thread's message list — with no thread selected
+      // (a fresh compose-new session) there's no docked view to fall back
+      // to, so exiting fullscreen there should close entirely rather than
+      // land on a "docked" state with nothing to show.
+      if (!selectedId) setShowCompose(false);
     } else {
       setShowCompose(false);
       setComposeFullscreen(false);
@@ -2128,6 +2153,18 @@ export function MailClient({
 
     // Do not use startTransition here — long SMTP work would disable every action button
     const headers = currentReplyHeaders();
+    const composeSnapshot = {
+      to,
+      cc,
+      bcc,
+      subject,
+      composeHtml,
+      composeHeaders: headers,
+      composeBrief,
+      draftId,
+      composeFullscreen,
+      composeAttachments,
+    };
     setSending(true);
     setStatus("Sending…");
     const scheduledIso = sendAtLocal
@@ -2175,7 +2212,11 @@ export function MailClient({
           // is what actually triggers the real dispatch (or never does, if
           // the user hits Undo first).
           setStatus(`Sending to ${recipients[0]}${recipients.length > 1 ? ` +${recipients.length - 1}` : ""}…`);
-          setPendingSend({ outboxId: row.id, to: recipients.join(", ") });
+          setPendingSend({
+            outboxId: row.id,
+            to: recipients.join(", "),
+            snapshot: composeSnapshot,
+          });
           if (pendingSendTimerRef.current) clearTimeout(pendingSendTimerRef.current);
           const outboxId = row.id;
           pendingSendTimerRef.current = setTimeout(() => {
@@ -2202,12 +2243,27 @@ export function MailClient({
       pendingSendTimerRef.current = null;
     }
     const id = pendingSend.outboxId;
+    const snapshot = pendingSend.snapshot;
     setPendingSend(null);
     startTransition(async () => {
       try {
         await cancelScheduledSend(id);
         setStatus("Send cancelled");
         haptic("success");
+        // Restore the exact compose state — including which view (docked
+        // vs fullscreen) it was in — not just re-show whatever's currently
+        // in the fields, which may have moved on in the meantime.
+        setTo(snapshot.to);
+        setCc(snapshot.cc);
+        setBcc(snapshot.bcc);
+        setShowCcBcc(Boolean(snapshot.cc || snapshot.bcc));
+        setSubject(snapshot.subject);
+        setComposeHtml(snapshot.composeHtml);
+        setComposeHeaders(snapshot.composeHeaders);
+        setComposeBrief(snapshot.composeBrief);
+        setDraftId(snapshot.draftId);
+        setComposeAttachments(snapshot.composeAttachments);
+        setComposeFullscreen(snapshot.composeFullscreen);
         setShowCompose(true);
       } catch {
         // Lost the race at the edge of the undo window — it already went out.
