@@ -1077,6 +1077,7 @@ export function MailClient({
   const [composeBrief, setComposeBrief] = useState("");
   /** Gmail-style: the AI assist panel opens from a sparkle toggle, not always-on. */
   const [showAiAssist, setShowAiAssist] = useState(false);
+  const [composeDragActive, setComposeDragActive] = useState(false);
   /** Schedule-send picker lives behind a clock icon, not inline in the bar. */
   const [showSchedule, setShowSchedule] = useState(false);
   const [composeAttachments, setComposeAttachments] = useState<
@@ -2032,6 +2033,24 @@ export function MailClient({
         setUploadingAtt(false);
         if (attachInputRef.current) attachInputRef.current.value = "";
       });
+  }
+
+  function handleComposeDragOver(e: React.DragEvent) {
+    if (Array.from(e.dataTransfer.types).includes("Files")) {
+      e.preventDefault();
+      setComposeDragActive(true);
+    }
+  }
+
+  function handleComposeDragLeave(e: React.DragEvent) {
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setComposeDragActive(false);
+  }
+
+  function handleComposeDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setComposeDragActive(false);
+    if (e.dataTransfer.files?.length) onPickAttachments(e.dataTransfer.files);
   }
 
   function sendCurrentDraft() {
@@ -4820,7 +4839,24 @@ export function MailClient({
                           </p>
                         </div>
 
-                        <div className="space-y-3 px-4 py-2">
+                        <div
+                          className="relative space-y-3 px-4 py-2"
+                          onDragOver={handleComposeDragOver}
+                          onDragLeave={handleComposeDragLeave}
+                          onDrop={handleComposeDrop}
+                        >
+                          {composeDragActive && (
+                            <div
+                              className="pointer-events-none absolute inset-2 z-20 flex items-center justify-center rounded-xl text-sm font-semibold"
+                              style={{
+                                border: "2px dashed var(--accent-bright)",
+                                background: "rgba(139,92,246,0.12)",
+                                color: "var(--accent-bright)",
+                              }}
+                            >
+                              Drop to attach
+                            </div>
+                          )}
                           <div
                             className="rounded-xl px-3.5 py-1"
                             style={{
@@ -5195,7 +5231,24 @@ export function MailClient({
               />
             </div>
 
-            <div className="flex min-h-0 flex-1 flex-col gap-3 px-6 py-4">
+            <div
+              className="relative flex min-h-0 flex-1 flex-col gap-3 px-6 py-4"
+              onDragOver={handleComposeDragOver}
+              onDragLeave={handleComposeDragLeave}
+              onDrop={handleComposeDrop}
+            >
+              {composeDragActive && (
+                <div
+                  className="pointer-events-none absolute inset-3 z-20 flex items-center justify-center rounded-2xl text-base font-semibold"
+                  style={{
+                    border: "2px dashed var(--accent-bright)",
+                    background: "rgba(139,92,246,0.12)",
+                    color: "var(--accent-bright)",
+                  }}
+                >
+                  Drop to attach
+                </div>
+              )}
               <div
                 className="shrink-0 rounded-2xl px-4 py-1"
                 style={{

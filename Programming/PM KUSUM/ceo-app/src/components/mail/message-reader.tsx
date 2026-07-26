@@ -20,6 +20,7 @@ export type MailMessageView = {
     filename: string;
     size?: number | null;
     extractStatus?: string | null;
+    contentType?: string | null;
   }[];
   listUnsubscribe?: string | null;
 };
@@ -199,6 +200,55 @@ export function MessageReader({
   const hue =
     [...(message.fromAddress || "")].reduce((a, c) => a + c.charCodeAt(0), 0) % 360;
 
+  function escapeHtmlForPrint(s: string) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function printMessage() {
+    haptic("tap");
+    const win = window.open("", "_blank", "width=800,height=900");
+    if (!win) return;
+    const printBody = prepareMailHtml(message.bodyHtml, message.bodyText, "original");
+    const dateStr = new Date(message.date).toLocaleString();
+    win.document.write(`<!doctype html><html><head><meta charset="utf-8">
+      <title>${escapeHtmlForPrint(message.subject || "(no subject)")}</title>
+      <style>
+        body { font-family: Arial, Helvetica, sans-serif; color: #111; margin: 2rem; }
+        .meta { margin-bottom: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid #ccc; }
+        .meta div { margin: 0.15rem 0; font-size: 0.85rem; color: #444; }
+        .meta .subject { font-size: 1.15rem; font-weight: 700; color: #111; margin-bottom: 0.4rem; }
+        img { max-width: 100%; }
+      </style>
+      </head><body>
+      <div class="meta">
+        <div class="subject">${escapeHtmlForPrint(message.subject || "(no subject)")}</div>
+        <div><strong>From:</strong> ${escapeHtmlForPrint(displayName)} &lt;${escapeHtmlForPrint(message.fromAddress)}&gt;</div>
+        ${to.length ? `<div><strong>To:</strong> ${escapeHtmlForPrint(to.join(", "))}</div>` : ""}
+        ${cc.length ? `<div><strong>Cc:</strong> ${escapeHtmlForPrint(cc.join(", "))}</div>` : ""}
+        <div><strong>Date:</strong> ${escapeHtmlForPrint(dateStr)}</div>
+      </div>
+      ${printBody}
+      </body></html>`);
+    win.document.close();
+    win.focus();
+    setTimeout(() => win.print(), 300);
+  }
+
+  function downloadAllAttachments() {
+    if (!message.attachments?.length) return;
+    haptic("tap");
+    message.attachments.forEach((a, i) => {
+      setTimeout(() => {
+        const link = document.createElement("a");
+        link.href = `/api/mail/attachments/${a.id}`;
+        link.download = a.filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }, i * 250);
+    });
+  }
+
   return (
     <motion.article
       layout
@@ -377,6 +427,18 @@ export function MessageReader({
               >
                 Original
               </button>
+              <button
+                type="button"
+                className="cursor-pointer rounded-md px-2.5 py-1 text-[0.65rem] font-semibold"
+                style={{
+                  color: "var(--text-muted)",
+                  border: "1px solid var(--border)",
+                }}
+                onClick={printMessage}
+                title="Print this message"
+              >
+                Print
+              </button>
             </div>
           </div>
 
@@ -420,48 +482,89 @@ export function MessageReader({
           )}
 
           {message.attachments && message.attachments.length > 0 && (
-            <ul className="mt-4 flex flex-wrap gap-2">
-              {message.attachments.map((a) => (
-                <li key={a.id} className="flex flex-wrap items-center gap-1.5">
-                  <a
-                    href={`/api/mail/attachments/${a.id}`}
-                    download={a.filename}
-                    className="inline-flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium transition-opacity hover:opacity-90"
-                    style={{
-                      background: "var(--accent-dim)",
-                      border: "1px solid rgba(99,102,241,0.3)",
-                      color: "var(--accent-bright)",
-                    }}
-                    onClick={() => haptic("tap")}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M12 3v12" />
-                      <path d="M8 11l4 4 4-4" />
-                      <path d="M4 19h16" />
-                    </svg>
-                    {a.filename}
-                    {a.size != null ? ` · ${Math.max(1, Math.round(a.size / 1024))} KB` : ""}
-                  </a>
-                  {onSummarizeAttachment && (
-                    <button
-                      type="button"
-                      className="cursor-pointer rounded-lg px-2.5 py-2 text-[0.65rem] font-medium"
-                      style={{
-                        background: "rgba(255,255,255,0.05)",
-                        border: "1px solid var(--border-strong)",
-                        color: "var(--text-muted)",
-                      }}
-                      onClick={() => {
-                        haptic("tap");
-                        onSummarizeAttachment(a.id, a.filename);
-                      }}
-                    >
-                      AI summary
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
+            <div className="mt-4">
+              {message.attachments.length > 1 && (
+                <button
+                  type="button"
+                  className="mb-2 cursor-pointer text-[0.7rem] font-medium underline-offset-2 hover:underline"
+                  style={{ color: "var(--text-dim)" }}
+                  onClick={downloadAllAttachments}
+                >
+                  Download all ({message.attachments.length})
+                </button>
+              )}
+              <ul className="flex flex-wrap gap-2">
+                {message.attachments.map((a) => {
+                  const isImage = a.contentType?.startsWith("image/");
+                  return (
+                    <li key={a.id} className="flex flex-wrap items-center gap-1.5">
+                      {isImage ? (
+                        <a
+                          href={`/api/mail/attachments/${a.id}`}
+                          download={a.filename}
+                          onClick={() => haptic("tap")}
+                          className="inline-flex flex-col items-start gap-1 rounded-lg p-1.5 transition-opacity hover:opacity-90"
+                          style={{
+                            background: "var(--accent-dim)",
+                            border: "1px solid rgba(99,102,241,0.3)",
+                          }}
+                          title={a.filename}
+                        >
+                          <img
+                            src={`/api/mail/attachments/${a.id}`}
+                            alt={a.filename}
+                            className="h-24 w-24 rounded object-cover"
+                          />
+                          <span
+                            className="max-w-24 truncate text-[0.65rem] font-medium"
+                            style={{ color: "var(--accent-bright)" }}
+                          >
+                            {a.filename}
+                          </span>
+                        </a>
+                      ) : (
+                        <a
+                          href={`/api/mail/attachments/${a.id}`}
+                          download={a.filename}
+                          className="inline-flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium transition-opacity hover:opacity-90"
+                          style={{
+                            background: "var(--accent-dim)",
+                            border: "1px solid rgba(99,102,241,0.3)",
+                            color: "var(--accent-bright)",
+                          }}
+                          onClick={() => haptic("tap")}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M12 3v12" />
+                            <path d="M8 11l4 4 4-4" />
+                            <path d="M4 19h16" />
+                          </svg>
+                          {a.filename}
+                          {a.size != null ? ` · ${Math.max(1, Math.round(a.size / 1024))} KB` : ""}
+                        </a>
+                      )}
+                      {onSummarizeAttachment && (
+                        <button
+                          type="button"
+                          className="cursor-pointer rounded-lg px-2.5 py-2 text-[0.65rem] font-medium"
+                          style={{
+                            background: "rgba(255,255,255,0.05)",
+                            border: "1px solid var(--border-strong)",
+                            color: "var(--text-muted)",
+                          }}
+                          onClick={() => {
+                            haptic("tap");
+                            onSummarizeAttachment(a.id, a.filename);
+                          }}
+                        >
+                          AI summary
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
           )}
           {message.listUnsubscribe && onUnsubscribe && (
             <button
