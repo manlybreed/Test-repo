@@ -7,6 +7,8 @@ import {
   BellRing,
   CalendarClock,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ChevronsLeft,
   ChevronsRight,
   Clock3,
@@ -125,6 +127,7 @@ const HIDDEN_MAILBOX_RE =
 const MAIL_POLL_MS = 10 * 60 * 1000; // fallback only when live SSE is down
 const OUTBOX_ID = "__outbox__";
 const SMART_INBOX_ID = "__smart_inbox__";
+const THREADS_PAGE_SIZE = 50;
 
 type Thread = {
   id: string;
@@ -956,6 +959,8 @@ export function MailClient({
   );
   const [threadQuery, setThreadQuery] = useState("");
   const [searching, setSearching] = useState(false);
+  const [threadPage, setThreadPage] = useState(1);
+  const [threadTotal, setThreadTotal] = useState(0);
   const [activeSmartLabel, setActiveSmartLabel] = useState<SmartLabel | null>(
     null,
   );
@@ -1201,15 +1206,15 @@ export function MailClient({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [folders, account, initialReminders, signatures]);
 
-  // Keep the list scoped to the selected mailbox / smart label / outbox
+  // Keep the list scoped to the selected mailbox / smart label / outbox / page
   useEffect(() => {
     if (!configured) return;
     if (threadQuery.trim().length >= 2) return;
     startNavTransition(async () => {
-      await reloadActiveView();
+      await reloadActiveView(threadPage);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [configured, activeFolder, activeSmartLabel]);
+  }, [configured, activeFolder, activeSmartLabel, threadPage]);
 
   function openThread(id: string) {
     if ((showCompose || composeFullscreen) && composeIsDirty()) {
@@ -1230,13 +1235,13 @@ export function MailClient({
       setCc("");
       setBcc("");
       setSubject(row?.subject || "");
-      setComposeHtml(row?.bodyHtml || `<p></p>${defaultSig}`);
+      setComposeHtml(row?.bodyHtml || `<p></p><div data-mail-sig="1">${defaultSig}</div>`);
       snapshotComposeBaseline({
         to: (row?.toAddresses || []).join(", "),
         cc: "",
         bcc: "",
         subject: row?.subject || "",
-        html: row?.bodyHtml || `<p></p>${defaultSig}`,
+        html: row?.bodyHtml || `<p></p><div data-mail-sig="1">${defaultSig}</div>`,
       });
       setShowCompose(true);
       setComposeFullscreen(false);
@@ -1360,14 +1365,14 @@ export function MailClient({
           inReplyTo: reply.inReplyTo,
           referencesHdr: reply.referencesHdr,
         });
-        setComposeHtml(`<p></p>${defaultSig}`);
+        setComposeHtml(`<p></p><div data-mail-sig="1">${defaultSig}</div>`);
         setComposeAttachments([]);
         snapshotComposeBaseline({
           to: reply.to,
           cc: reply.cc,
           bcc: "",
           subject: reply.subject,
-          html: `<p></p>${defaultSig}`,
+          html: `<p></p><div data-mail-sig="1">${defaultSig}</div>`,
         });
       } catch (e) {
         setStatus(e instanceof Error ? e.message : "Could not open thread");
@@ -1397,19 +1402,24 @@ export function MailClient({
     if (data.signatures) setSigList(data.signatures as SignatureRow[]);
   }
 
-  async function reloadActiveView() {
+  async function reloadActiveView(page = threadPage) {
     if (activeSmartLabel) {
-      setThreads(
-        (await listMailThreads({ label: activeSmartLabel })) as Thread[],
-      );
+      const res = await listMailThreads({ label: activeSmartLabel, page });
+      setThreads(res.rows as Thread[]);
+      setThreadTotal(res.total);
+      setThreadPage(res.page);
       return;
     }
     if (activeFolder === OUTBOX_ID) {
       setThreads((await listOutboxAction()) as Thread[]);
+      setThreadTotal(0);
       return;
     }
     if (activeFolder === SMART_INBOX_ID) {
-      setThreads((await listMailThreads({ smartInbox: true })) as Thread[]);
+      const res = await listMailThreads({ smartInbox: true, page });
+      setThreads(res.rows as Thread[]);
+      setThreadTotal(res.total);
+      setThreadPage(res.page);
       return;
     }
     if (activeFolder) {
@@ -1418,10 +1428,12 @@ export function MailClient({
         setThreads(
           (await listDraftsFolderAction(activeFolder)) as Thread[],
         );
+        setThreadTotal(0);
       } else {
-        setThreads(
-          (await listMailThreads({ folderId: activeFolder })) as Thread[],
-        );
+        const res = await listMailThreads({ folderId: activeFolder, page });
+        setThreads(res.rows as Thread[]);
+        setThreadTotal(res.total);
+        setThreadPage(res.page);
       }
     }
   }
@@ -1430,6 +1442,7 @@ export function MailClient({
     haptic("tap");
     setActiveSmartLabel(null);
     setThreadQuery("");
+    setThreadPage(1);
     setActiveFolder(SMART_INBOX_ID);
     if (!(showCompose || composeFullscreen)) {
       setSelectedId(null);
@@ -1449,7 +1462,7 @@ export function MailClient({
     setBcc("");
     setShowCcBcc(false);
     setSubject("");
-    setComposeHtml(`<p></p>${defaultSig}`);
+    setComposeHtml(`<p></p><div data-mail-sig="1">${defaultSig}</div>`);
     setRefineNote("");
     setComposeBrief("");
     setComposeAttachments([]);
@@ -1458,7 +1471,7 @@ export function MailClient({
       cc: "",
       bcc: "",
       subject: "",
-      html: `<p></p>${defaultSig}`,
+      html: `<p></p><div data-mail-sig="1">${defaultSig}</div>`,
     });
     setShowCompose(true);
     setComposeFullscreen(true);
@@ -1477,6 +1490,7 @@ export function MailClient({
     haptic("tap");
     setActiveSmartLabel(null);
     setThreadQuery("");
+    setThreadPage(1);
     setActiveFolder(OUTBOX_ID);
     if (!(showCompose || composeFullscreen)) {
       setSelectedId(null);
@@ -1489,6 +1503,7 @@ export function MailClient({
     haptic("tap");
     setActiveSmartLabel(null);
     setThreadQuery("");
+    setThreadPage(1);
     setActiveFolder(folderId);
     if (!(showCompose || composeFullscreen)) {
       setSelectedId(null);
@@ -1517,7 +1532,7 @@ export function MailClient({
       setBcc(d.bcc.join(", "));
       setShowCcBcc(Boolean(d.cc.length || d.bcc.length));
       setSubject(d.subject);
-      setComposeHtml(d.bodyHtml || `<p></p>${defaultSig}`);
+      setComposeHtml(d.bodyHtml || `<p></p><div data-mail-sig="1">${defaultSig}</div>`);
       setComposeHeaders({
         inReplyTo: d.inReplyTo || undefined,
         referencesHdr: d.referencesHdr || undefined,
@@ -1527,7 +1542,7 @@ export function MailClient({
         cc: d.cc.join(", "),
         bcc: d.bcc.join(", "),
         subject: d.subject,
-        html: d.bodyHtml || `<p></p>${defaultSig}`,
+        html: d.bodyHtml || `<p></p><div data-mail-sig="1">${defaultSig}</div>`,
       });
       setStatus("Draft loaded — edit and Save or Send");
       haptic("success");
@@ -1786,16 +1801,34 @@ export function MailClient({
     });
   }
 
+  /**
+   * Always-available escape hatch from compose — mirrors Gmail's compose
+   * trash icon. If a draft was already persisted, delete it server-side;
+   * if not (still mid-edit, autosave hasn't landed), just close without
+   * ever saving. Only confirms when there's actually something to lose.
+   */
   function discardDraft() {
-    if (!draftId) return;
-    const ok = window.confirm("Discard this draft? This cannot be undone.");
-    if (!ok) return;
     const id = draftId;
-    setThreads((prev) => prev.filter((t) => t.id !== `outbox:${id}`));
+    const dirty = composeIsDirty();
+    if (id || dirty) {
+      const ok = window.confirm(
+        id
+          ? "Discard this draft? This cannot be undone."
+          : "Discard these changes without saving?",
+      );
+      if (!ok) return;
+    }
+    if (id) setThreads((prev) => prev.filter((t) => t.id !== `outbox:${id}`));
     setShowCompose(false);
     setComposeFullscreen(false);
     setDraftId(null);
     setSelectedId(null);
+    setRefineNote("");
+    haptic("tap");
+    if (!id) {
+      setStatus(dirty ? "Discarded" : "");
+      return;
+    }
     setStatus("Discarding draft…");
     startNavTransition(async () => {
       try {
@@ -1957,6 +1990,7 @@ export function MailClient({
   function selectSmartLabel(label: SmartLabel) {
     haptic("tap");
     setThreadQuery("");
+    setThreadPage(1);
     setActiveSmartLabel(label);
     setActiveFolder(null);
     if (!(showCompose || composeFullscreen)) {
@@ -2496,14 +2530,12 @@ export function MailClient({
               </div>
             )}
           </div>
-          {draftId && (
-            <IconBtn
-              title="Discard draft"
-              icon={<Trash2 size={15} />}
-              disabled={sending}
-              onClick={discardDraft}
-            />
-          )}
+          <IconBtn
+            title={draftId ? "Discard draft" : "Discard"}
+            icon={<Trash2 size={15} />}
+            disabled={sending}
+            onClick={discardDraft}
+          />
           <IconBtn
             title="Save draft"
             icon={<Save size={15} />}
@@ -3608,6 +3640,42 @@ export function MailClient({
               </li>
             )}
           </motion.ul>
+          {threadQuery.trim().length < 2 && threadTotal > 0 && (
+            <div
+              className="flex shrink-0 items-center justify-between gap-2 px-3 py-2"
+              style={{ borderTop: "1px solid var(--mail-border)" }}
+            >
+              <span
+                className="text-[0.68rem] tabular-nums"
+                style={{ color: "var(--mail-dim)" }}
+              >
+                {(threadPage - 1) * THREADS_PAGE_SIZE + 1}
+                {"–"}
+                {Math.min(threadPage * THREADS_PAGE_SIZE, threadTotal)} of{" "}
+                {threadTotal}
+              </span>
+              <div className="flex items-center gap-1">
+                <IconBtn
+                  title="Newer (previous page)"
+                  icon={<ChevronLeft size={14} />}
+                  disabled={threadPage <= 1}
+                  onClick={() => {
+                    haptic("tap");
+                    setThreadPage((p) => Math.max(1, p - 1));
+                  }}
+                />
+                <IconBtn
+                  title="Older (next page)"
+                  icon={<ChevronRight size={14} />}
+                  disabled={threadPage * THREADS_PAGE_SIZE >= threadTotal}
+                  onClick={() => {
+                    haptic("tap");
+                    setThreadPage((p) => p + 1);
+                  }}
+                />
+              </div>
+            </div>
+          )}
         </motion.section>
           )}
         </AnimatePresence>
