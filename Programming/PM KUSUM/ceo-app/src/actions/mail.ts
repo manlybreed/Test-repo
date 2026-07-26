@@ -67,6 +67,7 @@ import {
   listLocalDrafts,
   saveMailDraft,
 } from "@/lib/mail/drafts";
+import { findContacts } from "@/lib/mail/contacts";
 
 function revalidateMail() {
   revalidatePath("/ceo/mail");
@@ -757,6 +758,10 @@ export async function sendMailAction(input: {
     assertAutonomy("send", { confirmed: true });
   }
 
+  // Immediate sends get a real Undo window: held QUEUED here, actually
+  // dispatched later by flushQueuedSendAction once the client-side undo
+  // countdown elapses (or dropped by cancelScheduledSend if the user undoes).
+  const undoWindowMs = 10_000;
   const row = await prisma.mailOutbox.create({
     data: {
       accountId: account.id,
@@ -771,34 +776,58 @@ export async function sendMailAction(input: {
       attachmentsJson: JSON.stringify(input.attachments || []),
       status,
       sendAt: input.sendAt ? new Date(input.sendAt) : new Date(),
-      undoUntil: new Date(Date.now() + 30_000),
+      undoUntil: input.sendAt ? null : new Date(Date.now() + undoWindowMs),
       idempotencyKey: randomUUID(),
     },
   });
-
-  let flushed = row;
-  if (!input.sendAt) {
-    flushed = await flushOutboxItem(row.id, { confirmed: true });
-    // Sync in background — awaiting full IMAP sync here freezes the Send button
-    void syncCeoMail({
-      userId: account.userId,
-      maxPerFolder: 40,
-      maxTriageNew: 0,
-    }).catch(() => undefined);
-  }
 
   if (input.draftId) {
     void deleteLocalDraft(account.id, input.draftId).catch(() => undefined);
   }
 
+  if (input.sendAt) {
+    await prisma.auditLog.create({
+      data: {
+        entityType: "MailOutbox",
+        entityId: row.id,
+        action: "MAIL_SCHEDULE",
+        afterJson: JSON.stringify({
+          subject: input.subject,
+          to: input.to,
+          status: row.status,
+        }),
+      },
+    });
+  }
+
+  revalidateMail();
+  return row;
+}
+
+/**
+ * Actually dispatch a QUEUED immediate send once its client-side Undo
+ * countdown has elapsed without being cancelled. Race-safe: a no-op if the
+ * item was already sent or cancelled by the time this fires.
+ */
+export async function flushQueuedSendAction(outboxId: string) {
+  const { account, userId } = await requireAccount();
+  const row = await prisma.mailOutbox.findFirst({
+    where: { id: outboxId, accountId: account.id },
+  });
+  if (!row) throw new Error("Outbox item not found");
+  if (row.status === "CANCELLED" || row.status === "SENT") return row;
+
+  const flushed = await flushOutboxItem(outboxId, { confirmed: true });
+  void syncCeoMail({ userId, maxPerFolder: 40, maxTriageNew: 0 }).catch(() => undefined);
+
   await prisma.auditLog.create({
     data: {
       entityType: "MailOutbox",
       entityId: row.id,
-      action: input.sendAt ? "MAIL_SCHEDULE" : "MAIL_SEND",
+      action: "MAIL_SEND",
       afterJson: JSON.stringify({
-        subject: input.subject,
-        to: input.to,
+        subject: row.subject,
+        to: JSON.parse(row.toAddresses || "[]"),
         status: flushed.status,
       }),
     },
@@ -1011,6 +1040,13 @@ export async function askMailAction(question: string) {
 export async function recallPersonAction(person: string) {
   const { account } = await requireAccount();
   return recallPerson(account.id, person);
+}
+
+/** Lightweight recipient suggestions for the To/Cc/Bcc autocomplete dropdown. */
+export async function findContactsAction(query: string) {
+  const { account } = await requireAccount();
+  const rows = await findContacts(account.id, query, 6);
+  return rows.map((r) => ({ address: r.address, displayName: r.displayName }));
 }
 
 export async function draftReplyAction(input: {
