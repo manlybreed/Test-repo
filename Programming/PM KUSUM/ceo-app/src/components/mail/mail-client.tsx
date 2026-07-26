@@ -1439,7 +1439,7 @@ export function MailClient({
       return;
     }
     setSearching(true);
-    setStatus("Searching with AI…");
+    setStatus("Searching…");
     // Slightly longer debounce — AI expand + rerank costs a round-trip
     const handle = window.setTimeout(() => {
       startNavTransition(async () => {
@@ -5458,6 +5458,17 @@ export function MailClient({
                     </kbd>
                   </div>
                 ))}
+              </div>
+              <div
+                className="mt-3 pt-3 text-[0.7rem]"
+                style={{ borderTop: "1px solid var(--border)", color: "var(--text-dim)" }}
+              >
+                <p className="mb-1 font-semibold" style={{ color: "var(--text-muted)" }}>
+                  Search operators
+                </p>
+                <p>
+                  from: to: has:attachment is:unread is:starred label: before:YYYY-MM-DD after:YYYY-MM-DD
+                </p>
               </div>
             </motion.div>
           </motion.div>

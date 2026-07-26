@@ -143,6 +143,73 @@ function expandSenderVariants(variants: string[]): string[] {
   return [...out];
 }
 
+export type ParsedSearchOperators = {
+  /** Whatever's left after stripping recognized operators — feeds the existing AI-expand/lexical path. */
+  freeText: string;
+  /** Structured Prisma where fragments for each recognized operator, ANDed in as-is. */
+  whereFragments: object[];
+};
+
+const OPERATOR_RE = /(\w+):(?:"([^"]*)"|(\S+))/g;
+
+/**
+ * Gmail-style search operators — from:, to:, has:attachment, is:unread/
+ * starred/important/read, label:, before:/after: (YYYY-MM-DD). Anything not
+ * recognized (including a bare "key:" with no matching operator) is left in
+ * freeText so it still gets searched literally rather than silently dropped.
+ */
+export function parseSearchOperators(query: string): ParsedSearchOperators {
+  const whereFragments: object[] = [];
+  const freeTextParts: string[] = [];
+  let lastIndex = 0;
+  OPERATOR_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = OPERATOR_RE.exec(query))) {
+    freeTextParts.push(query.slice(lastIndex, m.index));
+    lastIndex = OPERATOR_RE.lastIndex;
+
+    const key = m[1].toLowerCase();
+    const value = (m[2] ?? m[3] ?? "").trim();
+    if (!value) {
+      freeTextParts.push(m[0]);
+      continue;
+    }
+    const lower = value.toLowerCase();
+
+    if (key === "from") {
+      whereFragments.push({
+        messages: {
+          some: { OR: [{ fromAddress: contains(value) }, { fromName: contains(value) }] },
+        },
+      });
+    } else if (key === "to") {
+      whereFragments.push({ messages: { some: { toAddresses: contains(value) } } });
+    } else if (key === "has" && (lower === "attachment" || lower === "attachments")) {
+      whereFragments.push({ messages: { some: { hasAttachments: true } } });
+    } else if (key === "is" && lower === "unread") {
+      whereFragments.push({ unreadCount: { gt: 0 } });
+    } else if (key === "is" && lower === "read") {
+      whereFragments.push({ unreadCount: 0 });
+    } else if (key === "is" && (lower === "starred" || lower === "important")) {
+      whereFragments.push({ important: true });
+    } else if (key === "label") {
+      whereFragments.push({ labelsJson: contains(value) });
+    } else if (key === "before" && !Number.isNaN(new Date(value).getTime())) {
+      whereFragments.push({ lastMessageAt: { lt: new Date(value) } });
+    } else if (key === "after" && !Number.isNaN(new Date(value).getTime())) {
+      whereFragments.push({ lastMessageAt: { gte: new Date(value) } });
+    } else {
+      freeTextParts.push(m[0]);
+    }
+  }
+  freeTextParts.push(query.slice(lastIndex));
+
+  return {
+    freeText: freeTextParts.join(" ").replace(/\s+/g, " ").trim(),
+    whereFragments,
+  };
+}
+
 export type SearchPlanLike = {
   mustGroups: string[][];
   should?: string[];
