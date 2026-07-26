@@ -56,7 +56,7 @@ import {
 } from "@/components/mail/signatures-panel";
 import { VacationPanel } from "@/components/mail/vacation-panel";
 import { haptic } from "@/components/mail/haptics";
-import { playSendSound } from "@/components/mail/sound";
+import { playSendSound, playSendFlyAnimation } from "@/components/mail/sound";
 import { buildFolderTree, type FolderTreeNode } from "@/lib/mail/folder-tree";
 import {
   askMailAction,
@@ -1143,11 +1143,6 @@ export function MailClient({
   const pendingSendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const [sendFlyAnim, setSendFlyAnim] = useState<{
-    id: number;
-    x: number;
-    y: number;
-  } | null>(null);
   const [undoWindowSec, setUndoWindowSecState] = useState<10 | 20>(10);
   useEffect(() => {
     const saved = Number(localStorage.getItem("mail-undo-window-sec"));
@@ -2150,6 +2145,15 @@ export function MailClient({
       return;
     }
     const clickPos = e ? { x: e.clientX, y: e.clientY } : null;
+    // Fire immediately on click, not after the send round-trip resolves:
+    // a React/Framer Motion animation started from inside the .then()
+    // callback loses a race against the heavy re-render that same callback
+    // triggers (fullscreen compose closing, thread list reappearing) and
+    // doesn't visibly play until that settles, by which point the moment
+    // has passed. Sound and animation are both raw DOM/WebAudio effects
+    // independent of React, so there's no reason to wait for the server.
+    playSendSound();
+    if (clickPos) playSendFlyAnimation(clickPos.x, clickPos.y);
 
     // Do not use startTransition here — long SMTP work would disable every action button
     const headers = currentReplyHeaders();
@@ -2202,10 +2206,6 @@ export function MailClient({
         setComposeBrief("");
         setSendAtLocal("");
         haptic("success");
-        playSendSound();
-        if (clickPos) {
-          setSendFlyAnim({ id: Date.now(), ...clickPos });
-        }
 
         if (!scheduledIso) {
           // Undo-Send window — held QUEUED server-side; this client timer
@@ -5882,40 +5882,6 @@ export function MailClient({
                 >
                   <X size={14} />
                 </button>
-              </motion.div>
-            )}
-          </AnimatePresence>,
-          document.body,
-        )}
-
-      {typeof document !== "undefined" &&
-        createPortal(
-          <AnimatePresence>
-            {sendFlyAnim && (
-              <motion.div
-                key={sendFlyAnim.id}
-                initial={{
-                  opacity: 1,
-                  scale: 1,
-                  rotate: -8,
-                  x: sendFlyAnim.x,
-                  y: sendFlyAnim.y,
-                }}
-                animate={{
-                  opacity: 0,
-                  scale: 0.4,
-                  rotate: 35,
-                  x: sendFlyAnim.x + 160,
-                  y: sendFlyAnim.y - 180,
-                }}
-                transition={{ duration: 0.7, ease: "easeIn" }}
-                onAnimationComplete={() =>
-                  setSendFlyAnim((p) => (p?.id === sendFlyAnim.id ? null : p))
-                }
-                className="fixed left-0 top-0 z-[300]"
-                style={{ pointerEvents: "none" }}
-              >
-                <SendHorizontal size={22} style={{ color: "var(--accent-bright)" }} />
               </motion.div>
             )}
           </AnimatePresence>,
