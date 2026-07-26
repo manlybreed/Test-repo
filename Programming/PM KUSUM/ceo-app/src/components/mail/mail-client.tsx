@@ -1128,6 +1128,20 @@ export function MailClient({
     x: number;
     y: number;
   } | null>(null);
+  const [undoWindowSec, setUndoWindowSecState] = useState<10 | 20>(10);
+  useEffect(() => {
+    const saved = Number(localStorage.getItem("mail-undo-window-sec"));
+    if (saved === 10 || saved === 20) setUndoWindowSecState(saved);
+  }, []);
+  function setUndoWindowSec(v: 10 | 20) {
+    setUndoWindowSecState(v);
+    try {
+      localStorage.setItem("mail-undo-window-sec", String(v));
+    } catch {
+      /* ignore */
+    }
+    haptic("tap");
+  }
   /** Visible Sync / Categorize progress (bar under header). */
   const [jobProgress, setJobProgress] = useState<{
     kind: "sync" | "categorize";
@@ -2136,6 +2150,7 @@ export function MailClient({
       referencesHdr: headers.referencesHdr,
       draftId: draftId || undefined,
       attachments: composeAttachments.length ? composeAttachments : undefined,
+      undoWindowSeconds: undoWindowSec,
     })
       .then(async (row) => {
         if (row.status === "FAILED") {
@@ -2164,18 +2179,8 @@ export function MailClient({
           if (pendingSendTimerRef.current) clearTimeout(pendingSendTimerRef.current);
           const outboxId = row.id;
           pendingSendTimerRef.current = setTimeout(() => {
-            void flushQueuedSendAction(outboxId)
-              .then(() => {
-                setPendingSend((p) => (p?.outboxId === outboxId ? null : p));
-                setStatus("Sent");
-                void reloadActiveView();
-              })
-              .catch((e) => {
-                setPendingSend((p) => (p?.outboxId === outboxId ? null : p));
-                setStatus(e instanceof Error ? e.message : "Send failed");
-                haptic("warn");
-              });
-          }, 10_000);
+            flushPendingSendNow(outboxId);
+          }, undoWindowSec * 1000);
           return;
         }
 
@@ -2210,6 +2215,34 @@ export function MailClient({
         haptic("warn");
       }
     });
+  }
+
+  /** Actually dispatch a queued send — called by the undo-window timer, or
+   * immediately when the user dismisses the toast via its close button. */
+  function flushPendingSendNow(outboxId: string) {
+    void flushQueuedSendAction(outboxId)
+      .then(() => {
+        setPendingSend((p) => (p?.outboxId === outboxId ? null : p));
+        setStatus("Sent");
+        void reloadActiveView();
+      })
+      .catch((e) => {
+        setPendingSend((p) => (p?.outboxId === outboxId ? null : p));
+        setStatus(e instanceof Error ? e.message : "Send failed");
+        haptic("warn");
+      });
+  }
+
+  /** Close (×) on the send toast — dismiss it now and send right away,
+   * distinct from Undo which cancels the send entirely. */
+  function sendPendingNow() {
+    if (!pendingSend) return;
+    if (pendingSendTimerRef.current) {
+      clearTimeout(pendingSendTimerRef.current);
+      pendingSendTimerRef.current = null;
+    }
+    haptic("tap");
+    flushPendingSendNow(pendingSend.outboxId);
   }
 
   function archiveSelected() {
@@ -3587,6 +3620,32 @@ export function MailClient({
                       {desktopNotifsEnabled ? "On" : "Off"}
                     </span>
                   </button>
+                </li>
+                <li>
+                  <div className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2" style={{ color: "var(--text)" }}>
+                    <Clock3 size={14} />
+                    <span>Undo send window</span>
+                    <span className="ml-auto flex gap-1">
+                      {([10, 20] as const).map((sec) => (
+                        <button
+                          key={sec}
+                          type="button"
+                          className="cursor-pointer rounded-full px-2 py-0.5 text-[0.65rem] font-semibold"
+                          style={{
+                            background:
+                              undoWindowSec === sec
+                                ? "var(--mail-purple-dim)"
+                                : "var(--bg-elevated)",
+                            color: undoWindowSec === sec ? "#c4b5fd" : "var(--text-dim)",
+                            border: "1px solid var(--border-strong)",
+                          }}
+                          onClick={() => setUndoWindowSec(sec)}
+                        >
+                          {sec}s
+                        </button>
+                      ))}
+                    </span>
+                  </div>
                 </li>
               </ul>
             )}
@@ -5751,6 +5810,16 @@ export function MailClient({
                   onClick={undoSend}
                 >
                   Undo
+                </button>
+                <button
+                  type="button"
+                  title="Send now"
+                  aria-label="Send now"
+                  className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full"
+                  style={{ color: "var(--text-dim)" }}
+                  onClick={sendPendingNow}
+                >
+                  <X size={14} />
                 </button>
               </motion.div>
             )}
