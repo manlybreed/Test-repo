@@ -27,6 +27,7 @@ import {
   SendHorizontal,
   RefreshCw,
   Reply as ReplyIcon,
+  ReplyAll as ReplyAllIcon,
   Send,
   ShieldAlert,
   SlidersHorizontal,
@@ -59,6 +60,7 @@ import {
   syncMailAction,
   sendMailAction,
   uploadComposeAttachmentAction,
+  forwardMessageAttachmentsAction,
   type ComposeAttachment,
   getMailThread,
   markThreadRead,
@@ -232,7 +234,12 @@ function parseAddrJson(raw?: string | null): string[] {
 /** Reply headers + recipients that respect Sent/Drafts (don't reply to yourself). */
 function replyContext(
   messages: Msg[],
-  opts: { folderRole?: string | null; myAddress?: string | null },
+  opts: {
+    folderRole?: string | null;
+    myAddress?: string | null;
+    /** "reply-all" folds every other original To/Cc recipient into Cc. */
+    mode?: "reply" | "reply-all";
+  },
 ) {
   const last = messages[messages.length - 1];
   if (!last) {
@@ -243,11 +250,28 @@ function replyContext(
     opts.folderRole === "SENT" ||
     opts.folderRole === "DRAFTS" ||
     (me && last.fromAddress.toLowerCase() === me);
+  const mode = opts.mode ?? "reply";
 
   const toList = fromMe
     ? parseAddrJson(last.toAddresses)
     : [last.fromAddress].filter(Boolean);
-  const ccList = fromMe ? parseAddrJson(last.ccAddresses) : [];
+
+  let ccList: string[];
+  if (fromMe) {
+    ccList = parseAddrJson(last.ccAddresses);
+  } else if (mode === "reply-all") {
+    const exclude = new Set(
+      [me, last.fromAddress.toLowerCase()].filter(Boolean),
+    );
+    ccList = Array.from(
+      new Set([
+        ...parseAddrJson(last.toAddresses),
+        ...parseAddrJson(last.ccAddresses),
+      ]),
+    ).filter((addr) => !exclude.has(addr.toLowerCase()));
+  } else {
+    ccList = [];
+  }
 
   const subject = last.subject.toLowerCase().startsWith("re:")
     ? last.subject
@@ -269,6 +293,47 @@ function replyContext(
     referencesHdr,
     subject,
   };
+}
+
+function escapeHtml(s: string) {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function formatQuoteDate(d: string | Date) {
+  const date = new Date(d);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    weekday: "short",
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+/** Attribution line + blockquote of the message being replied to, so a manual (non-AI) reply still carries visible context. */
+function buildQuoteBlock(m: Msg): string {
+  const who = m.fromName ? `${escapeHtml(m.fromName)} <${escapeHtml(m.fromAddress)}>` : escapeHtml(m.fromAddress);
+  const body = prepareMailHtml(m.bodyHtml, m.bodyText, "original");
+  return `<p>On ${formatQuoteDate(m.date)}, ${who} wrote:</p><blockquote>${body}</blockquote>`;
+}
+
+/** Gmail-style "---------- Forwarded message ---------" header + embedded original body. */
+function buildForwardBlock(m: Msg): string {
+  const from = m.fromName ? `${escapeHtml(m.fromName)} <${escapeHtml(m.fromAddress)}>` : escapeHtml(m.fromAddress);
+  const to = parseAddrJson(m.toAddresses).join(", ");
+  const body = prepareMailHtml(m.bodyHtml, m.bodyText, "original");
+  return (
+    `<p>---------- Forwarded message ---------<br>` +
+    `From: ${from}<br>` +
+    `Date: ${formatQuoteDate(m.date)}<br>` +
+    `Subject: ${escapeHtml(m.subject)}<br>` +
+    `To: ${escapeHtml(to)}</p><blockquote>${body}</blockquote>`
+  );
 }
 
 const spring = { type: "spring" as const, stiffness: 420, damping: 32 };
@@ -1352,33 +1417,84 @@ export function MailClient({
           return;
         }
 
-        const reply = replyContext(msgs, {
-          folderRole: null,
-          myAddress: accountInfo?.address,
-        });
-        setTo(reply.to);
-        setCc(reply.cc);
-        setBcc("");
-        setShowCcBcc(Boolean(reply.cc));
-        setSubject(reply.subject);
-        setComposeHeaders({
-          inReplyTo: reply.inReplyTo,
-          referencesHdr: reply.referencesHdr,
-        });
-        setComposeHtml(`<p></p><div data-mail-sig="1">${defaultSig}</div>`);
-        setComposeAttachments([]);
-        snapshotComposeBaseline({
-          to: reply.to,
-          cc: reply.cc,
-          bcc: "",
-          subject: reply.subject,
-          html: `<p></p><div data-mail-sig="1">${defaultSig}</div>`,
-        });
+        applyReplyState(msgs, "reply");
       } catch (e) {
         setStatus(e instanceof Error ? e.message : "Could not open thread");
         haptic("warn");
       }
     })();
+  }
+
+  /** Shared by the reply auto-preload and the explicit Reply-All action. */
+  function applyReplyState(msgs: Msg[], mode: "reply" | "reply-all") {
+    const last = msgs[msgs.length - 1];
+    const reply = replyContext(msgs, {
+      folderRole: null,
+      myAddress: accountInfo?.address,
+      mode,
+    });
+    const quote = last ? buildQuoteBlock(last) : "";
+    const html = `<p></p><div data-mail-sig="1">${defaultSig}</div>${quote}`;
+    setTo(reply.to);
+    setCc(reply.cc);
+    setBcc("");
+    setShowCcBcc(Boolean(reply.cc));
+    setSubject(reply.subject);
+    setComposeHeaders({
+      inReplyTo: reply.inReplyTo,
+      referencesHdr: reply.referencesHdr,
+    });
+    setComposeHtml(html);
+    setComposeAttachments([]);
+    snapshotComposeBaseline({
+      to: reply.to,
+      cc: reply.cc,
+      bcc: "",
+      subject: reply.subject,
+      html,
+    });
+  }
+
+  function replyAll() {
+    if (!messages.length) return;
+    applyReplyState(messages, "reply-all");
+    setShowCompose(true);
+    haptic("tap");
+  }
+
+  function composeForward() {
+    const last = messages[messages.length - 1];
+    if (!last) return;
+    haptic("tap");
+    setDraftId(null);
+    setTo("");
+    setCc("");
+    setBcc("");
+    setShowCcBcc(false);
+    const subject = last.subject.toLowerCase().startsWith("fwd:")
+      ? last.subject
+      : `Fwd: ${last.subject}`;
+    setSubject(subject);
+    setComposeHeaders({});
+    const html = `<p></p><div data-mail-sig="1">${defaultSig}</div>${buildForwardBlock(last)}`;
+    setComposeHtml(html);
+    setComposeAttachments([]);
+    snapshotComposeBaseline({ to: "", cc: "", bcc: "", subject, html });
+    setShowCompose(true);
+    setStatus("Forwarding — add a recipient");
+    if (last.hasAttachments) {
+      void forwardMessageAttachmentsAction(last.id)
+        .then((atts) => {
+          if (!atts.length) return;
+          setComposeAttachments((prev) => [...prev, ...atts]);
+          setStatus("Forwarding — attachments copied, add a recipient");
+        })
+        .catch(() => {
+          setStatus(
+            "Forwarding — original attachments could not be copied, add a recipient",
+          );
+        });
+    }
   }
 
   function splitAddrs(raw: string) {
@@ -4029,6 +4145,10 @@ export function MailClient({
                             >
                               {[
                                 {
+                                  label: "Forward",
+                                  onClick: composeForward,
+                                },
+                                {
                                   label: "Triage",
                                   onClick: runTriage,
                                 },
@@ -4142,6 +4262,12 @@ export function MailClient({
                             setShowCompose(true);
                             haptic("tap");
                           }}
+                        />
+                        <IconBtn
+                          size="lg"
+                          title="Reply all"
+                          icon={<ReplyAllIcon size={15} />}
+                          onClick={replyAll}
                         />
                         <IconBtn
                           size="lg"
