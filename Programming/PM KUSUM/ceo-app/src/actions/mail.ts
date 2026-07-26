@@ -621,6 +621,53 @@ export async function uploadComposeAttachmentAction(
   return out;
 }
 
+/**
+ * Copy a received message's attachments into the compose/outgoing area so a
+ * Forward can carry them along. Best-effort per file — a missing/unreadable
+ * original attachment is skipped rather than failing the whole forward.
+ */
+export async function forwardMessageAttachmentsAction(
+  messageId: string,
+): Promise<ComposeAttachment[]> {
+  const { account } = await requireAccount();
+  const atts = await prisma.mailAttachment.findMany({
+    where: { messageId, message: { accountId: account.id } },
+  });
+  if (!atts.length) return [];
+
+  const { default: path } = await import("path");
+  const { promises: fs } = await import("fs");
+
+  const storageRoot = path.resolve(process.env.STORAGE_ROOT || "./storage");
+  const dir = path.join(storageRoot, "mail", "outgoing", account.id, randomUUID());
+
+  const out: ComposeAttachment[] = [];
+  for (const att of atts) {
+    if (!att.storagePath) continue;
+    const abs = path.resolve(att.storagePath);
+    if (!abs.startsWith(storageRoot) && !abs.includes(`${path.sep}mail${path.sep}`)) {
+      continue;
+    }
+    try {
+      const buf = await fs.readFile(abs);
+      await fs.mkdir(dir, { recursive: true });
+      const safeName =
+        att.filename.replace(/[^\w.\- ()]/g, "_").slice(0, 120) || "attachment";
+      const destPath = path.join(dir, safeName);
+      await fs.writeFile(destPath, buf);
+      out.push({
+        path: destPath,
+        filename: safeName,
+        size: att.size || buf.length,
+        contentType: att.contentType || null,
+      });
+    } catch {
+      // Original file missing on disk — skip, don't fail the whole forward.
+    }
+  }
+  return out;
+}
+
 export async function sendMailAction(input: {
   to: string[];
   cc?: string[];
