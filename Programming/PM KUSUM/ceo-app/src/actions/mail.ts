@@ -18,9 +18,12 @@ import {
 import { createMailLabel } from "@/lib/mail/labels";
 import {
   archiveMailThread,
+  archiveMailThreads,
   markInboxMessagesSeen,
   moveMailThreadToFolder,
+  moveMailThreadsToFolder,
   trashMailThread,
+  trashMailThreads,
 } from "@/lib/mail/imap-mailbox";
 import {
   queryThreadsForView,
@@ -215,6 +218,50 @@ export async function moveThreadToFolderAction(
     maxPerFolder: 40,
     maxTriageNew: 0,
   }).catch(() => undefined);
+  revalidateMail();
+  return result;
+}
+
+/** Real (non-outbox) thread ids only — local drafts/outbox items use their own controls. */
+function realThreadIds(ids: string[]) {
+  return ids.filter(
+    (id) => !id.startsWith("outbox:") && !id.startsWith("outbox-item:"),
+  );
+}
+
+export async function archiveThreadsAction(threadIds: string[]) {
+  const { account, userId } = await requireAccount();
+  assertAutonomy("archive");
+  const ids = realThreadIds(threadIds);
+  if (!ids.length) return { ok: true as const, archivePath: null };
+  const result = await archiveMailThreads({ accountId: account.id, threadIds: ids });
+  void syncCeoMail({ userId, maxPerFolder: 40, maxTriageNew: 0 }).catch(() => undefined);
+  revalidateMail();
+  return result;
+}
+
+export async function trashThreadsAction(threadIds: string[]) {
+  const { account, userId } = await requireAccount();
+  assertAutonomy("delete", { confirmed: true });
+  const ids = realThreadIds(threadIds);
+  if (!ids.length) return { ok: true as const, trashPath: null };
+  const result = await trashMailThreads({ accountId: account.id, threadIds: ids });
+  void syncCeoMail({ userId, maxPerFolder: 40, maxTriageNew: 0 }).catch(() => undefined);
+  revalidateMail();
+  return result;
+}
+
+export async function moveThreadsToFolderAction(threadIds: string[], folderId: string) {
+  const { account, userId } = await requireAccount();
+  assertAutonomy("move");
+  const ids = realThreadIds(threadIds);
+  if (!ids.length) return { ok: true as const, path: null };
+  const result = await moveMailThreadsToFolder({
+    accountId: account.id,
+    threadIds: ids,
+    folderId,
+  });
+  void syncCeoMail({ userId, maxPerFolder: 40, maxTriageNew: 0 }).catch(() => undefined);
   revalidateMail();
   return result;
 }
