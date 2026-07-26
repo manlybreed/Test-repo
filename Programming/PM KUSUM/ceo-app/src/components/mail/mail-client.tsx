@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Archive as ArchiveIcon,
@@ -18,6 +19,7 @@ import {
   FileText,
   FolderInput,
   Inbox as InboxIcon,
+  ListChecks,
   Loader2,
   Mail as MailIcon,
   Maximize2,
@@ -33,6 +35,7 @@ import {
   Reply as ReplyIcon,
   ReplyAll as ReplyAllIcon,
   Send,
+  Settings,
   ShieldAlert,
   SlidersHorizontal,
   Sparkles,
@@ -1000,13 +1003,16 @@ function ReplyContextCard({
   message: MailMessageView;
   subject?: string;
 }) {
+  // Collapsed by default — this is quoted context, not the thing being
+  // written; expand on demand rather than eating vertical space up front.
+  const [open, setOpen] = useState(false);
   // Same rich rendering as the reader pane (sanitized HTML, dark-adapted) —
   // images/links intact instead of a stripped text dump.
   const html = prepareMailHtml(message.bodyHtml, message.bodyText, "dark");
   const who = message.fromName || message.fromAddress;
   return (
     <details
-      open
+      open={open}
       className="shrink-0 overflow-hidden rounded-xl"
       style={{
         background: "var(--bg-elevated)",
@@ -1016,14 +1022,29 @@ function ReplyContextCard({
       <summary
         className="flex cursor-pointer list-none items-center gap-2 px-3.5 py-2 text-sm"
         style={{ color: "var(--text-dim)" }}
+        onClick={(e) => {
+          e.preventDefault();
+          setOpen((v) => !v);
+          haptic("tap");
+        }}
       >
         <ReplyIcon size={14} style={{ color: "var(--accent-bright)" }} />
         <span className="font-semibold" style={{ color: "var(--text-muted)" }}>
           Replying to {who}
         </span>
         {subject ? <span className="truncate">· {subject}</span> : null}
-        <span className="ml-auto text-[0.65rem]" style={{ color: "var(--text-dim)" }}>
-          click to collapse
+        <span
+          className="ml-auto flex shrink-0 items-center gap-1 text-[0.65rem]"
+          style={{ color: "var(--text-dim)" }}
+        >
+          {open ? "Collapse" : "Show quoted message"}
+          <ChevronDown
+            size={13}
+            style={{
+              transform: open ? "rotate(180deg)" : "none",
+              transition: "transform 0.15s",
+            }}
+          />
         </span>
       </summary>
       {/* Scroll lives on this wrapper — .mail-message-body sets
@@ -1198,7 +1219,9 @@ export function MailClient({
   const [selectedThreadIds, setSelectedThreadIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const [selectModeEnabled, setSelectModeEnabled] = useState(false);
   const [showBulkMoveMenu, setShowBulkMoveMenu] = useState(false);
+  const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   const [activeSmartLabel, setActiveSmartLabel] = useState<SmartLabel | null>(
     null,
@@ -1232,7 +1255,8 @@ export function MailClient({
       !showMoreMenu &&
       !showPriorityMenu &&
       !showSchedule &&
-      !showBulkMoveMenu
+      !showBulkMoveMenu &&
+      !showSettingsMenu
     ) {
       return;
     }
@@ -1245,6 +1269,7 @@ export function MailClient({
       setShowPriorityMenu(false);
       setShowSchedule(false);
       setShowBulkMoveMenu(false);
+      setShowSettingsMenu(false);
     };
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
@@ -1255,6 +1280,7 @@ export function MailClient({
     showPriorityMenu,
     showSchedule,
     showBulkMoveMenu,
+    showSettingsMenu,
   ]);
 
   const systemFolders = useMemo(
@@ -2233,6 +2259,14 @@ export function MailClient({
 
   function clearThreadSelection() {
     setSelectedThreadIds(new Set());
+  }
+
+  function toggleSelectMode() {
+    haptic("tap");
+    setSelectModeEnabled((v) => {
+      if (v) setSelectedThreadIds(new Set()); // turning off clears any selection
+      return !v;
+    });
   }
 
   function bulkArchive() {
@@ -3445,52 +3479,112 @@ export function MailClient({
             </GhostBtn>
           </div>
 
-          <IconBtn
-            title="Auto-label rules"
-            icon={<SlidersHorizontal size={15} />}
-            onClick={() =>
-              startTransition(async () => {
+          <div className="relative" data-menu>
+            <IconBtn
+              title="Mail settings"
+              active={showSettingsMenu}
+              icon={<Settings size={15} />}
+              onClick={() => {
+                setShowSettingsMenu((v) => !v);
                 haptic("tap");
-                const rows = await listLabelRulesAction();
-                setLabelRules(rows);
-                setShowRules(true);
-              })
-            }
-          />
-          <IconBtn
-            title="Signatures"
-            icon={<PenLine size={15} />}
-            onClick={() => {
-              setShowSignatures(true);
-              haptic("tap");
-            }}
-          />
-          <IconBtn
-            title="Out of office"
-            icon={<Plane size={15} />}
-            onClick={() => {
-              setShowVacation(true);
-              haptic("tap");
-            }}
-          />
-          <IconBtn
-            title="Keyboard shortcuts (?)"
-            icon={<Keyboard size={15} />}
-            onClick={() => {
-              setShowShortcutHelp(true);
-              haptic("tap");
-            }}
-          />
-          <IconBtn
-            title={
-              desktopNotifsEnabled
-                ? "Desktop notifications on — click to turn off"
-                : "Turn on desktop notifications for new mail"
-            }
-            active={desktopNotifsEnabled}
-            icon={desktopNotifsEnabled ? <BellRing size={15} /> : <Bell size={15} />}
-            onClick={toggleDesktopNotifications}
-          />
+              }}
+            />
+            {showSettingsMenu && (
+              <ul
+                className="absolute right-0 z-20 mt-1 w-56 overflow-auto rounded-xl p-1 text-xs shadow-lg"
+                style={{
+                  background: "var(--bg-elevated)",
+                  border: "1px solid var(--border-strong)",
+                }}
+              >
+                <li>
+                  <button
+                    type="button"
+                    className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-left hover:bg-white/5"
+                    style={{ color: "var(--text)" }}
+                    onClick={() => {
+                      setShowSettingsMenu(false);
+                      startTransition(async () => {
+                        haptic("tap");
+                        const rows = await listLabelRulesAction();
+                        setLabelRules(rows);
+                        setShowRules(true);
+                      });
+                    }}
+                  >
+                    <SlidersHorizontal size={14} /> Auto-label rules
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-left hover:bg-white/5"
+                    style={{ color: "var(--text)" }}
+                    onClick={() => {
+                      setShowSettingsMenu(false);
+                      setShowSignatures(true);
+                      haptic("tap");
+                    }}
+                  >
+                    <PenLine size={14} /> Signatures
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-left hover:bg-white/5"
+                    style={{ color: "var(--text)" }}
+                    onClick={() => {
+                      setShowSettingsMenu(false);
+                      setShowVacation(true);
+                      haptic("tap");
+                    }}
+                  >
+                    <Plane size={14} /> Out of office
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-left hover:bg-white/5"
+                    style={{ color: "var(--text)" }}
+                    onClick={() => {
+                      setShowSettingsMenu(false);
+                      setShowShortcutHelp(true);
+                      haptic("tap");
+                    }}
+                  >
+                    <Keyboard size={14} /> Keyboard shortcuts
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-left hover:bg-white/5"
+                    style={{ color: "var(--text)" }}
+                    onClick={toggleDesktopNotifications}
+                  >
+                    {desktopNotifsEnabled ? (
+                      <BellRing size={14} />
+                    ) : (
+                      <Bell size={14} />
+                    )}
+                    Desktop notifications
+                    <span
+                      className="ml-auto text-[0.65rem] font-semibold"
+                      style={{
+                        color: desktopNotifsEnabled
+                          ? "#34d399"
+                          : "var(--text-dim)",
+                      }}
+                    >
+                      {desktopNotifsEnabled ? "On" : "Off"}
+                    </span>
+                  </button>
+                </li>
+              </ul>
+            )}
+          </div>
         </div>
       </motion.header>
 
@@ -4035,15 +4129,23 @@ export function MailClient({
               >
                 Threads
               </span>
-              <span
-                className="rounded-full px-2 py-0.5 text-[0.65rem] font-semibold"
-                style={{
-                  background: "var(--mail-purple-dim)",
-                  color: "#c4b5fd",
-                }}
-              >
-                {filteredThreads.length}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <span
+                  className="rounded-full px-2 py-0.5 text-[0.65rem] font-semibold"
+                  style={{
+                    background: "var(--mail-purple-dim)",
+                    color: "#c4b5fd",
+                  }}
+                >
+                  {filteredThreads.length}
+                </span>
+                <IconBtn
+                  title={selectModeEnabled ? "Done selecting" : "Select threads for bulk actions"}
+                  active={selectModeEnabled}
+                  icon={<ListChecks size={14} />}
+                  onClick={toggleSelectMode}
+                />
+              </div>
             </div>
             <div className="relative">
               <input
@@ -4201,38 +4303,40 @@ export function MailClient({
                     className={`mail-thread-card ${active ? "is-active" : ""} ${featured ? "is-featured" : ""}`}
                   >
                     <div className="flex items-start gap-2.5">
-                      <span
-                        role="checkbox"
-                        aria-checked={selectedThreadIds.has(t.id)}
-                        aria-label="Select thread"
-                        tabIndex={0}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleThreadSelected(t.id);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
+                      {(selectModeEnabled || selectedThreadIds.size > 0) && (
+                        <span
+                          role="checkbox"
+                          aria-checked={selectedThreadIds.has(t.id)}
+                          aria-label="Select thread"
+                          tabIndex={0}
+                          onClick={(e) => {
                             e.stopPropagation();
                             toggleThreadSelected(t.id);
-                          }
-                        }}
-                        className="mt-1.5 flex shrink-0 cursor-pointer items-center justify-center rounded"
-                        style={{
-                          width: 16,
-                          height: 16,
-                          border: selectedThreadIds.has(t.id)
-                            ? "none"
-                            : "1.5px solid var(--mail-border)",
-                          background: selectedThreadIds.has(t.id)
-                            ? "var(--accent-bright)"
-                            : "transparent",
-                        }}
-                      >
-                        {selectedThreadIds.has(t.id) && (
-                          <Check size={11} color="#fff" strokeWidth={3} />
-                        )}
-                      </span>
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              toggleThreadSelected(t.id);
+                            }
+                          }}
+                          className="mt-1.5 flex shrink-0 cursor-pointer items-center justify-center rounded"
+                          style={{
+                            width: 16,
+                            height: 16,
+                            border: selectedThreadIds.has(t.id)
+                              ? "none"
+                              : "1.5px solid var(--mail-border)",
+                            background: selectedThreadIds.has(t.id)
+                              ? "var(--accent-bright)"
+                              : "transparent",
+                          }}
+                        >
+                          {selectedThreadIds.has(t.id) && (
+                            <Check size={11} color="#fff" strokeWidth={3} />
+                          )}
+                        </span>
+                      )}
                       <div className="relative shrink-0">
                         {t.unreadCount > 0 && (
                           <span
@@ -5612,37 +5716,41 @@ export function MailClient({
         )}
       </AnimatePresence>
 
-      <AnimatePresence>
-        {pendingSend && (
-          <motion.div
-            key="undo-send-toast"
-            initial={{ opacity: 0, y: 20, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 20, scale: 0.96 }}
-            transition={spring}
-            className="fixed bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-full px-4 py-2.5 shadow-lg"
-            style={{
-              background: "var(--bg-elevated)",
-              border: "1px solid var(--border-strong)",
-            }}
-          >
-            <span className="text-sm" style={{ color: "var(--text)" }}>
-              Sending to {pendingSend.to}…
-            </span>
-            <button
-              type="button"
-              className="cursor-pointer rounded-full px-3 py-1 text-sm font-semibold"
-              style={{
-                background: "var(--mail-purple-dim)",
-                color: "#c4b5fd",
-              }}
-              onClick={undoSend}
-            >
-              Undo
-            </button>
-          </motion.div>
+      {typeof document !== "undefined" &&
+        createPortal(
+          <AnimatePresence>
+            {pendingSend && (
+              <motion.div
+                key="undo-send-toast"
+                initial={{ opacity: 0, y: 20, scale: 0.96, x: "-50%" }}
+                animate={{ opacity: 1, y: 0, scale: 1, x: "-50%" }}
+                exit={{ opacity: 0, y: 20, scale: 0.96, x: "-50%" }}
+                transition={spring}
+                className="fixed bottom-6 left-1/2 z-[200] flex items-center gap-3 rounded-full px-4 py-2.5 shadow-lg"
+                style={{
+                  background: "var(--bg-elevated)",
+                  border: "1px solid var(--border-strong)",
+                }}
+              >
+                <span className="text-sm" style={{ color: "var(--text)" }}>
+                  Sending to {pendingSend.to}…
+                </span>
+                <button
+                  type="button"
+                  className="cursor-pointer rounded-full px-3 py-1 text-sm font-semibold"
+                  style={{
+                    background: "var(--mail-purple-dim)",
+                    color: "#c4b5fd",
+                  }}
+                  onClick={undoSend}
+                >
+                  Undo
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>,
+          document.body,
         )}
-      </AnimatePresence>
     </div>
   );
 }
