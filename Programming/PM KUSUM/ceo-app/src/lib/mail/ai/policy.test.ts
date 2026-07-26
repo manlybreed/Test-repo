@@ -9,6 +9,7 @@ describe("AI-21 autonomy policy", () => {
   it("marks irreversible actions", () => {
     expect(isIrreversible("send")).toBe(true);
     expect(isIrreversible("create_task")).toBe(true);
+    expect(isIrreversible("vacation_responder")).toBe(true);
     expect(isIrreversible("label")).toBe(false);
   });
 

@@ -631,6 +631,111 @@ export async function deleteSignature(id: string) {
   return { ok: true };
 }
 
+export async function getVacationSettingsAction() {
+  const { account } = await requireAccount();
+  const row = await prisma.mailVacationResponder.findUnique({
+    where: { accountId: account.id },
+  });
+  if (!row) return null;
+  return {
+    enabled: row.enabled,
+    subject: row.subject,
+    message: row.message,
+    startDate: row.startDate,
+    endDate: row.endDate,
+    excludedSenders: JSON.parse(row.excludedSendersJson || "[]") as string[],
+  };
+}
+
+/**
+ * Saves vacation-responder settings and pushes/activates (or deactivates) the
+ * corresponding Sieve script via ManageSieve. See src/lib/mail/vacation.ts
+ * for the safeguards this enforces (mandatory expiry, exclusion list) —
+ * this is a destructive/irreversible-adjacent action per the mail feature
+ * plan's sign-off section, so every save requires explicit confirmation.
+ */
+export async function saveVacationSettingsAction(input: {
+  enabled: boolean;
+  subject: string;
+  message: string;
+  startDate: string;
+  endDate: string;
+  excludedSenders: string[];
+  confirmed: boolean;
+}) {
+  const { account } = await requireAccount();
+  if (!input.confirmed) {
+    throw new Error("Vacation responder changes require confirmation");
+  }
+  assertAutonomy("vacation_responder", { confirmed: true });
+
+  const startDate = new Date(input.startDate);
+  const endDate = new Date(input.endDate);
+
+  const { buildVacationSieveScript, VACATION_SCRIPT_NAME } = await import(
+    "@/lib/mail/vacation"
+  );
+  const { withManageSieve } = await import("@/lib/mail/managesieve");
+
+  if (input.enabled) {
+    // Throws (before touching the mail server) if the window is missing,
+    // backwards, or longer than the max — never "on indefinitely".
+    const script = buildVacationSieveScript({
+      subject: input.subject.trim() || "Out of office",
+      message: input.message.trim(),
+      startDate,
+      endDate,
+      excludedSenders: input.excludedSenders,
+      fromAddress: account.address,
+    });
+    await withManageSieve(async (client) => {
+      await client.putScript(VACATION_SCRIPT_NAME, script);
+      await client.setActive(VACATION_SCRIPT_NAME);
+    });
+  } else {
+    await withManageSieve(async (client) => {
+      await client.deactivateAll();
+    });
+  }
+
+  const row = await prisma.mailVacationResponder.upsert({
+    where: { accountId: account.id },
+    create: {
+      accountId: account.id,
+      enabled: input.enabled,
+      subject: input.subject.trim() || "Out of office",
+      message: input.message.trim(),
+      startDate,
+      endDate,
+      excludedSendersJson: JSON.stringify(input.excludedSenders),
+    },
+    update: {
+      enabled: input.enabled,
+      subject: input.subject.trim() || "Out of office",
+      message: input.message.trim(),
+      startDate,
+      endDate,
+      excludedSendersJson: JSON.stringify(input.excludedSenders),
+    },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      entityType: "MailVacationResponder",
+      entityId: row.id,
+      action: input.enabled ? "VACATION_ENABLED" : "VACATION_DISABLED",
+      afterJson: JSON.stringify({
+        enabled: input.enabled,
+        startDate: input.startDate,
+        endDate: input.endDate,
+      }),
+    },
+  });
+
+  revalidateMail();
+  return { ok: true as const };
+}
+
 export type ComposeAttachment = {
   /** Server-side storage path (never a client-supplied path). */
   path: string;

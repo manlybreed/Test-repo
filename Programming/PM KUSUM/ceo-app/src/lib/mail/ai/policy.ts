@@ -18,7 +18,8 @@ export type MailAction =
   | "calendar_invite"
   | "unsubscribe"
   | "block_sender"
-  | "create_task";
+  | "create_task"
+  | "vacation_responder";
 
 const IRREVERSIBLE: ReadonlySet<MailAction> = new Set([
   "send",
@@ -28,6 +29,7 @@ const IRREVERSIBLE: ReadonlySet<MailAction> = new Set([
   "unsubscribe",
   "block_sender",
   "create_task",
+  "vacation_responder",
 ]);
 
 export function isIrreversible(action: MailAction): boolean {
