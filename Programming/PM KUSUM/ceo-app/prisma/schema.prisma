@@ -808,6 +808,11 @@ model MailThread {
   labelsJson     String   @default("[]")
   snoozedUntil   DateTime?
   clientId       String?
+  /// When this thread's messages landed in Trash — set once, never bumped by
+  /// later syncs. Distinct from lastMessageAt (always the original
+  /// sent/received date): trashedAt is retention/"deleted N ago" metadata,
+  /// never the sort/display date shown in the thread list.
+  trashedAt      DateTime?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
   messages       MailMessage[]

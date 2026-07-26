@@ -409,7 +409,13 @@ export async function syncCeoMail(opts?: {
                   ),
                   lastMessageAt: date,
                   unreadCount: 0,
+                  trashedAt: role === "TRASH" ? new Date() : null,
                 },
+              });
+            } else if (role === "TRASH" && !thread.trashedAt) {
+              thread = await prisma.mailThread.update({
+                where: { id: thread.id },
+                data: { trashedAt: new Date() },
               });
             }
 
