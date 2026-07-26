@@ -26,6 +26,7 @@ import {
   MoreHorizontal,
   Paperclip,
   PenLine,
+  Plane,
   Save,
   SendHorizontal,
   RefreshCw,
@@ -50,6 +51,7 @@ import {
   SignaturesPanel,
   type SignatureRow,
 } from "@/components/mail/signatures-panel";
+import { VacationPanel } from "@/components/mail/vacation-panel";
 import { haptic } from "@/components/mail/haptics";
 import { buildFolderTree, type FolderTreeNode } from "@/lib/mail/folder-tree";
 import {
@@ -1060,6 +1062,7 @@ export function MailClient({
   const [accountInfo, setAccountInfo] = useState(account);
   const [sigList, setSigList] = useState<SignatureRow[]>(signatures);
   const [showSignatures, setShowSignatures] = useState(false);
+  const [showVacation, setShowVacation] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [composeHtml, setComposeHtml] = useState("");
@@ -3463,6 +3466,14 @@ export function MailClient({
             }}
           />
           <IconBtn
+            title="Out of office"
+            icon={<Plane size={15} />}
+            onClick={() => {
+              setShowVacation(true);
+              haptic("tap");
+            }}
+          />
+          <IconBtn
             title="Keyboard shortcuts (?)"
             icon={<Keyboard size={15} />}
             onClick={() => {
@@ -3549,6 +3560,8 @@ export function MailClient({
         signatures={sigList}
         onChange={setSigList}
       />
+
+      <VacationPanel open={showVacation} onClose={() => setShowVacation(false)} />
 
       <AnimatePresence>
         {showRules && (

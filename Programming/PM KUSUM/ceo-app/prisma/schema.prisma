@@ -772,6 +772,28 @@ model MailAccount {
   autonomy      MailAutonomySettings?
   blockedSenders BlockedSender[]
   contacts      MailContact[]
+  vacationResponder MailVacationResponder?
+}
+
+/// Out-of-office / vacation responder — a Sieve script pushed via ManageSieve.
+/// startDate/endDate are enforced INSIDE the generated Sieve script itself
+/// (not just app-side scheduling) so it self-expires at the mail-server level
+/// even if this app is offline. Never "on indefinitely" by design — see
+/// docs/mail-feature-parity-plan.md's destructive-action sign-off section.
+model MailVacationResponder {
+  id                  String   @id @default(cuid())
+  accountId           String   @unique
+  account             MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  enabled             Boolean  @default(false)
+  subject             String   @default("Out of office")
+  message             String
+  startDate           DateTime
+  endDate             DateTime
+  /// JSON string[] of sender/domain substrings never auto-replied to
+  /// (always includes sensible no-reply/mailing-list defaults).
+  excludedSendersJson String   @default("[]")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 }
 
 model MailFolder {

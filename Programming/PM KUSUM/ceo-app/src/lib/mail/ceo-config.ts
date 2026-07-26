@@ -4,6 +4,7 @@ export type CeoMailConfig = {
   smtpSecure: boolean;
   imapPort: number;
   imapSecure: boolean;
+  sievePort: number;
   user: string;
   pass: string;
   from: string;
@@ -26,6 +27,7 @@ export function getCeoMailConfig(): CeoMailConfig | null {
     process.env.CEO_MAIL_SMTP_SECURE === "true" || smtpPort === 465;
   const imapSecure =
     process.env.CEO_MAIL_IMAP_SECURE !== "false" && imapPort === 993;
+  const sievePort = Number(process.env.CEO_MAIL_SIEVE_PORT || "4190");
   const from =
     process.env.CEO_MAIL_FROM?.trim() || `"Akshay" <${user}>`;
 
@@ -35,6 +37,7 @@ export function getCeoMailConfig(): CeoMailConfig | null {
     smtpSecure,
     imapPort,
     imapSecure,
+    sievePort,
     user,
     pass,
     from,
