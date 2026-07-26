@@ -203,8 +203,11 @@ export async function queryThreadsForView(opts: {
   /** Curated Inbox: actionable / readable mail only */
   smartInbox?: boolean;
   take?: number;
-}): Promise<ThreadListRow[]> {
+  /** Page offset (non-search views only — search always returns its top-ranked take). */
+  skip?: number;
+}): Promise<{ rows: ThreadListRow[]; total: number }> {
   const take = opts.take ?? 150;
+  const skip = opts.skip ?? 0;
   const label = opts.label?.trim();
   const q = opts.query?.trim();
   const searchPlan = opts.searchPlan ?? null;
@@ -277,52 +280,42 @@ export async function queryThreadsForView(opts: {
 
   const searchAnd = q ? buildThreadSearchAnd(q, searchPlan) : [];
 
-  const threads = await prisma.mailThread.findMany({
-    where: q
-      ? {
-          accountId: opts.accountId,
-          AND: [
-            { OR: [{ snoozedUntil: null }, { snoozedUntil: { lt: new Date() } }] },
-            ...(folderId ? [{ messages: { some: { folderId } } }] : []),
-            ...(label ? [{ labelsJson: { contains: label } }] : []),
-            ...excludeSmartInbox,
-            ...smartInboxBulkGuard,
-            ...searchAnd,
-          ],
-        }
-      : {
-          accountId: opts.accountId,
-          AND: [
-            { OR: [{ snoozedUntil: null }, { snoozedUntil: { lt: new Date() } }] },
-            ...(folderId ? [{ messages: { some: { folderId } } }] : []),
-            ...(label ? [{ labelsJson: { contains: label } }] : []),
-            ...excludeSmartInbox,
-            ...smartInboxBulkGuard,
-          ],
-        },
-    orderBy: { lastMessageAt: "desc" },
-    // Search pulls a wider net then re-ranks by relevance
-    take: q
-      ? Math.min(take * 4, 320)
-      : smartInbox
-        ? Math.min(take * 5, 500)
-        : folderId
-          ? Math.min(take * 3, 400)
-          : take,
-    select: {
-      id: true,
-      subject: true,
-      snippet: true,
-      lastMessageAt: true,
-      trashedAt: true,
-      unreadCount: true,
-      priority: true,
-      important: true,
-      labelsJson: true,
-    },
-  });
+  const whereClause = {
+    accountId: opts.accountId,
+    AND: [
+      { OR: [{ snoozedUntil: null }, { snoozedUntil: { lt: new Date() } }] },
+      ...(folderId ? [{ messages: { some: { folderId } } }] : []),
+      ...(label ? [{ labelsJson: { contains: label } }] : []),
+      ...excludeSmartInbox,
+      ...smartInboxBulkGuard,
+      ...searchAnd,
+    ],
+  };
 
-  if (!threads.length) return [];
+  // Non-search views paginate for real (skip/take at the DB level); search
+  // pulls a wider net and re-ranks by relevance instead of paging.
+  const [threads, total] = await Promise.all([
+    prisma.mailThread.findMany({
+      where: whereClause,
+      orderBy: { lastMessageAt: "desc" },
+      skip: q ? undefined : skip,
+      take: q ? Math.min(take * 4, 320) : take,
+      select: {
+        id: true,
+        subject: true,
+        snippet: true,
+        lastMessageAt: true,
+        trashedAt: true,
+        unreadCount: true,
+        priority: true,
+        important: true,
+        labelsJson: true,
+      },
+    }),
+    q ? Promise.resolve(0) : prisma.mailThread.count({ where: whereClause }),
+  ]);
+
+  if (!threads.length) return { rows: [], total };
 
   const ids = threads.map((t) => t.id);
 
@@ -363,7 +356,7 @@ export async function queryThreadsForView(opts: {
     .filter((r): r is ThreadListRow => Boolean(r));
 
   if (q) {
-    return mapped
+    const rows = mapped
       .map((row) => ({
         row,
         score: scoreSearchHit({
@@ -385,14 +378,14 @@ export async function queryThreadsForView(opts: {
       })
       .slice(0, take)
       .map((x) => x.row);
+    return { rows, total: rows.length };
   }
 
-  return mapped
-    .sort(
-      (a, b) =>
-        new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime(),
-    )
-    .slice(0, take);
+  const rows = mapped.sort(
+    (a, b) =>
+      new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime(),
+  );
+  return { rows, total };
 }
 
 /** Prefer canonical system folder for a role (shortest path / exact name). */

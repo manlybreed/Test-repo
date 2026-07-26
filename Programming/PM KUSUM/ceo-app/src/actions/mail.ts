@@ -284,6 +284,8 @@ export async function unblockSenderAction(id: string) {
   revalidateMail();
 }
 
+const THREADS_PAGE_SIZE = 50;
+
 export async function listMailThreads(opts?: {
   folderId?: string;
   folderRole?: string;
@@ -292,20 +294,26 @@ export async function listMailThreads(opts?: {
   label?: string;
   /** Curated Inbox — excludes newsletters, receipts, list-unsubscribe bulk */
   smartInbox?: boolean;
+  /** 1-based page number for the thread list (ignored by priority filtering). */
+  page?: number;
+  pageSize?: number;
 }) {
   const { account } = await requireAccount();
-  const rows = await queryThreadsForView({
+  const pageSize = opts?.pageSize ?? THREADS_PAGE_SIZE;
+  const page = Math.max(1, opts?.page ?? 1);
+  const { rows, total } = await queryThreadsForView({
     accountId: account.id,
     folderId: opts?.folderId,
     folderRole: opts?.folderRole,
     label: opts?.label,
     smartInbox: opts?.smartInbox,
-    take: 150,
+    take: pageSize,
+    skip: (page - 1) * pageSize,
   });
-  if (opts?.priority) {
-    return rows.filter((r) => r.priority === opts.priority);
-  }
-  return rows;
+  const filtered = opts?.priority
+    ? rows.filter((r) => r.priority === opts.priority)
+    : rows;
+  return { rows: filtered, total, page, pageSize };
 }
 
 /**
@@ -324,7 +332,7 @@ export async function searchThreadsAction(query: string) {
 
   const plan = await expandSearchQuery(q);
 
-  let rows = await queryThreadsForView({
+  let { rows } = await queryThreadsForView({
     accountId: account.id,
     query: q,
     searchPlan: plan,
@@ -333,12 +341,12 @@ export async function searchThreadsAction(query: string) {
 
   // If AI concepts were too strict, relax to lexical-only
   if (!rows.length && plan.mustGroups.length > 1) {
-    rows = await queryThreadsForView({
+    ({ rows } = await queryThreadsForView({
       accountId: account.id,
       query: q,
       searchPlan: lexicalSearchPlan(q),
       take: 80,
-    });
+    }));
   }
 
   if (rows.length < 2) return rows;
@@ -775,7 +783,7 @@ export async function listDraftsAction() {
  */
 export async function listDraftsFolderAction(folderId: string) {
   const { account } = await requireAccount();
-  const [local, imapRows] = await Promise.all([
+  const [local, { rows: imapRows }] = await Promise.all([
     listLocalDrafts(account.id),
     queryThreadsForView({
       accountId: account.id,
@@ -1142,7 +1150,7 @@ export async function getMailBootstrap() {
     return { configured: false as const };
   }
   const inbox = await resolveSystemFolder(account.id, "INBOX");
-  const [foldersRaw, threads, signatures, reminders] = await Promise.all([
+  const [foldersRaw, { rows: threads }, signatures, reminders] = await Promise.all([
     prisma.mailFolder.findMany({
       where: { accountId: account.id },
       orderBy: { path: "asc" },
