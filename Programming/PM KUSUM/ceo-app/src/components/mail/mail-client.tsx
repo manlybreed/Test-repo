@@ -5391,6 +5391,11 @@ export function MailClient({
                   AI triage, summarize, draft, and ask sit on the right once a
                   conversation is open.
                 </p>
+                <GhostBtn onClick={composeNew} primary>
+                  <span className="flex items-center gap-1.5">
+                    <PenLine size={13} /> Write a new message
+                  </span>
+                </GhostBtn>
               </motion.div>
             )}
           </AnimatePresence>
