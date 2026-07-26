@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Archive as ArchiveIcon,
+  Bell,
   BellRing,
   CalendarClock,
   Check,
@@ -50,6 +51,7 @@ import {
   type SignatureRow,
 } from "@/components/mail/signatures-panel";
 import { haptic } from "@/components/mail/haptics";
+import { buildFolderTree, type FolderTreeNode } from "@/lib/mail/folder-tree";
 import {
   askMailAction,
   autocompleteAction,
@@ -208,6 +210,7 @@ function pickLabelFolders(folders: Folder[]): Folder[] {
     return (f.messageCount ?? 0) > 0;
   });
 }
+
 type Signature = { id: string; name: string; htmlBody: string; isDefault: boolean };
 type Reminder = {
   id: string;
@@ -1146,6 +1149,8 @@ export function MailClient({
     composeBaselineRef.current = vals;
   }
   const [liveConnected, setLiveConnected] = useState(false);
+  const [desktopNotifsEnabled, setDesktopNotifsEnabled] = useState(false);
+  const desktopNotifsRef = useRef(false);
   const [status, setStatus] = useState("");
   const [askQ, setAskQ] = useState("");
   const [askA, setAskA] = useState("");
@@ -1203,6 +1208,9 @@ export function MailClient({
   const [smartOpen, setSmartOpen] = useState(true);
   const [newLabelName, setNewLabelName] = useState("");
   const [showNewLabel, setShowNewLabel] = useState(false);
+  const [collapsedFolderKeys, setCollapsedFolderKeys] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [commitments, setCommitments] = useState<
     { title: string; dueAt?: string | null; priority?: string }[]
   >([]);
@@ -1253,6 +1261,10 @@ export function MailClient({
   const labelFolders = useMemo(
     () => pickLabelFolders(folderList),
     [folderList],
+  );
+  const labelFolderTree = useMemo(
+    () => buildFolderTree(labelFolders),
+    [labelFolders],
   );
 
   const defaultSig = useMemo(
@@ -2490,6 +2502,62 @@ export function MailClient({
     });
   }
 
+  function toggleFolderCollapsed(key: string) {
+    setCollapsedFolderKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  function renderFolderNode(node: FolderTreeNode<Folder>): React.ReactNode {
+    const hasChildren = node.children.length > 0;
+    const collapsed = collapsedFolderKeys.has(node.key);
+    return (
+      <div key={node.key}>
+        <div className="flex items-center gap-0.5" style={{ paddingLeft: node.depth * 12 }}>
+          {hasChildren ? (
+            <button
+              type="button"
+              className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded"
+              style={{ color: "var(--mail-dim)" }}
+              onClick={() => toggleFolderCollapsed(node.key)}
+            >
+              <ChevronRight
+                size={12}
+                style={{
+                  transform: collapsed ? "none" : "rotate(90deg)",
+                  transition: "transform 0.15s",
+                }}
+              />
+            </button>
+          ) : (
+            <span className="w-5 shrink-0" />
+          )}
+          <div className="min-w-0 flex-1">
+            {node.folder ? (
+              <FolderRow
+                name={node.label}
+                badge="Lbl"
+                active={node.folder.id === activeFolder && !activeSmartLabel}
+                onClick={() => selectFolder(node.folder!.id)}
+              />
+            ) : (
+              <p
+                className="truncate px-3 py-1.5 text-xs font-semibold"
+                style={{ color: "var(--mail-dim)" }}
+              >
+                {node.label}
+              </p>
+            )}
+          </div>
+        </div>
+        {hasChildren && !collapsed && node.children.map((c) => renderFolderNode(c))}
+      </div>
+    );
+  }
+
   function runCategorizeAll() {
     if (categorizing || syncing) return;
     haptic("tap");
@@ -3100,6 +3168,40 @@ export function MailClient({
     });
   }
 
+  // Desktop notifications are opt-in (explicit toggle click, not an
+  // unprompted permission request) — but once granted, stay on across visits.
+  useEffect(() => {
+    if (typeof Notification === "undefined") return;
+    setDesktopNotifsEnabled(Notification.permission === "granted");
+  }, []);
+  useEffect(() => {
+    desktopNotifsRef.current = desktopNotifsEnabled;
+  }, [desktopNotifsEnabled]);
+
+  function toggleDesktopNotifications() {
+    if (typeof Notification === "undefined") {
+      setStatus("Desktop notifications aren't supported in this browser");
+      haptic("warn");
+      return;
+    }
+    if (desktopNotifsEnabled) {
+      setDesktopNotifsEnabled(false);
+      setStatus("Desktop notifications off");
+      haptic("tap");
+      return;
+    }
+    void Notification.requestPermission().then((perm) => {
+      if (perm === "granted") {
+        setDesktopNotifsEnabled(true);
+        setStatus("Desktop notifications on — you'll be notified of new mail when this tab isn't focused");
+        haptic("success");
+      } else {
+        setStatus("Notifications blocked — allow them in your browser's site settings");
+        haptic("warn");
+      }
+    });
+  }
+
   // Live updates via IMAP IDLE → SSE (near real-time)
   useEffect(() => {
     if (!configured) return;
@@ -3133,11 +3235,31 @@ export function MailClient({
           const data = JSON.parse(msg.data) as {
             type?: string;
             imported?: number;
+            folderRole?: string;
           };
           if (data.type === "hello" || data.type === "ping") {
             setLiveConnected(true);
           }
-          if (data.type === "mail:updated") scheduleRefresh();
+          if (data.type === "mail:updated") {
+            scheduleRefresh();
+            if (
+              desktopNotifsRef.current &&
+              (data.imported ?? 0) > 0 &&
+              data.folderRole !== "SENT" &&
+              document.visibilityState !== "visible" &&
+              typeof Notification !== "undefined" &&
+              Notification.permission === "granted"
+            ) {
+              const n = new Notification("New mail", {
+                body: `${data.imported} new message${data.imported === 1 ? "" : "s"}`,
+                tag: "mail-update",
+              });
+              n.onclick = () => {
+                window.focus();
+                n.close();
+              };
+            }
+          }
           if (data.type === "mail:idle") {
             setLiveConnected(true);
             setStatus((s) => s || "Live · watching mailbox");
@@ -3347,6 +3469,16 @@ export function MailClient({
               setShowShortcutHelp(true);
               haptic("tap");
             }}
+          />
+          <IconBtn
+            title={
+              desktopNotifsEnabled
+                ? "Desktop notifications on — click to turn off"
+                : "Turn on desktop notifications for new mail"
+            }
+            active={desktopNotifsEnabled}
+            icon={desktopNotifsEnabled ? <BellRing size={15} /> : <Bell size={15} />}
+            onClick={toggleDesktopNotifications}
           />
         </div>
       </motion.header>
@@ -3784,15 +3916,7 @@ export function MailClient({
                   </GhostBtn>
                 </div>
               )}
-              {labelFolders.map((f) => (
-                <FolderRow
-                  key={f.id}
-                  name={f.name}
-                  badge="Lbl"
-                  active={f.id === activeFolder && !activeSmartLabel}
-                  onClick={() => selectFolder(f.id)}
-                />
-              ))}
+              {labelFolderTree.map((n) => renderFolderNode(n))}
               {!labelFolders.length && !showNewLabel && (
                 <p className="px-2 py-2 text-[0.7rem]" style={{ color: "var(--mail-dim)" }}>
                   No custom labels yet
