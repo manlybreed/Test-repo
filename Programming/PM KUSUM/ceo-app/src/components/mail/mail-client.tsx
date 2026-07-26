@@ -18,6 +18,7 @@ import {
   Clock3,
   FileText,
   FolderInput,
+  Forward as ForwardIcon,
   Inbox as InboxIcon,
   ListChecks,
   Loader2,
@@ -4979,10 +4980,6 @@ export function MailClient({
                             >
                               {[
                                 {
-                                  label: "Forward",
-                                  onClick: composeForward,
-                                },
-                                {
                                   label: "Triage",
                                   onClick: runTriage,
                                 },
@@ -5112,6 +5109,12 @@ export function MailClient({
                             setComposeFullscreen(true);
                             haptic("tap");
                           }}
+                        />
+                        <IconBtn
+                          size="lg"
+                          title="Forward (F)"
+                          icon={<ForwardIcon size={15} />}
+                          onClick={composeForward}
                         />
                       </>
                     )}
