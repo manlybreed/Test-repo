@@ -56,6 +56,7 @@ import {
 } from "@/components/mail/signatures-panel";
 import { VacationPanel } from "@/components/mail/vacation-panel";
 import { haptic } from "@/components/mail/haptics";
+import { playSendSound } from "@/components/mail/sound";
 import { buildFolderTree, type FolderTreeNode } from "@/lib/mail/folder-tree";
 import {
   askMailAction,
@@ -643,7 +644,7 @@ function IconBtn({
 }: {
   icon: React.ReactNode;
   title: string;
-  onClick: () => void;
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
   disabled?: boolean;
   danger?: boolean;
   active?: boolean;
@@ -661,9 +662,9 @@ function IconBtn({
       whileHover={{ y: -1, scale: 1.06 }}
       whileTap={{ scale: 0.9 }}
       transition={spring}
-      onClick={() => {
+      onClick={(e) => {
         haptic(danger ? "warn" : "tap");
-        onClick();
+        onClick(e);
       }}
       className={`flex ${dim} shrink-0 cursor-pointer items-center justify-center rounded-full disabled:cursor-not-allowed disabled:opacity-40 ${primary ? "mail-cta-primary" : ""}`}
       style={
@@ -1127,6 +1128,11 @@ export function MailClient({
   const pendingSendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
+  const [sendFlyAnim, setSendFlyAnim] = useState<{
+    id: number;
+    x: number;
+    y: number;
+  } | null>(null);
   /** Visible Sync / Categorize progress (bar under header). */
   const [jobProgress, setJobProgress] = useState<{
     kind: "sync" | "categorize";
@@ -2094,7 +2100,7 @@ export function MailClient({
     if (e.dataTransfer.files?.length) onPickAttachments(e.dataTransfer.files);
   }
 
-  function sendCurrentDraft() {
+  function sendCurrentDraft(e?: React.MouseEvent<HTMLButtonElement>) {
     const recipients = splitAddrs(to);
     if (!recipients.length) {
       setStatus("Add at least one To recipient");
@@ -2109,6 +2115,7 @@ export function MailClient({
       haptic("warn");
       return;
     }
+    const clickPos = e ? { x: e.clientX, y: e.clientY } : null;
 
     // Do not use startTransition here — long SMTP work would disable every action button
     const headers = currentReplyHeaders();
@@ -2148,6 +2155,10 @@ export function MailClient({
         setComposeBrief("");
         setSendAtLocal("");
         haptic("success");
+        playSendSound();
+        if (clickPos) {
+          setSendFlyAnim({ id: Date.now(), ...clickPos });
+        }
 
         if (!scheduledIso) {
           // Undo-Send window — held QUEUED server-side; this client timer
@@ -5746,6 +5757,40 @@ export function MailClient({
                 >
                   Undo
                 </button>
+              </motion.div>
+            )}
+          </AnimatePresence>,
+          document.body,
+        )}
+
+      {typeof document !== "undefined" &&
+        createPortal(
+          <AnimatePresence>
+            {sendFlyAnim && (
+              <motion.div
+                key={sendFlyAnim.id}
+                initial={{
+                  opacity: 1,
+                  scale: 1,
+                  rotate: -8,
+                  x: sendFlyAnim.x,
+                  y: sendFlyAnim.y,
+                }}
+                animate={{
+                  opacity: 0,
+                  scale: 0.4,
+                  rotate: 35,
+                  x: sendFlyAnim.x + 160,
+                  y: sendFlyAnim.y - 180,
+                }}
+                transition={{ duration: 0.7, ease: "easeIn" }}
+                onAnimationComplete={() =>
+                  setSendFlyAnim((p) => (p?.id === sendFlyAnim.id ? null : p))
+                }
+                className="fixed left-0 top-0 z-[300]"
+                style={{ pointerEvents: "none" }}
+              >
+                <SendHorizontal size={22} style={{ color: "var(--accent-bright)" }} />
               </motion.div>
             )}
           </AnimatePresence>,
