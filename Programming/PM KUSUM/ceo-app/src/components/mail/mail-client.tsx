@@ -4421,6 +4421,7 @@ export function MailClient({
                     type="button"
                     whileTap={{ scale: 0.985 }}
                     onClick={() => openThread(t.id)}
+                    aria-label={`${sender}: ${t.subject || "(no subject)"}`}
                     className={`mail-thread-card ${active ? "is-active" : ""} ${featured ? "is-featured" : ""}`}
                   >
                     <div className="flex items-start gap-2.5">
@@ -4428,7 +4429,7 @@ export function MailClient({
                         <span
                           role="checkbox"
                           aria-checked={selectedThreadIds.has(t.id)}
-                          aria-label="Select thread"
+                          aria-label={`Select thread: ${sender}: ${t.subject || "(no subject)"}`}
                           tabIndex={0}
                           onClick={(e) => {
                             e.stopPropagation();
@@ -5444,8 +5445,8 @@ export function MailClient({
                   Select a thread
                 </p>
                 <p className="max-w-xs text-xs" style={{ color: "var(--text-dim)" }}>
-                  AI triage, summarize, draft, and ask sit on the right once a
-                  conversation is open.
+                  AI triage, summarize, draft, and ask all sit on the right
+                  once a conversation is open.
                 </p>
                 <GhostBtn onClick={composeNew} primary>
                   <span className="flex items-center gap-1.5">
