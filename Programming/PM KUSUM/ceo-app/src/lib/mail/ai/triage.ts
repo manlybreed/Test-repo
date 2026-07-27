@@ -2,8 +2,10 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { claudeJson, fenceMailData, getAnthropic } from "@/lib/mail/ai/claude";
 import { checkAutonomy } from "@/lib/mail/ai/policy";
+import { matchesLabelRule } from "@/lib/mail/ai/label-rules";
 import {
   hasSmartLabel,
+  isSmartLabel,
   mergeSmartLabels,
   parseLabelsJson,
   refineSmartLabels,
@@ -19,6 +21,38 @@ const TriageSchema = z.object({
 });
 
 export type TriageResult = z.infer<typeof TriageSchema>;
+
+/**
+ * Per-account learned corrections (MailLabelRule rows with isSmartLabel:
+ * true) are one more deterministic guardrail after the model — same spirit
+ * as refineSmartLabels above, but scoped to what this account's user has
+ * explicitly corrected before rather than global heuristics.
+ *
+ * This isn't optional polish: without it, a standing correction rule added
+ * via applyStandingLabelRules at ingest gets silently wiped by this very
+ * function's mergeSmartLabels call on the very next triage pass (sync.ts
+ * runs applyStandingLabelRules before triageNewThreads for the same new
+ * thread). A correction that's supposed to "stick for future mail" has to
+ * be consulted here, not bolted on independently.
+ */
+async function applySmartLabelCorrections(
+  accountId: string,
+  ctx: { subject: string; fromAddresses: string[] },
+  fallback: SmartLabel[],
+): Promise<SmartLabel[]> {
+  const rules = await prisma.mailLabelRule.findMany({
+    where: { accountId, enabled: true, isSmartLabel: true },
+    orderBy: { sortOrder: "asc" },
+  });
+  for (const rule of rules) {
+    if (!isSmartLabel(rule.label)) continue;
+    const matches = ctx.fromAddresses.some((from) =>
+      matchesLabelRule(rule, { from, subject: ctx.subject }),
+    );
+    if (matches) return [rule.label];
+  }
+  return fallback;
+}
 
 async function alreadyTriaged(threadId: string): Promise<boolean> {
   const cached = await prisma.mailAiCache.findFirst({
@@ -168,13 +202,18 @@ Hard rules:
   const parsed = TriageSchema.safeParse(raw);
   if (!parsed.success) return null;
 
-  const refined = refineSmartLabels(parsed.data.labels, {
+  let refined = refineSmartLabels(parsed.data.labels, {
     subject: thread.subject,
     text: corpus.text,
     fromAddresses: corpus.fromAddresses,
     myAddress: thread.account.address,
     hasListUnsubscribe: corpus.hasListUnsubscribe,
   });
+
+  refined = await applySmartLabelCorrections(thread.accountId, {
+    subject: thread.subject,
+    fromAddresses: corpus.fromAddresses,
+  }, refined);
 
   // Keep model priority, but nudge obvious test/noise to P4
   let priority = parsed.data.priority;
@@ -308,13 +347,18 @@ export async function repairSmartLabels(opts: {
     if (!smart.length) continue;
 
     const corpus = triageCorpus(t.messages);
-    const refined = refineSmartLabels(smart, {
+    let refined = refineSmartLabels(smart, {
       subject: t.subject,
       text: corpus.text,
       fromAddresses: corpus.fromAddresses,
       myAddress: t.account.address,
       hasListUnsubscribe: corpus.hasListUnsubscribe,
     });
+    refined = await applySmartLabelCorrections(
+      opts.accountId,
+      { subject: t.subject, fromAddresses: corpus.fromAddresses },
+      refined,
+    );
 
     const before = smart.slice().sort().join(",");
     const after = refined.slice().sort().join(",");

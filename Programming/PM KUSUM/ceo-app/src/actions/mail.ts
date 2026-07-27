@@ -17,6 +17,19 @@ import {
 } from "@/lib/mail/ai/triage";
 import { createMailLabel } from "@/lib/mail/labels";
 import {
+  findMatchingExistingThreads,
+  applyLabelRuleRetroactively,
+  undoSmartLabelRetroactive,
+  type MatchingThreadPreview,
+  type SmartLabelSnapshotItem,
+} from "@/lib/mail/ai/label-rules";
+import { suggestLabelMatchCriteria } from "@/lib/mail/ai/label-correction";
+import {
+  isSmartLabel,
+  mergeSmartLabels,
+  parseLabelsJson,
+} from "@/lib/mail/ai/smart-labels";
+import {
   archiveMailThread,
   archiveMailThreads,
   markInboxMessagesSeen,
@@ -1380,6 +1393,9 @@ export async function upsertLabelRuleAction(input: {
   fromContains?: string;
   subjectContains?: string;
   enabled?: boolean;
+  isSmartLabel?: boolean;
+  sourceThreadId?: string;
+  origin?: "manual" | "correction";
 }) {
   const { account } = await requireAccount();
   return prisma.mailLabelRule.create({
@@ -1388,6 +1404,9 @@ export async function upsertLabelRuleAction(input: {
       name: input.name,
       label: input.label,
       enabled: input.enabled ?? true,
+      isSmartLabel: input.isSmartLabel ?? false,
+      sourceThreadId: input.sourceThreadId,
+      origin: input.origin ?? "manual",
       matchJson: JSON.stringify({
         fromContains: input.fromContains,
         subjectContains: input.subjectContains,
@@ -1403,6 +1422,238 @@ export async function deleteLabelRuleAction(ruleId: string) {
   });
   revalidateMail();
   return { ok: true as const };
+}
+
+/** Correct a thread's AI smart-label classification (Banking → Receipt, etc). */
+export async function correctSmartLabelAction(
+  threadId: string,
+  newLabel: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { account } = await requireAccount();
+  if (!isSmartLabel(newLabel)) return { ok: false, error: "Unknown label" };
+  assertAutonomy("label");
+
+  const thread = await prisma.mailThread.findFirst({
+    where: { id: threadId, accountId: account.id },
+    select: { labelsJson: true },
+  });
+  if (!thread) return { ok: false, error: "Thread not found" };
+
+  await prisma.mailThread.update({
+    where: { id: threadId },
+    data: {
+      labelsJson: JSON.stringify(
+        mergeSmartLabels(parseLabelsJson(thread.labelsJson), [newLabel]),
+      ),
+    },
+  });
+  // Bust stale triage cache so a later re-triage doesn't immediately re-run
+  // against cached output that predates this correction.
+  await prisma.mailAiCache
+    .deleteMany({ where: { threadId, kind: "TRIAGE" } })
+    .catch(() => undefined);
+  revalidateMail();
+  return { ok: true };
+}
+
+export type LabelCorrectionSuggestion = {
+  fromContains: string | null;
+  subjectContains: string | null;
+  ruleName: string;
+  previewCount: number;
+  previewCapped: boolean;
+  previewThreads: MatchingThreadPreview[];
+};
+
+/**
+ * After a single-thread label correction (either "Move to…" or a smart-label
+ * fix), ask Claude what makes that email generalizable, then look up real
+ * existing matches — the live preview shown before the user opts into
+ * anything. Returns null when nothing generalizes (a one-off email), in
+ * which case the UI shows no suggestion at all.
+ */
+export async function suggestLabelCorrectionAction(input: {
+  threadId: string;
+  targetLabel: string;
+}): Promise<LabelCorrectionSuggestion | null> {
+  const { account } = await requireAccount();
+
+  const latest = await prisma.mailMessage.findFirst({
+    where: { threadId: input.threadId, accountId: account.id },
+    orderBy: { date: "desc" },
+    select: { fromAddress: true, subject: true, snippet: true, bodyText: true },
+  });
+  if (!latest) return null;
+
+  const criteria = await suggestLabelMatchCriteria({
+    fromAddress: latest.fromAddress,
+    subject: latest.subject,
+    snippet: latest.snippet || latest.bodyText?.slice(0, 400) || undefined,
+    targetLabel: input.targetLabel,
+  });
+  if (!criteria) return null;
+
+  const rule = {
+    matchJson: JSON.stringify({
+      fromContains: criteria.fromContains,
+      subjectContains: criteria.subjectContains,
+    }),
+  };
+  // Ask for one past the cap so we know whether it was actually capped,
+  // rather than silently under-reporting "200" when there were exactly 200.
+  const matches = await findMatchingExistingThreads(account.id, rule, {
+    excludeThreadId: input.threadId,
+    limit: 201,
+  });
+  const previewCapped = matches.length > 200;
+  const trimmed = matches.slice(0, 200);
+
+  return {
+    fromContains: criteria.fromContains,
+    subjectContains: criteria.subjectContains,
+    ruleName: criteria.ruleName,
+    previewCount: trimmed.length,
+    previewCapped,
+    previewThreads: trimmed.slice(0, 5),
+  };
+}
+
+export type LabelCorrectionSnapshot =
+  | {
+      kind: "folder";
+      folderId: string;
+      folderName: string;
+      items: { threadId: string; previousFolderId: string }[];
+    }
+  | { kind: "smart"; items: SmartLabelSnapshotItem[] };
+
+/**
+ * Apply a label correction beyond the single thread it started from:
+ * retroactively relabel/move matching existing mail, and/or create a
+ * standing rule so future mail gets the same treatment. Both are opt-in —
+ * the caller only sets applyRetroactively/createStandingRule true in
+ * response to an explicit user click, never automatically.
+ */
+export async function applyLabelCorrectionAction(input: {
+  targetLabel: string;
+  isSmartLabel: boolean;
+  fromContains: string | null;
+  subjectContains: string | null;
+  ruleName: string;
+  sourceThreadId: string;
+  applyRetroactively: boolean;
+  createStandingRule: boolean;
+  /** Required for custom-label corrections (the destination folder). */
+  folderId?: string;
+  folderName?: string;
+}): Promise<{ snapshot: LabelCorrectionSnapshot | null; ruleCreated: boolean }> {
+  const { account } = await requireAccount();
+  const rule = {
+    matchJson: JSON.stringify({
+      fromContains: input.fromContains,
+      subjectContains: input.subjectContains,
+    }),
+  };
+
+  let snapshot: LabelCorrectionSnapshot | null = null;
+
+  if (input.applyRetroactively) {
+    if (input.isSmartLabel) {
+      assertAutonomy("label");
+      const { snapshot: items } = await applyLabelRuleRetroactively(account.id, rule, {
+        label: input.targetLabel,
+        excludeThreadId: input.sourceThreadId,
+      });
+      if (items.length) snapshot = { kind: "smart", items };
+    } else {
+      if (!input.folderId) throw new Error("Missing target folder");
+      assertAutonomy("move");
+      const matches = await findMatchingExistingThreads(account.id, rule, {
+        excludeThreadId: input.sourceThreadId,
+      });
+      if (matches.length) {
+        const matchIds = matches.map((m) => m.id);
+        const withFolder = await prisma.mailMessage.findMany({
+          where: { threadId: { in: matchIds } },
+          orderBy: { date: "desc" },
+          select: { threadId: true, folderId: true },
+        });
+        const previousFolderByThread = new Map<string, string>();
+        for (const m of withFolder) {
+          if (!previousFolderByThread.has(m.threadId)) {
+            previousFolderByThread.set(m.threadId, m.folderId);
+          }
+        }
+        await moveMailThreadsToFolder({
+          accountId: account.id,
+          threadIds: matchIds,
+          folderId: input.folderId,
+        });
+        snapshot = {
+          kind: "folder",
+          folderId: input.folderId,
+          folderName: input.folderName || "",
+          items: matchIds
+            .filter((id) => previousFolderByThread.has(id))
+            .map((id) => ({
+              threadId: id,
+              previousFolderId: previousFolderByThread.get(id)!,
+            })),
+        };
+      }
+    }
+  }
+
+  let ruleCreated = false;
+  if (input.createStandingRule) {
+    assertAutonomy(input.isSmartLabel ? "label" : "move");
+    await upsertLabelRuleAction({
+      name: input.ruleName,
+      label: input.targetLabel,
+      fromContains: input.fromContains || undefined,
+      subjectContains: input.subjectContains || undefined,
+      isSmartLabel: input.isSmartLabel,
+      sourceThreadId: input.sourceThreadId,
+      origin: "correction",
+    });
+    ruleCreated = true;
+  }
+
+  revalidateMail();
+  return { snapshot, ruleCreated };
+}
+
+/** Reverse a previous applyLabelCorrectionAction using its returned snapshot. */
+export async function undoLabelCorrectionAction(
+  snapshot: LabelCorrectionSnapshot,
+): Promise<{ restored: number }> {
+  const { account } = await requireAccount();
+
+  if (snapshot.kind === "smart") {
+    const result = await undoSmartLabelRetroactive(snapshot.items);
+    revalidateMail();
+    return result;
+  }
+
+  const byFolder = new Map<string, string[]>();
+  for (const item of snapshot.items) {
+    const list = byFolder.get(item.previousFolderId) || [];
+    list.push(item.threadId);
+    byFolder.set(item.previousFolderId, list);
+  }
+
+  let restored = 0;
+  for (const [folderId, threadIds] of byFolder) {
+    try {
+      await moveMailThreadsToFolder({ accountId: account.id, threadIds, folderId });
+      restored += threadIds.length;
+    } catch {
+      // Best-effort: a thread may have been independently moved/deleted
+      // since — don't fail the whole undo batch over one group.
+    }
+  }
+  revalidateMail();
+  return { restored };
 }
 
 export async function getMailBootstrap() {

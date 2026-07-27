@@ -119,6 +119,11 @@ import {
   setThreadImportant,
   listTasksForThreadAction,
   blockSenderAction,
+  correctSmartLabelAction,
+  suggestLabelCorrectionAction,
+  applyLabelCorrectionAction,
+  undoLabelCorrectionAction,
+  type LabelCorrectionSnapshot,
 } from "@/actions/mail";
 import {
   DEFAULT_DRAFT_TONE,
@@ -130,6 +135,7 @@ import {
   SMART_LABEL_META,
   mergeSmartLabels,
   parseLabelsJson,
+  isSmartLabel,
   type SmartLabel,
 } from "@/lib/mail/ai/smart-labels";
 
@@ -222,6 +228,30 @@ function pickLabelFolders(folders: Folder[]): Folder[] {
     return (f.messageCount ?? 0) > 0;
   });
 }
+
+/**
+ * State for the post-correction suggestion toast — shown after either
+ * "Move to…" (custom label) or a smart-label chip correction, offering to
+ * (a) retroactively apply to existing similar mail and/or (b) create a
+ * standing rule for future mail. Nothing here ever executes automatically;
+ * every field beyond the base suggestion is filled in only after an
+ * explicit button click.
+ */
+type LabelSuggestionState = {
+  sourceThreadId: string;
+  targetLabel: string;
+  targetLabelDisplay: string;
+  isSmartLabel: boolean;
+  fromContains: string | null;
+  subjectContains: string | null;
+  ruleName: string;
+  folderId?: string;
+  folderName?: string;
+  previewCount: number;
+  previewCapped: boolean;
+  applyResult?: { count: number; snapshot: LabelCorrectionSnapshot | null };
+  ruleCreated?: boolean;
+};
 
 type Signature = { id: string; name: string; htmlBody: string; isDefault: boolean };
 type Reminder = {
@@ -1288,7 +1318,15 @@ export function MailClient({
   >([]);
   const [showRules, setShowRules] = useState(false);
   const [labelRules, setLabelRules] = useState<
-    { id: string; name: string; label: string; matchJson: string; enabled: boolean }[]
+    {
+      id: string;
+      name: string;
+      label: string;
+      matchJson: string;
+      enabled: boolean;
+      origin?: string;
+      sourceThreadId?: string | null;
+    }[]
   >([]);
   const [ruleDraft, setRuleDraft] = useState({
     name: "",
@@ -1296,6 +1334,15 @@ export function MailClient({
     fromContains: "",
     subjectContains: "",
   });
+  /** Post-correction "apply to similar / always do this" toast. */
+  const [labelSuggestion, setLabelSuggestion] = useState<LabelSuggestionState | null>(
+    null,
+  );
+  const labelSuggestionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  /** Which smart-label chip's correction popover is open, keyed by its current label value. */
+  const [smartLabelMenuFor, setSmartLabelMenuFor] = useState<string | null>(null);
   const [digest, setDigest] = useState("");
   const [showCompose, setShowCompose] = useState(false);
   // Bring the inline reply card into view when it opens (after layout settles).
@@ -1357,7 +1404,8 @@ export function MailClient({
       !showPriorityMenu &&
       !showSchedule &&
       !showBulkMoveMenu &&
-      !showSettingsMenu
+      !showSettingsMenu &&
+      !smartLabelMenuFor
     ) {
       return;
     }
@@ -1371,6 +1419,7 @@ export function MailClient({
       setShowSchedule(false);
       setShowBulkMoveMenu(false);
       setShowSettingsMenu(false);
+      setSmartLabelMenuFor(null);
     };
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
@@ -1382,6 +1431,7 @@ export function MailClient({
     showSchedule,
     showBulkMoveMenu,
     showSettingsMenu,
+    smartLabelMenuFor,
   ]);
 
   const systemFolders = useMemo(
@@ -2395,6 +2445,144 @@ export function MailClient({
     }
     haptic("tap");
     flushPendingSendNow(pendingSend.outboxId);
+  }
+
+  function resetLabelSuggestionTimer() {
+    if (labelSuggestionTimerRef.current) {
+      clearTimeout(labelSuggestionTimerRef.current);
+    }
+    labelSuggestionTimerRef.current = setTimeout(() => {
+      setLabelSuggestion(null);
+      labelSuggestionTimerRef.current = null;
+    }, 15000);
+  }
+
+  function openLabelSuggestion(state: LabelSuggestionState) {
+    setLabelSuggestion(state);
+    resetLabelSuggestionTimer();
+  }
+
+  function dismissLabelSuggestion() {
+    if (labelSuggestionTimerRef.current) {
+      clearTimeout(labelSuggestionTimerRef.current);
+      labelSuggestionTimerRef.current = null;
+    }
+    setLabelSuggestion(null);
+  }
+
+  /** Fire-and-forget: ask whether this correction generalizes, and if so, offer it. Never blocks the fast single-thread path that triggered it. */
+  function maybeSuggestLabelCorrection(threadId: string, targetLabel: string, base: {
+    isSmartLabel: boolean;
+    targetLabelDisplay: string;
+    folderId?: string;
+    folderName?: string;
+  }) {
+    void suggestLabelCorrectionAction({ threadId, targetLabel }).then((res) => {
+      if (!res) return;
+      openLabelSuggestion({
+        sourceThreadId: threadId,
+        targetLabel,
+        targetLabelDisplay: base.targetLabelDisplay,
+        isSmartLabel: base.isSmartLabel,
+        fromContains: res.fromContains,
+        subjectContains: res.subjectContains,
+        ruleName: res.ruleName,
+        folderId: base.folderId,
+        folderName: base.folderName,
+        previewCount: res.previewCount,
+        previewCapped: res.previewCapped,
+      });
+    });
+  }
+
+  function correctSmartLabel(threadId: string, oldLabel: string, newLabel: SmartLabel) {
+    setSmartLabelMenuFor(null);
+    if (newLabel === oldLabel) return;
+    startTransition(async () => {
+      const res = await correctSmartLabelAction(threadId, newLabel);
+      if (!res.ok) {
+        setStatus(res.error);
+        haptic("warn");
+        return;
+      }
+      haptic("success");
+      setStatus(`Labeled ${SMART_LABEL_META[newLabel].label}`);
+      await reloadActiveViewRef.current();
+      maybeSuggestLabelCorrection(threadId, newLabel, {
+        isSmartLabel: true,
+        targetLabelDisplay: SMART_LABEL_META[newLabel].label,
+      });
+    });
+  }
+
+  function applyLabelSuggestionRetroactive() {
+    if (!labelSuggestion) return;
+    const s = labelSuggestion;
+    startTransition(async () => {
+      const res = await applyLabelCorrectionAction({
+        targetLabel: s.targetLabel,
+        isSmartLabel: s.isSmartLabel,
+        fromContains: s.fromContains,
+        subjectContains: s.subjectContains,
+        ruleName: s.ruleName,
+        sourceThreadId: s.sourceThreadId,
+        applyRetroactively: true,
+        createStandingRule: false,
+        folderId: s.folderId,
+        folderName: s.folderName,
+      });
+      const count = res.snapshot?.items.length ?? 0;
+      haptic("success");
+      setLabelSuggestion((prev) =>
+        prev && prev.sourceThreadId === s.sourceThreadId
+          ? { ...prev, applyResult: { count, snapshot: res.snapshot } }
+          : prev,
+      );
+      resetLabelSuggestionTimer();
+      if (count) void reloadActiveViewRef.current();
+    });
+  }
+
+  function alwaysApplyLabelSuggestion() {
+    if (!labelSuggestion) return;
+    const s = labelSuggestion;
+    startTransition(async () => {
+      const res = await applyLabelCorrectionAction({
+        targetLabel: s.targetLabel,
+        isSmartLabel: s.isSmartLabel,
+        fromContains: s.fromContains,
+        subjectContains: s.subjectContains,
+        ruleName: s.ruleName,
+        sourceThreadId: s.sourceThreadId,
+        applyRetroactively: false,
+        createStandingRule: true,
+        folderId: s.folderId,
+        folderName: s.folderName,
+      });
+      haptic("success");
+      setLabelSuggestion((prev) =>
+        prev && prev.sourceThreadId === s.sourceThreadId
+          ? { ...prev, ruleCreated: res.ruleCreated }
+          : prev,
+      );
+      resetLabelSuggestionTimer();
+    });
+  }
+
+  function undoLabelSuggestionApply() {
+    const snapshot = labelSuggestion?.applyResult?.snapshot;
+    if (!snapshot) return;
+    if (labelSuggestionTimerRef.current) {
+      clearTimeout(labelSuggestionTimerRef.current);
+      labelSuggestionTimerRef.current = null;
+    }
+    setLabelSuggestion(null);
+    startTransition(async () => {
+      await undoLabelCorrectionAction(snapshot);
+      setStatus("Undone");
+      haptic("success");
+      void reloadActiveViewRef.current();
+    });
   }
 
   function archiveSelected() {
@@ -4118,8 +4306,20 @@ export function MailClient({
                     }}
                   >
                     <div>
-                      <div className="font-medium" style={{ color: "var(--text)" }}>
+                      <div className="flex items-center gap-1.5 font-medium" style={{ color: "var(--text)" }}>
                         {r.name} → {r.label}
+                        {r.origin === "correction" && (
+                          <span
+                            title="Created automatically from a label correction"
+                            className="rounded-full px-1.5 py-0.5 text-[0.6rem] font-normal"
+                            style={{
+                              background: "var(--mail-purple-dim)",
+                              color: "#c4b5fd",
+                            }}
+                          >
+                            learned
+                          </span>
+                        )}
                       </div>
                       <div className="text-[0.65rem]" style={{ color: "var(--text-dim)" }}>
                         {r.matchJson}
@@ -4918,14 +5118,63 @@ export function MailClient({
                           const lt = labelTone(l);
                           const pretty =
                             SMART_LABEL_META[l as SmartLabel]?.label || l;
+                          if (!isSmartLabel(l)) {
+                            return (
+                              <span
+                                key={l}
+                                className="mail-tag"
+                                style={{ background: lt.bg, color: lt.fg }}
+                              >
+                                {pretty}
+                              </span>
+                            );
+                          }
+                          // Smart labels (AI-assigned) get a correction affordance;
+                          // custom labels are managed via "Move to…" instead.
                           return (
-                            <span
-                              key={l}
-                              className="mail-tag"
-                              style={{ background: lt.bg, color: lt.fg }}
-                            >
-                              {pretty}
-                            </span>
+                            <div key={l} className="relative" data-menu>
+                              <button
+                                type="button"
+                                title="Correct this label"
+                                className="mail-tag cursor-pointer"
+                                style={{ background: lt.bg, color: lt.fg }}
+                                onClick={() =>
+                                  setSmartLabelMenuFor((prev) =>
+                                    prev === l ? null : l,
+                                  )
+                                }
+                              >
+                                {pretty} <ChevronDown size={10} className="inline" />
+                              </button>
+                              {smartLabelMenuFor === l && (
+                                <ul
+                                  className="absolute left-0 z-20 mt-1 w-44 overflow-auto rounded-xl p-1 text-xs shadow-lg"
+                                  style={{
+                                    background: "var(--bg-elevated)",
+                                    border: "1px solid var(--border-strong)",
+                                  }}
+                                >
+                                  {SMART_LABELS.map((id) => (
+                                    <li key={id}>
+                                      <button
+                                        type="button"
+                                        className="w-full cursor-pointer rounded-lg px-2 py-1.5 text-left hover:bg-white/5"
+                                        style={{
+                                          color:
+                                            id === l ? "var(--mail-purple)" : "var(--text)",
+                                        }}
+                                        onClick={() =>
+                                          correctSmartLabel(selectedThread.id, l, id)
+                                        }
+                                      >
+                                        {SMART_LABEL_META[id].label}
+                                        {id === l ? " ✓" : ""}
+                                      </button>
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
                           );
                         })}
                       </div>
@@ -5104,17 +5353,24 @@ export function MailClient({
                                       style={{ color: "var(--text)" }}
                                       onClick={() => {
                                         setShowMoveMenu(false);
+                                        const movedId = selectedId!;
                                         startTransition(async () => {
                                           await moveThreadToFolderAction(
-                                            selectedId!,
+                                            movedId,
                                             f.id,
                                           );
                                           setThreads((prev) =>
-                                            prev.filter((x) => x.id !== selectedId),
+                                            prev.filter((x) => x.id !== movedId),
                                           );
                                           setSelectedId(null);
                                           setStatus(`Moved to ${f.name}`);
                                           haptic("success");
+                                          maybeSuggestLabelCorrection(movedId, f.name, {
+                                            isSmartLabel: false,
+                                            targetLabelDisplay: f.name,
+                                            folderId: f.id,
+                                            folderName: f.name,
+                                          });
                                         });
                                       }}
                                     >
@@ -6162,6 +6418,77 @@ export function MailClient({
                   className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full"
                   style={{ color: "var(--text-dim)" }}
                   onClick={sendPendingNow}
+                >
+                  <X size={14} />
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>,
+          document.body,
+        )}
+
+      {typeof document !== "undefined" &&
+        createPortal(
+          <AnimatePresence>
+            {labelSuggestion && (
+              <motion.div
+                key="label-suggestion-toast"
+                initial={{ opacity: 0, y: 20, scale: 0.96, x: "-50%" }}
+                animate={{ opacity: 1, y: 0, scale: 1, x: "-50%" }}
+                exit={{ opacity: 0, y: 20, scale: 0.96, x: "-50%" }}
+                transition={spring}
+                className={`fixed left-1/2 z-[200] flex max-w-[90vw] flex-wrap items-center gap-3 rounded-full px-4 py-2.5 shadow-lg ${pendingSend ? "bottom-20" : "bottom-6"}`}
+                style={{
+                  background: "var(--bg-elevated)",
+                  border: "1px solid var(--border-strong)",
+                }}
+              >
+                <span className="text-sm" style={{ color: "var(--text)" }}>
+                  {labelSuggestion.applyResult
+                    ? labelSuggestion.applyResult.count > 0
+                      ? `${labelSuggestion.isSmartLabel ? "Relabeled" : "Moved"} ${labelSuggestion.applyResult.count} more${labelSuggestion.ruleCreated ? " · Rule created" : ""}`
+                      : `No other matches to update${labelSuggestion.ruleCreated ? " · Rule created" : ""}`
+                    : `${labelSuggestion.previewCount}${labelSuggestion.previewCapped ? "+" : ""} similar email${labelSuggestion.previewCount === 1 ? "" : "s"} — apply “${labelSuggestion.targetLabelDisplay}” too?`}
+                </span>
+                {labelSuggestion.applyResult?.snapshot && (
+                  <button
+                    type="button"
+                    className="cursor-pointer rounded-full px-3 py-1 text-sm font-semibold"
+                    style={{ background: "var(--mail-purple-dim)", color: "#c4b5fd" }}
+                    onClick={undoLabelSuggestionApply}
+                  >
+                    Undo
+                  </button>
+                )}
+                {!labelSuggestion.applyResult && labelSuggestion.previewCount > 0 && (
+                  <button
+                    type="button"
+                    className="cursor-pointer rounded-full px-3 py-1 text-sm font-semibold"
+                    style={{ background: "var(--mail-purple-dim)", color: "#c4b5fd" }}
+                    disabled={pending}
+                    onClick={applyLabelSuggestionRetroactive}
+                  >
+                    Apply to {labelSuggestion.previewCount}
+                  </button>
+                )}
+                {!labelSuggestion.ruleCreated && (
+                  <button
+                    type="button"
+                    className="cursor-pointer rounded-full px-3 py-1 text-sm font-semibold"
+                    style={{ background: "rgba(255,255,255,0.08)", color: "var(--text)" }}
+                    disabled={pending}
+                    onClick={alwaysApplyLabelSuggestion}
+                  >
+                    Always do this
+                  </button>
+                )}
+                <button
+                  type="button"
+                  title="Dismiss"
+                  aria-label="Dismiss"
+                  className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full"
+                  style={{ color: "var(--text-dim)" }}
+                  onClick={dismissLabelSuggestion}
                 >
                   <X size={14} />
                 </button>
