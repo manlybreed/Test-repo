@@ -24,6 +24,7 @@ import {
   Loader2,
   Mail as MailIcon,
   Maximize2,
+  Mic,
   Minimize2,
   Minus,
   MoreHorizontal,
@@ -40,6 +41,7 @@ import {
   ShieldAlert,
   SlidersHorizontal,
   Sparkles,
+  Square,
   Star,
   Trash2,
   WandSparkles,
@@ -58,6 +60,7 @@ import {
 import { VacationPanel } from "@/components/mail/vacation-panel";
 import { haptic } from "@/components/mail/haptics";
 import { playSendSound, playSendFlyAnimation } from "@/components/mail/sound";
+import { useSpeechToText } from "@/components/mail/use-speech-to-text";
 import { buildFolderTree, type FolderTreeNode } from "@/lib/mail/folder-tree";
 import {
   askMailAction,
@@ -689,6 +692,49 @@ function IconBtn({
     >
       {icon}
     </motion.button>
+  );
+}
+
+/**
+ * Voice command for a single AI-assist field — every one of them (AI
+ * Draft brief, draft refine instruction, Ask mailbox) is a free-text
+ * instruction box, so the same mic button drops into all three. Press it,
+ * speak one instruction, and the caller's `onText` both fills the field
+ * and (at each call site) immediately runs the corresponding action —
+ * Draft/Refine/Ask — rather than just transcribing and waiting for a
+ * separate click. Renders nothing on browsers without SpeechRecognition
+ * (Firefox, Safari) rather than showing a mic that silently does nothing
+ * when clicked.
+ */
+function VoiceButton({
+  onText,
+  size = "md",
+  disabled,
+}: {
+  onText: (text: string) => void;
+  size?: "md" | "lg";
+  disabled?: boolean;
+}) {
+  const { supported, listening, error, toggle } = useSpeechToText(onText);
+
+  useEffect(() => {
+    if (error) {
+      haptic("warn");
+    }
+  }, [error]);
+
+  if (!supported) return null;
+
+  return (
+    <IconBtn
+      title={listening ? "Stop voice command" : "Voice command"}
+      icon={listening ? <Square size={13} /> : <Mic size={14} />}
+      active={listening}
+      danger={Boolean(error)}
+      size={size}
+      disabled={disabled}
+      onClick={toggle}
+    />
   );
 }
 
@@ -2517,14 +2563,17 @@ export function MailClient({
     haptic("tap");
   }
 
-  function runAiDraft() {
+  /** overrideBrief lets a just-finished voice command act on its own
+   * transcript immediately, rather than reading composeBrief state that
+   * setComposeBrief(next) hasn't flushed into this render's closure yet. */
+  function runAiDraft(overrideBrief?: string) {
     setShowCompose(true);
     startTransition(async () => {
       try {
         if (isReplyContext() && selectedId) {
           const d = await draftReplyAction({
             threadId: selectedId,
-            intent: composeBrief.trim() || undefined,
+            intent: (overrideBrief ?? composeBrief).trim() || undefined,
             tone: DEFAULT_DRAFT_TONE,
           });
           if (d?.html) {
@@ -2542,7 +2591,7 @@ export function MailClient({
         }
 
         // Fresh compose — the AI assist box supplies the instruction.
-        const brief = composeBrief.trim() || subject.trim();
+        const brief = (overrideBrief ?? composeBrief).trim() || subject.trim();
         if (!brief) {
           setStatus("Tell AI what to write in the AI assist box, then hit Draft");
           haptic("warn");
@@ -2587,13 +2636,18 @@ export function MailClient({
     });
   }
 
-  function applyDraftRefine(presetId?: DraftRefinePresetId) {
+  /** overrideNote — see runAiDraft's note on why a just-spoken voice
+   * command needs to bypass the not-yet-flushed refineNote state. */
+  function applyDraftRefine(
+    presetId?: DraftRefinePresetId,
+    overrideNote?: string,
+  ) {
     startTransition(async () => {
       try {
         const html = await refineDraftAction({
           html: composeHtml,
           presetId,
-          instruction: refineNote.trim() || undefined,
+          instruction: (overrideNote ?? refineNote).trim() || undefined,
         });
         if (html) {
           setComposeHtml(html);
@@ -3069,6 +3123,14 @@ export function MailClient({
               }
             }}
           />
+          <VoiceButton
+            disabled={pending}
+            onText={(t) => {
+              const next = composeBrief ? `${composeBrief} ${t}` : t;
+              setComposeBrief(next);
+              runAiDraft(next);
+            }}
+          />
           <GhostBtn primary disabled={pending} onClick={runAiDraft}>
             {pending ? "Drafting…" : replying ? "Draft reply" : "Draft"}
           </GhostBtn>
@@ -3116,6 +3178,14 @@ export function MailClient({
                 e.preventDefault();
                 applyDraftRefine();
               }
+            }}
+          />
+          <VoiceButton
+            disabled={pending}
+            onText={(t) => {
+              const next = refineNote ? `${refineNote} ${t}` : t;
+              setRefineNote(next);
+              applyDraftRefine(undefined, next);
             }}
           />
           <GhostBtn
@@ -5551,6 +5621,14 @@ export function MailClient({
                 onChange={(e) => setAskQ(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && askQ.trim()) runAsk(askQ);
+                }}
+              />
+              <VoiceButton
+                disabled={askThinking}
+                onText={(t) => {
+                  const next = askQ ? `${askQ} ${t}` : t;
+                  setAskQ(next);
+                  runAsk(next);
                 }}
               />
               <GhostBtn
