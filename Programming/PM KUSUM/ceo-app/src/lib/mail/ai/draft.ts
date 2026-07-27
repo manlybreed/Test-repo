@@ -142,25 +142,36 @@ export async function draftNewMail(opts: {
       });
   const { packed } = packChunks(chunks);
 
+  // A single authoritative field for "who am I greeting", resolved before
+  // the prompt is built — the model's only job is to read this one value,
+  // not reconcile three separate fields (knownClient/knownContact/intent
+  // text) into an inference of whether a name is "allowed". Ambiguity in
+  // that reconciliation is exactly what let the model fall back to
+  // pattern-matching a name out of unrelated retrieved mail instead.
+  const recipientName = contactHit?.displayName || clientHit?.name || null;
+
   const raw = await claudeJson<{ html: string; subject?: string }>({
     model: "sonnet",
     system: `Draft a new HTML email (not a reply). Body only, no outer html/body tags. Return JSON {html, subject}.
-Ground any relationship facts only in mail_data / known client. Do not invent commitments, fees, or dates.
-Only address the recipient by name if that name appears in knownClient, knownContact, or the "Write about" instruction below — if none of those name them, use a neutral greeting (e.g. "Hi,") instead of guessing a name from priorMail, which may belong to unrelated correspondence pulled in for context only.
+
+Recipient identity — resolve this first, before writing anything: mail_data.recipientName is the ONLY source of truth for how to greet the recipient.
+- If recipientName is a string, greet them by exactly that name.
+- If recipientName is null, you have NO identity for this recipient. The greeting must be "Hi," with no name attached — this is a hard requirement, not a style preference, regardless of what names appear anywhere else in mail_data.
+
+mail_data.topicReference is unrelated background material retrieved by keyword match for tone/topic/fact grounding only — it is other people's past correspondence, not a conversation with this email's recipient. It will often contain its own greetings and names ("Dear X," from some unrelated thread); none of those identify who you are writing to now, and recipientName above always overrides anything you see in topicReference.
+
+Ground any factual claims (dates, figures, commitments) only in topicReference or knownClient — never invent them.
 Leave a <!--SIGNATURE--> marker where the signature should go.
 Default voice: ${DEFAULT_DRAFT_TONE}
 Style hints: ${styleInPrompt(account?.styleJson) || "professional concise"}`,
     user: `${fenceMailData({
+      recipientName,
       knownClient: clientHit
         ? { name: clientHit.name, email: clientHit.email || primaryTo }
         : null,
-      knownContact:
-        contactHit && !clientHit
-          ? { name: contactHit.displayName, email: contactHit.address }
-          : null,
       recipients: opts.to,
       suggestedSubject: opts.subject || null,
-      priorMail: packed || null,
+      topicReference: packed || null,
     })}\n\nWrite about: ${intent}\nTone: ${tone}`,
   });
 

@@ -61,6 +61,7 @@ import { VacationPanel } from "@/components/mail/vacation-panel";
 import { haptic } from "@/components/mail/haptics";
 import { playSendSound, playSendFlyAnimation } from "@/components/mail/sound";
 import { useSpeechToText } from "@/components/mail/use-speech-to-text";
+import { parseMailVoiceCommand } from "@/lib/mail/voice-commands";
 import { buildFolderTree, type FolderTreeNode } from "@/lib/mail/folder-tree";
 import {
   askMailAction,
@@ -3059,6 +3060,88 @@ export function MailClient({
     haptic("tap");
   }
 
+  /** Mail-wide voice command dispatcher — unlike the three field-scoped mic
+   * buttons (AI Draft brief, refine, Ask), this one is always available on
+   * the Mail tab and can act on the app itself: compose, navigate folders,
+   * search, or act on whatever thread is currently open. */
+  function handleMailVoiceCommand(text: string) {
+    const cmd = parseMailVoiceCommand(text);
+    switch (cmd.type) {
+      case "compose":
+        composeNew();
+        break;
+      case "openFolder": {
+        if (cmd.folder === "SMART_INBOX") {
+          selectSmartInbox();
+          break;
+        }
+        if (cmd.folder === "OUTBOX") {
+          selectOutbox();
+          break;
+        }
+        const folder = folderList.find((f) => f.role === cmd.folder);
+        if (folder) {
+          selectFolder(folder.id);
+          setStatus(`Opened ${folder.name}`);
+        } else {
+          setStatus(`No ${cmd.folder.toLowerCase()} folder found`);
+          haptic("warn");
+        }
+        break;
+      }
+      case "search":
+        setActiveSmartLabel(null);
+        setThreadQuery(cmd.query);
+        setStatus(`Searching "${cmd.query}"…`);
+        break;
+      case "archive":
+        if (!selectedId || selectedId.startsWith("outbox")) {
+          setStatus("Open a thread first to archive it");
+          haptic("warn");
+          break;
+        }
+        archiveSelected();
+        break;
+      case "trash":
+        if (!selectedId || selectedId.startsWith("outbox")) {
+          setStatus("Open a thread first to trash it");
+          haptic("warn");
+          break;
+        }
+        trashSelected();
+        break;
+      case "reply":
+        if (!selectedId) {
+          setStatus("Open a thread first to reply");
+          haptic("warn");
+          break;
+        }
+        setShowCompose(true);
+        haptic("tap");
+        break;
+      case "replyAll":
+        if (!messages.length) {
+          setStatus("Open a thread first to reply all");
+          haptic("warn");
+          break;
+        }
+        replyAll();
+        break;
+      case "forward":
+        if (!messages.length) {
+          setStatus("Open a thread first to forward it");
+          haptic("warn");
+          break;
+        }
+        composeForward();
+        break;
+      case "ask":
+        setAskQ(cmd.question);
+        runAsk(cmd.question);
+        break;
+    }
+  }
+
   function runAutocomplete() {
     startTransition(async () => {
       const suggestion = await autocompleteAction(
@@ -3639,6 +3722,11 @@ export function MailClient({
             }
             disabled={syncing || categorizing}
             onClick={() => runSync()}
+          />
+          <VoiceButton
+            size="lg"
+            disabled={syncing}
+            onText={handleMailVoiceCommand}
           />
 
           {/* AI mailbox actions, grouped */}
