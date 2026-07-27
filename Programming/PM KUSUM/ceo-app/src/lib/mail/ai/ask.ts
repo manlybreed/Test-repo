@@ -47,13 +47,32 @@ export async function searchMail(
   return retrieveMail({ accountId, query, limit });
 }
 
+export type AskTurn = { question: string; answer: string };
+
+/** Bound how much prior conversation we carry forward — enough for real
+ * follow-ups ("and when was that sent?") without letting the prompt grow
+ * unbounded over a long Ask session. */
+const MAX_HISTORY_TURNS = 6;
+
 export async function askMailbox(
   accountId: string,
   question: string,
+  history: AskTurn[] = [],
 ): Promise<AskResult> {
+  const recentHistory = history.slice(-MAX_HISTORY_TURNS);
+
+  // Follow-ups ("and when was that sent?", "who else was on it?") carry
+  // almost no retrievable keywords on their own — fold the previous turn's
+  // question (and its answer, which usually names the actual subject) into
+  // the retrieval query so the right messages still surface.
+  const priorTurn = recentHistory[recentHistory.length - 1];
+  const retrievalQuery = priorTurn
+    ? `${priorTurn.question}\n${priorTurn.answer}\n${question}`
+    : question;
+
   const chunks = await retrieveMail({
     accountId,
-    query: question,
+    query: retrievalQuery,
     limit: 15,
     rerank: true,
   });
@@ -82,15 +101,25 @@ export async function askMailbox(
     };
   }
 
+  const transcript = recentHistory
+    .map((t, i) => `Q${i + 1}: ${t.question}\nA${i + 1}: ${t.answer}`)
+    .join("\n\n");
+
   const raw = await claudeJson<AskResult>({
     model: "sonnet",
     system: `Answer only from mail_data. Each block in mail_data starts with its message id in brackets like [abc123].
+
+This is a multi-turn conversation — conversation_so_far (if present) is the prior Q&A in this session. Use it ONLY to resolve what the current question's pronouns/references ("that", "it", "them", "the sender") mean. Never treat conversation_so_far itself as a source of facts — every factual claim must still be grounded in mail_data and cited, exactly as if this were the first question.
 
 Cite inline: immediately after every statement, fact, or list item that a specific message supports, append that message's id wrapped in DOUBLE square brackets, e.g. [[abc123]]. Copy the id exactly from the [id] prefix of the block it came from. If several messages support one item, append several markers. Every list item that names a person/company/thing MUST end with at least one [[id]] marker.
 
 Return JSON {answer, citations: messageId[], notFound: boolean} where answer contains the inline [[id]] markers and citations lists every id you used.
 If unsupported by mail_data, set notFound true and answer "I don't find that in your mail."`,
-    user: `${fenceMailData(packed)}\n\nQuestion: ${question}`,
+    user: `${fenceMailData(packed)}${
+      transcript
+        ? `\n\n<conversation_so_far>\n${transcript}\n</conversation_so_far>`
+        : ""
+    }\n\nQuestion: ${question}`,
   });
 
   const parsed = AskSchema.safeParse(raw);

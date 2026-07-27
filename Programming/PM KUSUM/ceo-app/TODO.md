@@ -198,3 +198,59 @@ not feature checklists.
   tick to confirm position held steady.
   [mail-client.tsx](src/components/mail/mail-client.tsx) —
   `fix/mail-scroll-reset-on-folder-switch`, merged to main.
+- [x] **[FIXED] AI Draft didn't control To/Cc — couldn't resolve a
+  name/email mentioned in the instruction.** In a fresh compose with To
+  left blank, typing "send mail to Akshay on akshayroyal678@gmail.com with
+  some content" into the AI assist brief and clicking Draft: the To field
+  stayed completely empty, and the drafted body didn't address Akshay at
+  all — it hallucinated a greeting to an unrelated person ("Dear Surajbhan
+  ji") pulled in from irrelevant retrieved mail context. Reproduced exactly
+  as described, then fixed. Root cause: `draftNewMail`
+  (`src/lib/mail/ai/draft.ts`) only ever used whatever `to` the client
+  already had typed — it never parsed a recipient out of the free-text
+  intent, and `runAiDraft()` (`mail-client.tsx`) never touched the To field
+  either. With `to` empty, retrieval fell back to a loose, unscoped query
+  that surfaced unrelated threads, and nothing in the prompt stopped Claude
+  from treating that as grounding for a greeting.
+  Fixed with `resolveDraftRecipients()`: an explicit email address in the
+  brief always wins (deterministic regex match, no guessing); failing
+  that, a capitalized name after "to"/"for" is resolved against the
+  contact index the same way "recall NAME" already does. `runAiDraft()`
+  now calls this and populates To when it's empty, before drafting.
+  Also hardened `draftNewMail`'s system prompt to only address the
+  recipient by a name that appears in `knownClient`/`knownContact`/the
+  instruction itself — never inferred from unrelated `priorMail` context —
+  and added a `knownContact` lookup (the existing `clientHit` only checked
+  the business-`Client` table, missing personal contacts entirely).
+  Verified live with the exact reported prompt: To now auto-fills
+  `akshayroyal678@gmail.com` and the draft opens "Hi Akshay," instead of a
+  hallucinated name.
+  [draft.ts](src/lib/mail/ai/draft.ts),
+  [mail-client.tsx](src/components/mail/mail-client.tsx) —
+  `fix/mail-ai-draft-recipient-and-ask-history`, merged to main.
+- [x] **[FIXED] "Ask mailbox" had no conversation memory — couldn't handle
+  follow-up questions.** Each Ask query was answered independently with no
+  reference to the previous question/answer in the same session, so a
+  natural follow-up ("and when did he send that message?") was treated as
+  a fresh, context-free query. Root cause: `askMailbox`
+  (`src/lib/mail/ai/ask.ts`) took only the current `question` — no history
+  parameter existed anywhere in the chain, and the client kept just a
+  single `askA` answer, never an array of turns.
+  Fixed by adding an `AskTurn[]` history (capped at the last 6 turns): the
+  client now keeps `askHistory` and sends it on every Ask; the server
+  folds the previous turn's question+answer into the retrieval query (bare
+  follow-ups like "and when was that sent?" carry almost no retrievable
+  keywords on their own) and passes a `<conversation_so_far>` transcript to
+  Claude — explicitly scoped to resolving pronouns/references only, with
+  every actual fact still required to cite mail_data exactly as before.
+  Added a visible scrollback of prior turns above the current answer and a
+  "Clear conversation" button, so the context being carried forward is
+  actually visible, not just a backend change.
+  Verified live: asked "What did Ranjeet Kumar want regarding the Kotak
+  Mahindra current account?", got a grounded answer; followed up with
+  "and when did he send that message?" (no name repeated) and got back the
+  correct dates (2026-07-22, 2026-06-19) — confirming "he"/"that message"
+  correctly resolved against the prior turn.
+  [ask.ts](src/lib/mail/ai/ask.ts),
+  [mail-client.tsx](src/components/mail/mail-client.tsx) —
+  `fix/mail-ai-draft-recipient-and-ask-history`, merged to main.

@@ -4,6 +4,7 @@ import { claudeJson, fenceMailData, getAnthropic } from "@/lib/mail/ai/claude";
 import { packChunks, retrieveMail } from "@/lib/mail/ai/retrieve";
 import { DEFAULT_DRAFT_TONE } from "@/lib/mail/ai/draft-presets";
 import { styleInPrompt } from "@/lib/mail/ai/style";
+import { findContacts, resolvePersonAddress } from "@/lib/mail/contacts";
 
 export {
   DEFAULT_DRAFT_TONE,
@@ -15,6 +16,45 @@ const DraftSchema = z.object({
   html: z.string(),
   subject: z.string().optional(),
 });
+
+const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+// "send mail to Akshay", "draft something for Priya Sharma" — a short
+// Capitalized name phrase right after to/for.
+const NAME_AFTER_TO_RE =
+  /\b(?:to|for)\s+([A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+){0,2})\b/;
+
+/**
+ * AI Draft's brief box is the only place a fresh-compose instruction like
+ * "send mail to Akshay on akshayroyal678@gmail.com" gets typed — but the To
+ * field it's supposed to control was never wired to it, so the recipient
+ * silently stayed blank (or whatever was already typed) no matter what the
+ * instruction said. This pulls a recipient out of that free text: an
+ * explicit email address always wins (deterministic, no guessing); failing
+ * that, a capitalized name after "to"/"for" is resolved against the
+ * contact index the same way "recall NAME" already does.
+ */
+export async function resolveDraftRecipients(
+  accountId: string,
+  intent: string,
+): Promise<{ to: string[]; knownName: string | null }> {
+  const emails = Array.from(
+    new Set((intent.match(EMAIL_RE) || []).map((e) => e.toLowerCase())),
+  );
+  const candidateName = intent.match(NAME_AFTER_TO_RE)?.[1]?.trim() || null;
+
+  if (emails.length) {
+    // Cross-check against the contact index for a real display name, so
+    // the draft addresses the recipient correctly instead of guessing.
+    const [hit] = await findContacts(accountId, emails[0]!, 1).catch(() => []);
+    return { to: emails, knownName: hit?.displayName || candidateName };
+  }
+
+  if (!candidateName) return { to: [], knownName: null };
+  const address = await resolvePersonAddress(accountId, candidateName).catch(
+    () => null,
+  );
+  return address ? { to: [address], knownName: candidateName } : { to: [], knownName: null };
+}
 
 /** AI-07 grounded draft; AI-09 uses account.styleJson */
 export async function draftReply(opts: {
@@ -82,6 +122,11 @@ export async function draftNewMail(opts: {
         where: { email: { equals: primaryTo, mode: "insensitive" } },
       })
     : null;
+  // Business clients aren't the only "known" recipients — most personal
+  // correspondence resolves through the contact index instead.
+  const [contactHit] = primaryTo
+    ? await findContacts(opts.accountId, primaryTo, 1).catch(() => [])
+    : [];
 
   const chunks = primaryTo
     ? await retrieveMail({
@@ -101,6 +146,7 @@ export async function draftNewMail(opts: {
     model: "sonnet",
     system: `Draft a new HTML email (not a reply). Body only, no outer html/body tags. Return JSON {html, subject}.
 Ground any relationship facts only in mail_data / known client. Do not invent commitments, fees, or dates.
+Only address the recipient by name if that name appears in knownClient, knownContact, or the "Write about" instruction below — if none of those name them, use a neutral greeting (e.g. "Hi,") instead of guessing a name from priorMail, which may belong to unrelated correspondence pulled in for context only.
 Leave a <!--SIGNATURE--> marker where the signature should go.
 Default voice: ${DEFAULT_DRAFT_TONE}
 Style hints: ${styleInPrompt(account?.styleJson) || "professional concise"}`,
@@ -108,6 +154,10 @@ Style hints: ${styleInPrompt(account?.styleJson) || "professional concise"}`,
       knownClient: clientHit
         ? { name: clientHit.name, email: clientHit.email || primaryTo }
         : null,
+      knownContact:
+        contactHit && !clientHit
+          ? { name: contactHit.displayName, email: contactHit.address }
+          : null,
       recipients: opts.to,
       suggestedSubject: opts.subject || null,
       priorMail: packed || null,

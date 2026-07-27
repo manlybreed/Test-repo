@@ -64,6 +64,7 @@ import {
   autocompleteAction,
   draftReplyAction,
   draftNewMailAction,
+  extractDraftRecipientsAction,
   extractCommitmentsAction,
   acceptCommitmentAction,
   summarizeThreadAction,
@@ -1228,6 +1229,12 @@ export function MailClient({
   const [askThinking, setAskThinking] = useState(false);
   const [askCitations, setAskCitations] = useState<AskCitation[]>([]);
   const [askSources, setAskSources] = useState<AskCitation[]>([]);
+  /** Prior turns in this Ask session — sent back on every follow-up so
+   * "and when was that sent?" can resolve against the previous answer
+   * instead of being treated as a brand-new, context-free question. */
+  const [askHistory, setAskHistory] = useState<
+    { question: string; answer: string }[]
+  >([]);
   const [sendAtLocal, setSendAtLocal] = useState("");
   const [bulkSuggestions, setBulkSuggestions] = useState<
     { threadId: string; subject: string; priority: string; labels: string[] }[]
@@ -2542,8 +2549,22 @@ export function MailClient({
           return;
         }
 
+        // The brief is the only place a recipient like "send mail to Akshay
+        // on akshayroyal678@gmail.com" gets typed — if To is still empty,
+        // pull a recipient out of it instead of silently drafting to no one.
+        let recipients = splitAddrs(to);
+        if (!recipients.length) {
+          const resolved = await extractDraftRecipientsAction(brief).catch(
+            () => null,
+          );
+          if (resolved?.to.length) {
+            recipients = resolved.to;
+            setTo(resolved.to.join(", "));
+          }
+        }
+
         const d = await draftNewMailAction({
-          to: splitAddrs(to),
+          to: recipients,
           subject: subject.trim() || undefined,
           intent: brief,
           tone: DEFAULT_DRAFT_TONE,
@@ -2951,6 +2972,7 @@ export function MailClient({
     setAskA("");
     setAskCitations([]);
     setAskSources([]);
+    const historyForRequest = askHistory;
     startTransition(async () => {
       haptic("tap");
       try {
@@ -2958,10 +2980,11 @@ export function MailClient({
         const recallMatch = lower.match(/^(recall|who is|about)\s+(.+)/i);
         const a = recallMatch
           ? await recallPersonAction(recallMatch[2]!.trim())
-          : await askMailAction(q);
+          : await askMailAction(q, historyForRequest);
         setAskA(a.answer);
         setAskCitations(a.citationRefs || []);
         setAskSources(a.sourceRefs || []);
+        setAskHistory((prev) => [...prev, { question: q, answer: a.answer }]);
         haptic(a.notFound ? "warn" : "success");
       } catch (e) {
         setAskA(e instanceof Error ? e.message : "Ask failed — try again.");
@@ -2972,6 +2995,14 @@ export function MailClient({
         setAskThinking(false);
       }
     });
+  }
+
+  function clearAskConversation() {
+    setAskHistory([]);
+    setAskA("");
+    setAskCitations([]);
+    setAskSources([]);
+    haptic("tap");
   }
 
   function runAutocomplete() {
@@ -5529,6 +5560,13 @@ export function MailClient({
               >
                 {askThinking ? "Thinking…" : "Ask"}
               </GhostBtn>
+              {askHistory.length > 0 && (
+                <IconBtn
+                  title="Clear conversation — start a fresh question"
+                  icon={<X size={14} />}
+                  onClick={clearAskConversation}
+                />
+              )}
             </div>
             <AnimatePresence mode="wait">
               {askThinking ? (
@@ -5551,6 +5589,31 @@ export function MailClient({
                   exit={{ opacity: 0, height: 0 }}
                   className="mt-2 max-h-80 space-y-2.5 overflow-auto pr-1"
                 >
+                  {askHistory.slice(0, -1).length > 0 && (
+                    <div
+                      className="space-y-2 pb-2"
+                      style={{
+                        borderBottom: "1px solid var(--mail-border)",
+                      }}
+                    >
+                      {askHistory.slice(0, -1).map((t, i) => (
+                        <div key={i} className="text-[0.7rem]">
+                          <p
+                            className="font-medium"
+                            style={{ color: "var(--text-dim)" }}
+                          >
+                            {t.question}
+                          </p>
+                          <p
+                            className="line-clamp-2"
+                            style={{ color: "var(--text-muted)" }}
+                          >
+                            {t.answer.replace(/\[\[[^\]]+\]\]/g, "")}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <FormattedAnswer
                     text={askA}
                     sources={askSourcesMap}

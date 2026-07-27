@@ -32,7 +32,7 @@ import {
 } from "@/lib/mail/threads-query";
 import { parseSearchOperators } from "@/lib/mail/mail-search";
 import { summarizeThread } from "@/lib/mail/ai/summarize";
-import { askMailbox, recallPerson, searchMail } from "@/lib/mail/ai/ask";
+import { askMailbox, recallPerson, searchMail, type AskTurn } from "@/lib/mail/ai/ask";
 import { buildInboxDigest } from "@/lib/mail/ai/digest";
 import {
   autocompleteDraft,
@@ -42,6 +42,7 @@ import {
   draftReply,
   multilingualDraft,
   refineDraftWithInstruction,
+  resolveDraftRecipients,
   rewriteDraft,
   type DraftRefinePresetId,
   type RewriteMode,
@@ -1156,9 +1157,9 @@ export async function searchMailAction(query: string) {
   return searchMail(account.id, query);
 }
 
-export async function askMailAction(question: string) {
+export async function askMailAction(question: string, history?: AskTurn[]) {
   const { account } = await requireAccount();
-  return askMailbox(account.id, question);
+  return askMailbox(account.id, question, history);
 }
 
 export async function recallPersonAction(person: string) {
@@ -1202,6 +1203,14 @@ export async function draftNewMailAction(input: {
     subject: input.subject,
     tone: input.tone || DEFAULT_DRAFT_TONE,
   });
+}
+
+/** Pull a recipient (explicit email, or a name resolved via the contact
+ * index) out of an AI Draft brief like "send mail to Akshay on
+ * akshayroyal678@gmail.com" — used to populate To when it's still empty. */
+export async function extractDraftRecipientsAction(intent: string) {
+  const { account } = await requireAccount();
+  return resolveDraftRecipients(account.id, intent);
 }
 
 export async function rewriteDraftAction(input: {
