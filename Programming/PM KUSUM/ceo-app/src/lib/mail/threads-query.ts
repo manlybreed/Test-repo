@@ -295,12 +295,20 @@ export async function queryThreadsForView(opts: {
     ],
   };
 
+  // Trash is sorted by when the message actually landed there, not by its
+  // original send/receive date — otherwise trashing something old never
+  // surfaces it at the top, which is the entire point of checking Trash
+  // right after deleting something.
+  const inTrash = folderRole === "TRASH";
+
   // Non-search views paginate for real (skip/take at the DB level); search
   // pulls a wider net and re-ranks by relevance instead of paging.
   const [threads, total] = await Promise.all([
     prisma.mailThread.findMany({
       where: whereClause,
-      orderBy: { lastMessageAt: "desc" },
+      orderBy: inTrash
+        ? [{ trashedAt: { sort: "desc", nulls: "last" } }, { lastMessageAt: "desc" }]
+        : { lastMessageAt: "desc" },
       skip: q ? undefined : skip,
       take: q ? Math.min(take * 4, 320) : take,
       select: {
@@ -384,10 +392,16 @@ export async function queryThreadsForView(opts: {
     return { rows, total: rows.length };
   }
 
-  const rows = mapped.sort(
-    (a, b) =>
-      new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime(),
-  );
+  const rows = mapped.sort((a, b) => {
+    if (inTrash) {
+      const at = a.trashedAt ? new Date(a.trashedAt).getTime() : -Infinity;
+      const bt = b.trashedAt ? new Date(b.trashedAt).getTime() : -Infinity;
+      if (at !== bt) return bt - at;
+    }
+    return (
+      new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime()
+    );
+  });
   return { rows, total };
 }
 
