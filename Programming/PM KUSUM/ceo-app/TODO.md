@@ -291,3 +291,67 @@ not feature checklists.
   [use-speech-to-text.ts](src/components/mail/use-speech-to-text.ts),
   [mail-client.tsx](src/components/mail/mail-client.tsx) —
   `feature/mail-voice-commands`, merged to main.
+
+---
+
+## Follow-ups — 2026-07-27
+
+- [x] **[FIXED — root cause, not output patching] AI Draft hallucinated a
+  greeting name when no recipient was given at all.** Reported with a
+  screenshot: brief "introduce BluRidge Consulting and propose a 20 minute
+  call" with To empty produced "Dear Surajbhan ji," — a name pulled from
+  unrelated retrieved mail context, not from the instruction.
+  Root cause found in `packChunks`/`retrieveMail`
+  (`src/lib/mail/ai/retrieve.ts`): when there's no known recipient,
+  `draftNewMail` still runs an unscoped retrieval for topic/style grounding,
+  and each retrieved chunk's `bodyExcerpt` is up to 1200 raw characters of
+  someone else's actual email — including *that* email's own real "Dear
+  X," salutation. That text sat in the prompt as `priorMail` next to a
+  single soft sentence saying not to use it for the greeting; the model,
+  asked to write something greeting-shaped with a real name sitting right
+  there in context, sometimes copied it anyway. A single sentence
+  competing against vivid, structurally-identical context in the same
+  prompt is a weak instruction, not a fix.
+  Fixed by removing the ambiguity instead of asking the model to resolve
+  it: `recipientName` is now resolved server-side *before* the prompt is
+  built (from the contact/client lookup) into one authoritative field —
+  the model's only job is to check that one value, not reconcile three
+  separate fields into an inference. The retrieved grounding data was
+  renamed `priorMail` → `topicReference` and explicitly reframed in the
+  system prompt as "other people's past correspondence, not a conversation
+  with this recipient — recipientName always overrides anything you see
+  in here." No output regex, no post-processing — Claude simply isn't
+  given a plausible reason to reach for a name that isn't recipientName
+  anymore.
+  Verified live: reran the exact reported brief 3 times back-to-back —
+  every run opened "Hi," with no invented name. Confirmed no regression on
+  the explicit-recipient case (`akshayroyal678@gmail.com` in To): now
+  correctly opens "Dear Akshay Royal," using the real resolved contact
+  name, an improvement over the plain "Hi Akshay," from before.
+  [draft.ts](src/lib/mail/ai/draft.ts) —
+  `fix/mail-ai-draft-greeting-root-cause`, merged to main.
+- [x] **[DONE] Mail-wide voice command**, available as soon as the Mail tab
+  is open — not scoped to a single AI-assist field like the three shipped
+  earlier. Added a mic button in the header (next to Compose/Refresh) that
+  parses a spoken utterance into a command and executes it directly:
+  "compose a new email", "open trash"/"go to sent"/"show me the drafts",
+  "search for X", "archive this"/"delete this", "reply"/"reply all"/
+  "forward". Anything that doesn't match one of those falls through to
+  Ask-mailbox with the whole utterance as the question — so no command is
+  ever "lost", worst case it's answered as a natural-language question.
+  Deliberately deterministic keyword/pattern matching
+  ([voice-commands.ts](src/lib/mail/voice-commands.ts), unit tested in
+  voice-commands.test.ts) rather than another Claude round-trip for
+  classification — instant, free, and has no hallucination surface of its
+  own.
+  Verified live (same synthetic-transcript technique as the field-level
+  voice commands, since real mic capture is blocked in this sandbox):
+  "open trash" switched to Trash and rendered its contents; "compose a new
+  email" opened fullscreen compose; "search for HackerNoon" populated the
+  search box and returned matching threads; "archive this" archived the
+  open thread (confirmed gone from the Inbox list); a natural question
+  ("what did Ranjeet Kumar want...") correctly fell through to Ask and
+  returned a grounded answer.
+  [voice-commands.ts](src/lib/mail/voice-commands.ts),
+  [mail-client.tsx](src/components/mail/mail-client.tsx) —
+  `feature/mail-wide-voice-command`, merged to main.
