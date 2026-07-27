@@ -1178,6 +1178,20 @@ export function MailClient({
   }, []);
   /** When false, a background draft save must not reattach draftId (e.g. after opening a thread). */
   const attachDraftIdRef = useRef(true);
+  /**
+   * Every write to `threads` that comes from an async fetch (folder switch,
+   * post-mutation reload, search) claims a ticket here first and only
+   * applies its result if it's still the latest one issued. Without this,
+   * two overlapping fetches — e.g. trashing a thread (which reloads the
+   * folder you were on) racing a folder switch you click a moment later —
+   * can resolve out of order and let the slower, stale request's data
+   * silently overwrite the newer folder's correct list, leaving the
+   * sidebar highlighting one mailbox while the thread list still shows
+   * another.
+   */
+  const threadsFetchSeqRef = useRef(0);
+  /** Always the current render's reloadActiveView — see its assignment site. */
+  const reloadActiveViewRef = useRef<() => Promise<void>>(async () => {});
   const searchInputRef = useRef<HTMLInputElement>(null);
   /**
    * Snapshot of the auto-populated reply-context fields (To/Cc/Bcc/Subject/
@@ -1514,11 +1528,13 @@ export function MailClient({
     setStatus("Searching…");
     // Slightly longer debounce — AI expand + rerank costs a round-trip
     const handle = window.setTimeout(() => {
+      const seq = ++threadsFetchSeqRef.current;
       startNavTransition(async () => {
         const startedAt = performance.now();
         try {
           const rows = (await searchThreadsAction(q)) as Thread[];
           const elapsedMs = Math.round(performance.now() - startedAt);
+          if (threadsFetchSeqRef.current !== seq) return;
           setThreads(rows);
           setActiveSmartLabel(null);
           setStatus(
@@ -1808,20 +1824,27 @@ export function MailClient({
   }
 
   async function reloadActiveView(page = threadPage) {
+    const seq = ++threadsFetchSeqRef.current;
+    const stale = () => threadsFetchSeqRef.current !== seq;
+
     if (activeSmartLabel) {
       const res = await listMailThreads({ label: activeSmartLabel, page });
+      if (stale()) return;
       setThreads(res.rows as Thread[]);
       setThreadTotal(res.total);
       setThreadPage(res.page);
       return;
     }
     if (activeFolder === OUTBOX_ID) {
-      setThreads((await listOutboxAction()) as Thread[]);
+      const rows = (await listOutboxAction()) as Thread[];
+      if (stale()) return;
+      setThreads(rows);
       setThreadTotal(0);
       return;
     }
     if (activeFolder === SMART_INBOX_ID) {
       const res = await listMailThreads({ smartInbox: true, page });
+      if (stale()) return;
       setThreads(res.rows as Thread[]);
       setThreadTotal(res.total);
       setThreadPage(res.page);
@@ -1830,18 +1853,24 @@ export function MailClient({
     if (activeFolder) {
       const folder = folderList.find((f) => f.id === activeFolder);
       if (folder?.role === "DRAFTS") {
-        setThreads(
-          (await listDraftsFolderAction(activeFolder)) as Thread[],
-        );
+        const rows = (await listDraftsFolderAction(activeFolder)) as Thread[];
+        if (stale()) return;
+        setThreads(rows);
         setThreadTotal(0);
       } else {
         const res = await listMailThreads({ folderId: activeFolder, page });
+        if (stale()) return;
         setThreads(res.rows as Thread[]);
         setThreadTotal(res.total);
         setThreadPage(res.page);
       }
     }
   }
+  // The SSE live-update effect below only subscribes once ([configured]),
+  // so it must never call `reloadActiveView` directly — that would close
+  // over whichever mailbox was active at mount/subscribe time forever.
+  // Read the latest closure through this ref instead, updated every render.
+  reloadActiveViewRef.current = reloadActiveView;
 
   function selectSmartInbox() {
     haptic("tap");
@@ -2281,7 +2310,7 @@ export function MailClient({
       .then(() => {
         setPendingSend((p) => (p?.outboxId === outboxId ? null : p));
         setStatus("Sent");
-        void reloadActiveView();
+        void reloadActiveViewRef.current();
       })
       .catch((e) => {
         setPendingSend((p) => (p?.outboxId === outboxId ? null : p));
@@ -3271,7 +3300,7 @@ export function MailClient({
       try {
         const r = await syncMailAction();
         if (r.bootstrap?.configured) applyBootstrap(r.bootstrap);
-        await reloadActiveView();
+        await reloadActiveViewRef.current();
         const msg =
           `Refreshed · ${r.imported} new` +
           (r.triaged ? ` · ${r.triaged} categorized` : "");
@@ -3346,7 +3375,7 @@ export function MailClient({
       if (refreshTimer) clearTimeout(refreshTimer);
       refreshTimer = setTimeout(() => {
         if (document.visibilityState !== "visible") return;
-        void reloadActiveView().then(() => {
+        void reloadActiveViewRef.current().then(() => {
           setAccountInfo((a) => (a ? { ...a, lastSyncedAt: new Date() } : a));
           setStatus((s) =>
             s.startsWith("Live") || !s ? "Live · mailbox updated" : s,
@@ -3410,7 +3439,6 @@ export function MailClient({
       if (refreshTimer) clearTimeout(refreshTimer);
       es?.close();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- live channel while configured
   }, [configured]);
 
   // Fallback poll only when live channel is down
