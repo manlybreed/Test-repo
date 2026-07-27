@@ -138,6 +138,7 @@ import {
   isSmartLabel,
   type SmartLabel,
 } from "@/lib/mail/ai/smart-labels";
+import type { MatchingThreadPreview } from "@/lib/mail/ai/label-rules";
 
 const SYSTEM_ROLE_ORDER = [
   "INBOX",
@@ -247,8 +248,13 @@ type LabelSuggestionState = {
   ruleName: string;
   folderId?: string;
   folderName?: string;
-  previewCount: number;
-  previewCapped: boolean;
+  /** Every existing match — reviewable/deselectable before applying. */
+  matches: MatchingThreadPreview[];
+  matchesCapped: boolean;
+  /** Which matches are currently checked to be included in "Apply to N". */
+  selectedIds: Set<string>;
+  /** Whether the review checklist panel is expanded. */
+  showMatches: boolean;
   applyResult?: { count: number; snapshot: LabelCorrectionSnapshot | null };
   ruleCreated?: boolean;
 };
@@ -2489,9 +2495,52 @@ export function MailClient({
         ruleName: res.ruleName,
         folderId: base.folderId,
         folderName: base.folderName,
-        previewCount: res.previewCount,
-        previewCapped: res.previewCapped,
+        matches: res.matches,
+        matchesCapped: res.matchesCapped,
+        // Default to everything selected — deselecting is the exception, not the norm.
+        selectedIds: new Set(res.matches.map((m) => m.id)),
+        showMatches: false,
       });
+    });
+  }
+
+  function toggleLabelSuggestionMatch(id: string) {
+    setLabelSuggestion((prev) => {
+      if (!prev) return prev;
+      const next = new Set(prev.selectedIds);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return { ...prev, selectedIds: next };
+    });
+  }
+
+  function setAllLabelSuggestionMatches(selectAll: boolean) {
+    setLabelSuggestion((prev) =>
+      prev
+        ? {
+            ...prev,
+            selectedIds: selectAll ? new Set(prev.matches.map((m) => m.id)) : new Set(),
+          }
+        : prev,
+    );
+  }
+
+  /** Pauses the auto-dismiss timer while the review list is open — don't
+   * hide a checklist the user is actively going through — and resumes a
+   * fresh window once it's collapsed again. */
+  function toggleLabelSuggestionExpanded() {
+    setLabelSuggestion((prev) => {
+      if (!prev) return prev;
+      const opening = !prev.showMatches;
+      if (opening) {
+        if (labelSuggestionTimerRef.current) {
+          clearTimeout(labelSuggestionTimerRef.current);
+          labelSuggestionTimerRef.current = null;
+        }
+      } else {
+        resetLabelSuggestionTimer();
+      }
+      return { ...prev, showMatches: opening };
     });
   }
 
@@ -2516,8 +2565,9 @@ export function MailClient({
   }
 
   function applyLabelSuggestionRetroactive() {
-    if (!labelSuggestion) return;
+    if (!labelSuggestion || !labelSuggestion.selectedIds.size) return;
     const s = labelSuggestion;
+    const threadIds = Array.from(s.selectedIds);
     startTransition(async () => {
       const res = await applyLabelCorrectionAction({
         targetLabel: s.targetLabel,
@@ -2528,6 +2578,7 @@ export function MailClient({
         sourceThreadId: s.sourceThreadId,
         applyRetroactively: true,
         createStandingRule: false,
+        threadIds,
         folderId: s.folderId,
         folderName: s.folderName,
       });
@@ -2535,7 +2586,7 @@ export function MailClient({
       haptic("success");
       setLabelSuggestion((prev) =>
         prev && prev.sourceThreadId === s.sourceThreadId
-          ? { ...prev, applyResult: { count, snapshot: res.snapshot } }
+          ? { ...prev, applyResult: { count, snapshot: res.snapshot }, showMatches: false }
           : prev,
       );
       resetLabelSuggestionTimer();
@@ -5112,41 +5163,102 @@ export function MailClient({
                           ? `Outbox · ${selectedThread.outboxStatus}`
                           : "Thread"}
                     </p>
-                    {parseLabelsJson(selectedThread.labelsJson).length > 0 && (
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        {parseLabelsJson(selectedThread.labelsJson).map((l) => {
-                          const lt = labelTone(l);
-                          const pretty =
-                            SMART_LABEL_META[l as SmartLabel]?.label || l;
-                          if (!isSmartLabel(l)) {
+                    {(() => {
+                      const labels = parseLabelsJson(selectedThread.labelsJson);
+                      const hasSmartLabel = labels.some((l) => isSmartLabel(l));
+                      const isRealThread =
+                        Boolean(selectedId) &&
+                        !selectedId!.startsWith("outbox") &&
+                        !composeFullscreen;
+                      // Always render this row — a thread with no labels yet
+                      // (nothing assigned, or nothing correctable) should look
+                      // and behave the same as one that does, just with a
+                      // "+ Label" placeholder instead of an existing chip.
+                      return (
+                        <div className="mt-2 flex flex-wrap items-center gap-1">
+                          {labels.map((l) => {
+                            const lt = labelTone(l);
+                            const pretty =
+                              SMART_LABEL_META[l as SmartLabel]?.label || l;
+                            if (!isSmartLabel(l)) {
+                              return (
+                                <span
+                                  key={l}
+                                  className="mail-tag"
+                                  style={{ background: lt.bg, color: lt.fg }}
+                                >
+                                  {pretty}
+                                </span>
+                              );
+                            }
+                            // Smart labels (AI-assigned) get a correction affordance;
+                            // custom labels are managed via "Move to…" instead.
                             return (
-                              <span
-                                key={l}
-                                className="mail-tag"
-                                style={{ background: lt.bg, color: lt.fg }}
-                              >
-                                {pretty}
-                              </span>
+                              <div key={l} className="relative" data-menu>
+                                <button
+                                  type="button"
+                                  title="Correct this label"
+                                  className="mail-tag cursor-pointer"
+                                  style={{ background: lt.bg, color: lt.fg }}
+                                  onClick={() =>
+                                    setSmartLabelMenuFor((prev) =>
+                                      prev === l ? null : l,
+                                    )
+                                  }
+                                >
+                                  {pretty} <ChevronDown size={10} className="inline" />
+                                </button>
+                                {smartLabelMenuFor === l && (
+                                  <ul
+                                    className="absolute left-0 z-20 mt-1 w-44 overflow-auto rounded-xl p-1 text-xs shadow-lg"
+                                    style={{
+                                      background: "var(--bg-elevated)",
+                                      border: "1px solid var(--border-strong)",
+                                    }}
+                                  >
+                                    {SMART_LABELS.map((id) => (
+                                      <li key={id}>
+                                        <button
+                                          type="button"
+                                          className="w-full cursor-pointer rounded-lg px-2 py-1.5 text-left hover:bg-white/5"
+                                          style={{
+                                            color:
+                                              id === l ? "var(--mail-purple)" : "var(--text)",
+                                          }}
+                                          onClick={() =>
+                                            correctSmartLabel(selectedThread.id, l, id)
+                                          }
+                                        >
+                                          {SMART_LABEL_META[id].label}
+                                          {id === l ? " ✓" : ""}
+                                        </button>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                )}
+                              </div>
                             );
-                          }
-                          // Smart labels (AI-assigned) get a correction affordance;
-                          // custom labels are managed via "Move to…" instead.
-                          return (
-                            <div key={l} className="relative" data-menu>
+                          })}
+                          {!hasSmartLabel && isRealThread && (
+                            <div className="relative" data-menu>
                               <button
                                 type="button"
-                                title="Correct this label"
-                                className="mail-tag cursor-pointer"
-                                style={{ background: lt.bg, color: lt.fg }}
+                                title="Add a label"
+                                className="mail-tag cursor-pointer border border-dashed"
+                                style={{
+                                  background: "transparent",
+                                  color: "var(--text-dim)",
+                                  borderColor: "var(--border-strong)",
+                                }}
                                 onClick={() =>
                                   setSmartLabelMenuFor((prev) =>
-                                    prev === l ? null : l,
+                                    prev === "__new__" ? null : "__new__",
                                   )
                                 }
                               >
-                                {pretty} <ChevronDown size={10} className="inline" />
+                                + Label <ChevronDown size={10} className="inline" />
                               </button>
-                              {smartLabelMenuFor === l && (
+                              {smartLabelMenuFor === "__new__" && (
                                 <ul
                                   className="absolute left-0 z-20 mt-1 w-44 overflow-auto rounded-xl p-1 text-xs shadow-lg"
                                   style={{
@@ -5159,26 +5271,22 @@ export function MailClient({
                                       <button
                                         type="button"
                                         className="w-full cursor-pointer rounded-lg px-2 py-1.5 text-left hover:bg-white/5"
-                                        style={{
-                                          color:
-                                            id === l ? "var(--mail-purple)" : "var(--text)",
-                                        }}
+                                        style={{ color: "var(--text)" }}
                                         onClick={() =>
-                                          correctSmartLabel(selectedThread.id, l, id)
+                                          correctSmartLabel(selectedThread.id, "", id)
                                         }
                                       >
                                         {SMART_LABEL_META[id].label}
-                                        {id === l ? " ✓" : ""}
                                       </button>
                                     </li>
                                   ))}
                                 </ul>
                               )}
                             </div>
-                          );
-                        })}
-                      </div>
-                    )}
+                          )}
+                        </div>
+                      );
+                    })()}
                     {selectedId &&
                       !selectedId.startsWith("outbox") &&
                       !composeFullscreen && (
@@ -6437,61 +6545,158 @@ export function MailClient({
                 animate={{ opacity: 1, y: 0, scale: 1, x: "-50%" }}
                 exit={{ opacity: 0, y: 20, scale: 0.96, x: "-50%" }}
                 transition={spring}
-                className={`fixed left-1/2 z-[200] flex max-w-[90vw] flex-wrap items-center gap-3 rounded-full px-4 py-2.5 shadow-lg ${pendingSend ? "bottom-20" : "bottom-6"}`}
-                style={{
-                  background: "var(--bg-elevated)",
-                  border: "1px solid var(--border-strong)",
-                }}
+                className={`fixed left-1/2 z-[200] flex w-[26rem] max-w-[92vw] flex-col items-center gap-2 ${pendingSend ? "bottom-20" : "bottom-6"}`}
               >
-                <span className="text-sm" style={{ color: "var(--text)" }}>
-                  {labelSuggestion.applyResult
-                    ? labelSuggestion.applyResult.count > 0
-                      ? `${labelSuggestion.isSmartLabel ? "Relabeled" : "Moved"} ${labelSuggestion.applyResult.count} more${labelSuggestion.ruleCreated ? " · Rule created" : ""}`
-                      : `No other matches to update${labelSuggestion.ruleCreated ? " · Rule created" : ""}`
-                    : `${labelSuggestion.previewCount}${labelSuggestion.previewCapped ? "+" : ""} similar email${labelSuggestion.previewCount === 1 ? "" : "s"} — apply “${labelSuggestion.targetLabelDisplay}” too?`}
-                </span>
-                {labelSuggestion.applyResult?.snapshot && (
-                  <button
-                    type="button"
-                    className="cursor-pointer rounded-full px-3 py-1 text-sm font-semibold"
-                    style={{ background: "var(--mail-purple-dim)", color: "#c4b5fd" }}
-                    onClick={undoLabelSuggestionApply}
+                {labelSuggestion.showMatches && !labelSuggestion.applyResult && (
+                  <div
+                    data-menu
+                    className="flex w-full flex-col overflow-hidden rounded-2xl shadow-lg"
+                    style={{
+                      background: "var(--bg-elevated)",
+                      border: "1px solid var(--border-strong)",
+                    }}
                   >
-                    Undo
-                  </button>
+                    <div
+                      className="flex items-center justify-between gap-2 px-3 py-2 text-xs"
+                      style={{ borderBottom: "1px solid var(--border)" }}
+                    >
+                      <span style={{ color: "var(--text-dim)" }}>
+                        {labelSuggestion.selectedIds.size} of{" "}
+                        {labelSuggestion.matches.length} selected
+                        {labelSuggestion.matchesCapped ? " (200 most recent)" : ""}
+                      </span>
+                      <div className="flex shrink-0 gap-2">
+                        <button
+                          type="button"
+                          className="cursor-pointer underline"
+                          style={{ color: "var(--mail-purple)" }}
+                          onClick={() => setAllLabelSuggestionMatches(true)}
+                        >
+                          Select all
+                        </button>
+                        <button
+                          type="button"
+                          className="cursor-pointer underline"
+                          style={{ color: "var(--text-dim)" }}
+                          onClick={() => setAllLabelSuggestionMatches(false)}
+                        >
+                          Deselect all
+                        </button>
+                      </div>
+                    </div>
+                    <ul className="max-h-64 overflow-y-auto p-1">
+                      {labelSuggestion.matches.map((m) => (
+                        <li key={m.id}>
+                          <label className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 hover:bg-white/5">
+                            <input
+                              type="checkbox"
+                              className="mt-0.5 shrink-0"
+                              checked={labelSuggestion.selectedIds.has(m.id)}
+                              onChange={() => toggleLabelSuggestionMatch(m.id)}
+                            />
+                            <span className="min-w-0 flex-1">
+                              <span
+                                className="block truncate text-xs font-medium"
+                                style={{ color: "var(--text)" }}
+                              >
+                                {m.fromName || m.fromAddress || "Unknown sender"}
+                              </span>
+                              <span
+                                className="block truncate text-[0.7rem]"
+                                style={{ color: "var(--text-dim)" }}
+                              >
+                                {m.subject || "(no subject)"}
+                              </span>
+                            </span>
+                          </label>
+                        </li>
+                      ))}
+                      {!labelSuggestion.matches.length && (
+                        <li
+                          className="px-2 py-3 text-center text-xs"
+                          style={{ color: "var(--text-dim)" }}
+                        >
+                          No existing matches — this rule only affects future
+                          mail.
+                        </li>
+                      )}
+                    </ul>
+                  </div>
                 )}
-                {!labelSuggestion.applyResult && labelSuggestion.previewCount > 0 && (
-                  <button
-                    type="button"
-                    className="cursor-pointer rounded-full px-3 py-1 text-sm font-semibold"
-                    style={{ background: "var(--mail-purple-dim)", color: "#c4b5fd" }}
-                    disabled={pending}
-                    onClick={applyLabelSuggestionRetroactive}
-                  >
-                    Apply to {labelSuggestion.previewCount}
-                  </button>
-                )}
-                {!labelSuggestion.ruleCreated && (
-                  <button
-                    type="button"
-                    className="cursor-pointer rounded-full px-3 py-1 text-sm font-semibold"
-                    style={{ background: "rgba(255,255,255,0.08)", color: "var(--text)" }}
-                    disabled={pending}
-                    onClick={alwaysApplyLabelSuggestion}
-                  >
-                    Always do this
-                  </button>
-                )}
-                <button
-                  type="button"
-                  title="Dismiss"
-                  aria-label="Dismiss"
-                  className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full"
-                  style={{ color: "var(--text-dim)" }}
-                  onClick={dismissLabelSuggestion}
+
+                <div
+                  data-menu
+                  className="flex max-w-full flex-wrap items-center gap-3 rounded-full px-4 py-2.5 shadow-lg"
+                  style={{
+                    background: "var(--bg-elevated)",
+                    border: "1px solid var(--border-strong)",
+                  }}
                 >
-                  <X size={14} />
-                </button>
+                  <span className="text-sm" style={{ color: "var(--text)" }}>
+                    {labelSuggestion.applyResult ? (
+                      labelSuggestion.applyResult.count > 0 ? (
+                        `${labelSuggestion.isSmartLabel ? "Relabeled" : "Moved"} ${labelSuggestion.applyResult.count} more${labelSuggestion.ruleCreated ? " · Rule created" : ""}`
+                      ) : (
+                        `No matches applied${labelSuggestion.ruleCreated ? " · Rule created" : ""}`
+                      )
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="cursor-pointer underline decoration-dotted underline-offset-2"
+                          onClick={toggleLabelSuggestionExpanded}
+                        >
+                          {labelSuggestion.matches.length}
+                          {labelSuggestion.matchesCapped ? "+" : ""} similar email
+                          {labelSuggestion.matches.length === 1 ? "" : "s"}
+                        </button>
+                        {` — apply “${labelSuggestion.targetLabelDisplay}” too?`}
+                      </>
+                    )}
+                  </span>
+                  {labelSuggestion.applyResult?.snapshot && (
+                    <button
+                      type="button"
+                      className="cursor-pointer rounded-full px-3 py-1 text-sm font-semibold"
+                      style={{ background: "var(--mail-purple-dim)", color: "#c4b5fd" }}
+                      onClick={undoLabelSuggestionApply}
+                    >
+                      Undo
+                    </button>
+                  )}
+                  {!labelSuggestion.applyResult && labelSuggestion.selectedIds.size > 0 && (
+                    <button
+                      type="button"
+                      className="cursor-pointer rounded-full px-3 py-1 text-sm font-semibold"
+                      style={{ background: "var(--mail-purple-dim)", color: "#c4b5fd" }}
+                      disabled={pending}
+                      onClick={applyLabelSuggestionRetroactive}
+                    >
+                      Apply to {labelSuggestion.selectedIds.size}
+                    </button>
+                  )}
+                  {!labelSuggestion.ruleCreated && (
+                    <button
+                      type="button"
+                      className="cursor-pointer rounded-full px-3 py-1 text-sm font-semibold"
+                      style={{ background: "rgba(255,255,255,0.08)", color: "var(--text)" }}
+                      disabled={pending}
+                      onClick={alwaysApplyLabelSuggestion}
+                    >
+                      Always do this
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    title="Dismiss"
+                    aria-label="Dismiss"
+                    className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full"
+                    style={{ color: "var(--text-dim)" }}
+                    onClick={dismissLabelSuggestion}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
               </motion.div>
             )}
           </AnimatePresence>,

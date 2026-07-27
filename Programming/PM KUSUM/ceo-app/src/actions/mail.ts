@@ -1460,17 +1460,19 @@ export type LabelCorrectionSuggestion = {
   fromContains: string | null;
   subjectContains: string | null;
   ruleName: string;
-  previewCount: number;
-  previewCapped: boolean;
-  previewThreads: MatchingThreadPreview[];
+  /** Every existing match (capped at 200, most-recent-first) — the UI lets
+   * the user review and deselect individual ones before applying, so this
+   * is the full reviewable list, not a short preview slice. */
+  matches: MatchingThreadPreview[];
+  matchesCapped: boolean;
 };
 
 /**
  * After a single-thread label correction (either "Move to…" or a smart-label
  * fix), ask Claude what makes that email generalizable, then look up real
- * existing matches — the live preview shown before the user opts into
- * anything. Returns null when nothing generalizes (a one-off email), in
- * which case the UI shows no suggestion at all.
+ * existing matches — shown in full so the user can select/deselect before
+ * applying anything. Returns null when nothing generalizes (a one-off
+ * email), in which case the UI shows no suggestion at all.
  */
 export async function suggestLabelCorrectionAction(input: {
   threadId: string;
@@ -1505,16 +1507,14 @@ export async function suggestLabelCorrectionAction(input: {
     excludeThreadId: input.threadId,
     limit: 201,
   });
-  const previewCapped = matches.length > 200;
-  const trimmed = matches.slice(0, 200);
+  const matchesCapped = matches.length > 200;
 
   return {
     fromContains: criteria.fromContains,
     subjectContains: criteria.subjectContains,
     ruleName: criteria.ruleName,
-    previewCount: trimmed.length,
-    previewCapped,
-    previewThreads: trimmed.slice(0, 5),
+    matches: matches.slice(0, 200),
+    matchesCapped,
   };
 }
 
@@ -1533,6 +1533,12 @@ export type LabelCorrectionSnapshot =
  * standing rule so future mail gets the same treatment. Both are opt-in —
  * the caller only sets applyRetroactively/createStandingRule true in
  * response to an explicit user click, never automatically.
+ *
+ * `threadIds` is the exact, user-reviewed set to act on (from the
+ * suggestion's match list, after any deselection) — this function never
+ * re-derives "everything matching the rule right now" itself, so what the
+ * user saw and selected is exactly what happens, with no drift from mail
+ * that arrived or changed between the suggestion and this call.
  */
 export async function applyLabelCorrectionAction(input: {
   targetLabel: string;
@@ -1543,6 +1549,8 @@ export async function applyLabelCorrectionAction(input: {
   sourceThreadId: string;
   applyRetroactively: boolean;
   createStandingRule: boolean;
+  /** The reviewed/selected subset of matches to actually act on. */
+  threadIds?: string[];
   /** Required for custom-label corrections (the destination folder). */
   folderId?: string;
   folderName?: string;
@@ -1556,51 +1564,48 @@ export async function applyLabelCorrectionAction(input: {
   };
 
   let snapshot: LabelCorrectionSnapshot | null = null;
+  const targetIds = (input.threadIds || []).filter(
+    (id) => id !== input.sourceThreadId,
+  );
 
-  if (input.applyRetroactively) {
+  if (input.applyRetroactively && targetIds.length) {
     if (input.isSmartLabel) {
       assertAutonomy("label");
       const { snapshot: items } = await applyLabelRuleRetroactively(account.id, rule, {
         label: input.targetLabel,
-        excludeThreadId: input.sourceThreadId,
+        threadIds: targetIds,
       });
       if (items.length) snapshot = { kind: "smart", items };
     } else {
       if (!input.folderId) throw new Error("Missing target folder");
       assertAutonomy("move");
-      const matches = await findMatchingExistingThreads(account.id, rule, {
-        excludeThreadId: input.sourceThreadId,
+      const withFolder = await prisma.mailMessage.findMany({
+        where: { threadId: { in: targetIds }, accountId: account.id },
+        orderBy: { date: "desc" },
+        select: { threadId: true, folderId: true },
       });
-      if (matches.length) {
-        const matchIds = matches.map((m) => m.id);
-        const withFolder = await prisma.mailMessage.findMany({
-          where: { threadId: { in: matchIds } },
-          orderBy: { date: "desc" },
-          select: { threadId: true, folderId: true },
-        });
-        const previousFolderByThread = new Map<string, string>();
-        for (const m of withFolder) {
-          if (!previousFolderByThread.has(m.threadId)) {
-            previousFolderByThread.set(m.threadId, m.folderId);
-          }
+      const previousFolderByThread = new Map<string, string>();
+      for (const m of withFolder) {
+        if (!previousFolderByThread.has(m.threadId)) {
+          previousFolderByThread.set(m.threadId, m.folderId);
         }
-        await moveMailThreadsToFolder({
-          accountId: account.id,
-          threadIds: matchIds,
-          folderId: input.folderId,
-        });
-        snapshot = {
-          kind: "folder",
-          folderId: input.folderId,
-          folderName: input.folderName || "",
-          items: matchIds
-            .filter((id) => previousFolderByThread.has(id))
-            .map((id) => ({
-              threadId: id,
-              previousFolderId: previousFolderByThread.get(id)!,
-            })),
-        };
       }
+      await moveMailThreadsToFolder({
+        accountId: account.id,
+        threadIds: targetIds,
+        folderId: input.folderId,
+      });
+      snapshot = {
+        kind: "folder",
+        folderId: input.folderId,
+        folderName: input.folderName || "",
+        items: targetIds
+          .filter((id) => previousFolderByThread.has(id))
+          .map((id) => ({
+            threadId: id,
+            previousFolderId: previousFolderByThread.get(id)!,
+          })),
+      };
     }
   }
 

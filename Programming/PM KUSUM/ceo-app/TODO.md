@@ -532,3 +532,56 @@ not feature checklists.
   [mail.ts](src/actions/mail.ts),
   [mail-client.tsx](src/components/mail/mail-client.tsx) —
   `feature/mail-label-correction`, merged to main.
+
+---
+
+## Follow-up — 2026-07-28 (selectable match list + always-present label affordance)
+
+- [x] **[UX FIX] "Apply to N" only ever applied to everything matched — no
+  way to review or exclude individual mails first.** User feedback after
+  trying the feature live: "when it says applying this to n more mails,
+  it should show those mails and allow us to select or deselect some of
+  them." `suggestLabelCorrectionAction` now returns the full match list
+  (up to the existing 200 cap, not just a 5-item preview), and the
+  suggestion toast's count is a clickable link that expands a scrollable,
+  checkbox-per-thread review panel (sender + subject, Select all/Deselect
+  all, live "N of M selected" count) above the pill. Retroactive apply now
+  sends the exact reviewed/checked thread-id list to
+  `applyLabelCorrectionAction` instead of the server re-deriving "everything
+  matching the rule right now" — closes a minor staleness gap too (what
+  you saw and selected is exactly what happens, with no drift from mail
+  that changed between the suggestion and the click). The auto-dismiss
+  timer pauses while the review panel is open so it can't vanish mid-review.
+  Verified live end-to-end: opened the review list, deselected the only
+  match ("0 of 1 selected", Apply button correctly disappears), re-selected
+  it, clicked Apply, and confirmed via direct DB query that only the
+  selected thread was touched (a sibling match that was correctly left
+  unselected in an earlier pass stayed untouched).
+- [x] **[UX FIX] Reader header looked structurally different depending on
+  whether a thread already had a smart label.** User feedback with two
+  side-by-side screenshots: "the UI for these two threads looks so
+  different." Root cause: the entire labels row was conditionally
+  rendered only when `labelsJson` was non-empty — a thread with zero
+  labels (common for anything not yet triaged) had no row at all, and
+  critically, no way to assign a first label either, since the correction
+  affordance lived only on existing chips. Now the row always renders; if
+  no smart label exists yet, a dashed "+ Label" placeholder opens the same
+  7-option popover to assign one for the first time (not just correct an
+  existing one) — `correctSmartLabelAction`/`mergeSmartLabels` already
+  handled going from zero labels to one correctly, so this was purely a
+  UI gap, not a server-side one. Verified live on the exact thread from
+  the screenshot ("Bhaureji Surajmal Green Energy... Bharatpur-Part 3",
+  previously unlabeled): "+ Label" appeared, assigning PM KUSUM worked,
+  and the row now matches the layout of an already-labeled thread.
+  Also worth noting: while testing, the in-browser tab's hot-reloaded JS
+  briefly got into a state where the new expand-toggle button existed but
+  its click handler appeared to do nothing (and, via the browser
+  automation tool's coordinate-based clicks specifically, appeared to
+  dismiss the whole toast) — a hard page reload fixed it immediately and
+  the feature worked perfectly afterward. Confirmed via direct DOM/JS
+  inspection this was stale client-side Fast Refresh state on a
+  very-long-lived dev tab, not an application bug.
+  [mail.ts](src/actions/mail.ts),
+  [label-rules.ts](src/lib/mail/ai/label-rules.ts),
+  [mail-client.tsx](src/components/mail/mail-client.tsx) —
+  `feature/mail-label-correction-selectable-matches`, merged to main.
