@@ -1,3 +1,6 @@
+import { prisma } from "@/lib/prisma";
+import { decryptSecret } from "@/lib/mail/credential-crypto";
+
 export type CeoMailConfig = {
   host: string;
   smtpPort: number;
@@ -46,4 +49,42 @@ export function getCeoMailConfig(): CeoMailConfig | null {
 
 export function ceoMailConfigured(): boolean {
   return getCeoMailConfig() != null;
+}
+
+/**
+ * Resolves any mailbox's connection config, not just akshay@ — every
+ * existing call site (sync.ts, imap-mailbox.ts, outbox.ts, managesieve.ts,
+ * drafts.ts, idle-watcher.ts, labels.ts, the attachments route) swaps its
+ * `getCeoMailConfig()` call for this, passing whatever account it already
+ * has in scope. `credentialKey === "ceo_env"` (akshay@, always) keeps
+ * reading CEO_MAIL_* env vars via the exact function above, completely
+ * unchanged; any other mailbox loads + decrypts its MailAccountCredential
+ * row. Same CeoMailConfig shape either way.
+ */
+export async function getMailConfig(account: {
+  id: string;
+  credentialKey: string;
+  address: string;
+  displayName?: string | null;
+}): Promise<CeoMailConfig | null> {
+  if (account.credentialKey === "ceo_env") return getCeoMailConfig();
+
+  const cred = await prisma.mailAccountCredential.findUnique({
+    where: { accountId: account.id },
+  });
+  if (!cred) return null;
+
+  return {
+    host: cred.host,
+    smtpPort: cred.smtpPort,
+    smtpSecure: cred.smtpSecure,
+    imapPort: cred.imapPort,
+    imapSecure: cred.imapSecure,
+    sievePort: cred.sievePort,
+    user: cred.username,
+    pass: decryptSecret(cred.passwordEncrypted),
+    from: account.displayName
+      ? `"${account.displayName}" <${account.address}>`
+      : account.address,
+  };
 }

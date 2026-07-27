@@ -1,6 +1,6 @@
 import { ImapFlow } from "imapflow";
 import { prisma } from "@/lib/prisma";
-import { getCeoMailConfig } from "@/lib/mail/ceo-config";
+import { getMailConfig } from "@/lib/mail/ceo-config";
 import { buildRawMime } from "@/lib/mail/mime";
 
 export type MailboxRole =
@@ -11,9 +11,11 @@ export type MailboxRole =
   | "JUNK"
   | "ARCHIVE";
 
-async function connectImap() {
-  const cfg = getCeoMailConfig();
-  if (!cfg) throw new Error("CEO mail not configured");
+async function connectImap(accountId: string) {
+  const account = await prisma.mailAccount.findUnique({ where: { id: accountId } });
+  if (!account) throw new Error("Mail account not found");
+  const cfg = await getMailConfig(account);
+  if (!cfg) throw new Error("Mail account not configured");
   const client = new ImapFlow({
     host: cfg.host,
     port: cfg.imapPort,
@@ -88,7 +90,7 @@ export async function appendSentMessage(input: {
   referencesHdr?: string | null;
   messageId?: string | null;
 }) {
-  const { client, cfg } = await connectImap();
+  const { client, cfg } = await connectImap(input.accountId);
   try {
     const sentPath = await resolveMailboxPath(client, input.accountId, "SENT");
     const raw = buildRawMime({
@@ -137,7 +139,7 @@ export async function markInboxMessagesSeen(input: {
   });
   if (!msgs.length) return;
 
-  const { client } = await connectImap();
+  const { client } = await connectImap(input.accountId);
   try {
     const byFolder = new Map<string, number[]>();
     for (const m of msgs) {
@@ -187,7 +189,7 @@ async function moveThreadsMessagesToPath(input: {
   });
   if (!msgs.length) throw new Error("No messages to move");
 
-  const { client } = await connectImap();
+  const { client } = await connectImap(input.accountId);
   try {
     const targetFolder = await prisma.mailFolder.upsert({
       where: {
@@ -268,7 +270,7 @@ export async function trashMailThreads(input: {
   accountId: string;
   threadIds: string[];
 }) {
-  const { client } = await connectImap();
+  const { client } = await connectImap(input.accountId);
   const trashPath = await resolveMailboxPath(client, input.accountId, "TRASH");
   await client.logout().catch(() => undefined);
   const result = await moveThreadsMessagesToPath({
@@ -284,7 +286,7 @@ export async function archiveMailThreads(input: {
   accountId: string;
   threadIds: string[];
 }) {
-  const { client } = await connectImap();
+  const { client } = await connectImap(input.accountId);
   const archivePath = await resolveMailboxPath(
     client,
     input.accountId,

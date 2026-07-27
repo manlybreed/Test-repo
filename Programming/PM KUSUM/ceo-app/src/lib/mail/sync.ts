@@ -1,7 +1,7 @@
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { prisma } from "@/lib/prisma";
-import { getCeoMailConfig } from "@/lib/mail/ceo-config";
+import { getCeoMailConfig, getMailConfig } from "@/lib/mail/ceo-config";
 import { ensureCeoMailAccount } from "@/lib/mail/account";
 import {
   htmlToText,
@@ -103,9 +103,14 @@ async function mergeThreadLabels(threadId: string, add: string[]) {
   });
 }
 
-async function connectImap() {
-  const cfg = getCeoMailConfig();
-  if (!cfg) throw new Error("CEO mail not configured");
+async function connectImap(account?: {
+  id: string;
+  credentialKey: string;
+  address: string;
+  displayName?: string | null;
+}) {
+  const cfg = account ? await getMailConfig(account) : getCeoMailConfig();
+  if (!cfg) throw new Error("Mail account not configured");
   const client = new ImapFlow({
     host: cfg.host,
     port: cfg.imapPort,
@@ -124,6 +129,8 @@ function roleBumpsThread(role: string) {
 
 export async function syncCeoMail(opts?: {
   userId?: string | null;
+  /** Sync this specific mailbox instead of resolving the env-based one via userId. */
+  accountId?: string;
   maxPerFolder?: number;
   /** Cap AI triage for newly imported threads (0 = skip). Default 8. */
   maxTriageNew?: number;
@@ -135,8 +142,10 @@ export async function syncCeoMail(opts?: {
    */
   incremental?: boolean;
 }) {
-  const account = await ensureCeoMailAccount(opts?.userId);
-  if (!account) throw new Error("CEO mail not configured");
+  const account = opts?.accountId
+    ? await prisma.mailAccount.findUnique({ where: { id: opts.accountId } })
+    : await ensureCeoMailAccount(opts?.userId);
+  if (!account) throw new Error("Mail account not configured");
 
   const max = opts?.maxPerFolder ?? 60;
   const maxTriageNew = opts?.maxTriageNew ?? 8;
@@ -160,7 +169,7 @@ export async function syncCeoMail(opts?: {
   });
   const blockedSenders = new Set(blockedRows.map((b) => b.address.toLowerCase()));
 
-  const client = await connectImap();
+  const client = await connectImap(account);
   let imported = 0;
   const newInboxThreadIds: string[] = [];
   const touchedThreads = new Set<string>();

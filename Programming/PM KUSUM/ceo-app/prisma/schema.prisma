@@ -773,6 +773,31 @@ model MailAccount {
   blockedSenders BlockedSender[]
   contacts      MailContact[]
   vacationResponder MailVacationResponder?
+  credential    MailAccountCredential?
+}
+
+/// Encrypted IMAP/SMTP connection details for a mailbox added via the
+/// in-app "Add mailbox" form — used when credentialKey !== "ceo_env".
+/// The akshay@ account never has a row here; it keeps reading CEO_MAIL_*
+/// env vars exactly as before this feature existed. One shared `host`
+/// (not separate imap/smtp hosts) deliberately mirrors CeoMailConfig's
+/// existing shape — every mailbox on this domain is served by the same
+/// mail.thebluridge.com for both protocols, same as akshay@ today.
+model MailAccountCredential {
+  id                String   @id @default(cuid())
+  accountId         String   @unique
+  account           MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  host              String
+  imapPort          Int
+  imapSecure        Boolean  @default(true)
+  smtpPort          Int
+  smtpSecure        Boolean  @default(false)
+  sievePort         Int      @default(4190)
+  username          String
+  /// AES-256-GCM ciphertext (iv + authTag + data, base64) — never plaintext.
+  passwordEncrypted String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 }
 
 /// Out-of-office / vacation responder — a Sieve script pushed via ManageSieve.

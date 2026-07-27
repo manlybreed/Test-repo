@@ -641,3 +641,76 @@ not feature checklists.
   [mail.ts](src/actions/mail.ts),
   [mail-client.tsx](src/components/mail/mail-client.tsx) —
   `fix/mail-label-correction-semantic-similarity`, merged to main.
+
+---
+
+## 2026-07-28 — Multi-mailbox support, Phase 1: schema + credentials + Add-mailbox UI
+
+- [x] **[FEATURE, Phase 1 of 5] Foundation for multiple mailboxes
+  (akshay@, accounts@, pmkusum@, ...) in one command center.** Researched
+  industry practice first (Outlook's incoming unified "All Accounts" inbox
+  on top of its per-account sidebar; Superhuman's fast account switching;
+  the sidebar-color-coding best practice to avoid "replying from the wrong
+  account"; confirmed real IMAP mailboxes — unlike Exchange-delegated
+  shared mailboxes — genuinely need their own credentials, no shortcut).
+  Direct code inspection first confirmed the data model was already built
+  multi-account-ready (`MailAccount.userId` non-unique, every child model
+  already `accountId`-scoped, a dormant `credentialKey` field) — this
+  phase activates that design rather than rebuilding it. Three decisions
+  confirmed with the user: encrypted in-app "Add mailbox" form (not more
+  env vars), sidebar switcher **+** a unified "All Inboxes" view (not
+  switcher-only), and real-time IMAP IDLE for every mailbox (not just the
+  primary one) — the latter two land in Phases 3-5.
+  This phase: `MailAccountCredential` (1:1 with `MailAccount`, encrypted
+  via new AES-256-GCM helpers keyed by a new `MAIL_CREDENTIALS_KEY` env
+  var — the key itself never touches the DB, so a DB dump alone can't leak
+  a mailbox password); `getMailConfig(account)` resolver in `ceo-config.ts`
+  that keeps akshay@ on the exact unchanged `CEO_MAIL_*` env path
+  (`credentialKey: "ceo_env"`) and routes anything else through the new
+  encrypted table; swapped all 8 places that called `getCeoMailConfig()`
+  directly (sync/imap-mailbox/outbox/managesieve/drafts/labels — each
+  already had an `accountId` in scope, so this was a mechanical per-account
+  parameterization, not a redesign) — `idle-watcher.ts` deliberately
+  deferred to Phase 5, since its whole architecture (one global watcher)
+  is what that phase replaces; swapping it now would be a no-op.
+  Also fixed a real correctness gap found along the way: the attachment
+  download route checked ownership against only the one env-configured
+  account, so an attachment on a second mailbox would 404 even for its
+  rightful owner — now checks against any mailbox the session user owns.
+  New `mail-accounts.ts` actions (list/test/add/update/remove) and a new
+  "Mailboxes" settings panel (same modal pattern as the existing
+  Signatures/Vacation panels) with a real "Test connection" button
+  (attempts a genuine IMAP connect + SMTP verify, persists nothing).
+  Verified live: akshay@'s sync/bootstrap continued working unchanged
+  through the new `getMailConfig` path (the regression check that mattered
+  most, since this phase touches the credential layer every existing mail
+  operation depends on); the Mailboxes panel opens and lists akshay@ as
+  primary with no Remove button; the Add-mailbox form renders with sane
+  defaults (mail.thebluridge.com, ports 993/587); "Test connection" against
+  a deliberately wrong username/password correctly reports "IMAP: Command
+  failed" without proceeding to save; confirmed via direct DB query that
+  no stray `MailAccount`/`MailAccountCredential` rows were left behind
+  from that negative test. New unit tests for the encryption helpers
+  (round-trip, non-deterministic ciphertext, tamper detection via GCM auth
+  tag, missing/malformed key errors).
+  **Not verified live**: actually adding a second *real* mailbox
+  (accounts@/pmkusum@) and confirming it syncs — this needs real
+  credentials for one of those mailboxes, which weren't available during
+  this session. The mechanism (encrypt → store → resolve → connect) is
+  proven end-to-end by the round-trip tests and the live negative
+  connection test; a positive real-credential test is the natural first
+  thing to do before relying on this in practice.
+  [prisma/schema.prisma](prisma/schema.prisma),
+  [credential-crypto.ts](src/lib/mail/credential-crypto.ts),
+  [ceo-config.ts](src/lib/mail/ceo-config.ts),
+  [account.ts](src/lib/mail/account.ts),
+  [mail-accounts.ts](src/actions/mail-accounts.ts),
+  [mailboxes-panel.tsx](src/components/mail/mailboxes-panel.tsx),
+  [sync.ts](src/lib/mail/sync.ts),
+  [imap-mailbox.ts](src/lib/mail/imap-mailbox.ts),
+  [outbox.ts](src/lib/mail/outbox.ts),
+  [managesieve.ts](src/lib/mail/managesieve.ts),
+  [drafts.ts](src/lib/mail/drafts.ts),
+  [labels.ts](src/lib/mail/labels.ts),
+  [attachments/[id]/route.ts](src/app/api/mail/attachments/[id]/route.ts) —
+  `feature/mail-multi-account-schema-and-credentials`, merged to main.

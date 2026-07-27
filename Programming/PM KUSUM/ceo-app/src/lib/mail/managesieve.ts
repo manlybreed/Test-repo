@@ -1,6 +1,6 @@
 import net from "net";
 import tls from "tls";
-import { getCeoMailConfig } from "@/lib/mail/ceo-config";
+import { getMailConfig } from "@/lib/mail/ceo-config";
 
 /**
  * Minimal RFC 5804 ManageSieve client — no maintained npm package exists for
@@ -147,10 +147,11 @@ export class ManageSieveClient {
 }
 
 export async function withManageSieve<T>(
+  account: { id: string; credentialKey: string; address: string; displayName?: string | null },
   fn: (client: ManageSieveClient) => Promise<T>,
 ): Promise<T> {
-  const cfg = getCeoMailConfig();
-  if (!cfg) throw new ManageSieveError("CEO mail not configured");
+  const cfg = await getMailConfig(account);
+  if (!cfg) throw new ManageSieveError("Mail account not configured");
   const client = new ManageSieveClient(cfg.host, cfg.sievePort);
   await client.connect();
   try {
