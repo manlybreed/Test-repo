@@ -160,9 +160,17 @@ export async function markInboxMessagesSeen(input: {
 
 /**
  * Move every IMAP message across one or more threads into a target mailbox
- * path (server-side) over a SINGLE IMAP connection, dropping the local rows
- * so the source view clears immediately — next sync re-imports into the
- * target mailbox. Shared by trash/archive/move-to-folder, single or bulk.
+ * path (server-side) over a SINGLE IMAP connection, then repoint the local
+ * rows at the new folder/UID in place so the target view (e.g. Trash) is
+ * correct immediately — no dependency on a later background resync.
+ *
+ * Dovecot supports UIDPLUS, so `messageMove` reliably returns a uidMap of
+ * old-UID -> new-UID; that's the normal path. If a server ever lacks
+ * UIDPLUS (no uidMap in the response), we fall back to the old
+ * delete-and-let-the-next-sync-reimport behavior for just that batch,
+ * rather than silently mis-recording a UID we don't actually have.
+ *
+ * Shared by trash/archive/move-to-folder, single or bulk.
  */
 async function moveThreadsMessagesToPath(input: {
   accountId: string;
@@ -181,7 +189,7 @@ async function moveThreadsMessagesToPath(input: {
 
   const { client } = await connectImap();
   try {
-    await prisma.mailFolder.upsert({
+    const targetFolder = await prisma.mailFolder.upsert({
       where: {
         accountId_path: { accountId: input.accountId, path: input.targetPath },
       },
@@ -194,32 +202,60 @@ async function moveThreadsMessagesToPath(input: {
       update: { role: input.targetRole },
     });
 
-    const byFolder = new Map<string, number[]>();
+    const byFolder = new Map<string, typeof msgs>();
     for (const m of msgs) {
       if (m.folder.path === input.targetPath) continue;
       const list = byFolder.get(m.folder.path) || [];
-      list.push(m.imapUid);
+      list.push(m);
       byFolder.set(m.folder.path, list);
     }
 
-    for (const [path, uids] of byFolder) {
-      if (!uids.length) continue;
+    const staleIds: string[] = [];
+    for (const [path, folderMsgs] of byFolder) {
+      if (!folderMsgs.length) continue;
+      const uids = folderMsgs.map((m) => m.imapUid);
       const lock = await client.getMailboxLock(path);
+      let result: Awaited<ReturnType<typeof client.messageMove>>;
       try {
-        await client.messageMove(uids.join(","), input.targetPath, {
+        result = await client.messageMove(uids.join(","), input.targetPath, {
           uid: true,
         });
       } finally {
         lock.release();
       }
+
+      const uidMap = result ? result.uidMap : undefined;
+      for (const m of folderMsgs) {
+        const newUid = uidMap?.get(m.imapUid);
+        if (newUid == null) {
+          // No UIDPLUS mapping for this message — can't safely repoint it
+          // in place. Drop it locally; the next full sync re-imports it
+          // into the target mailbox.
+          staleIds.push(m.id);
+          continue;
+        }
+        await prisma.mailMessage.update({
+          where: { id: m.id },
+          data: { folderId: targetFolder.id, imapUid: newUid },
+        });
+      }
     }
 
-    await prisma.mailMessage.deleteMany({
-      where: { accountId: input.accountId, threadId: { in: input.threadIds } },
-    });
-    await prisma.mailThread
-      .deleteMany({ where: { id: { in: input.threadIds } } })
-      .catch(() => undefined);
+    if (staleIds.length) {
+      await prisma.mailMessage.deleteMany({ where: { id: { in: staleIds } } });
+    }
+
+    if (input.targetRole === "TRASH") {
+      await prisma.mailThread.updateMany({
+        where: { id: { in: input.threadIds } },
+        data: { trashedAt: new Date() },
+      });
+    }
+
+    const { recomputeThreadDenorm } = await import("@/lib/mail/threads-query");
+    for (const threadId of input.threadIds) {
+      await recomputeThreadDenorm(threadId).catch(() => undefined);
+    }
 
     return { ok: true as const, targetPath: input.targetPath, moved: msgs.length };
   } finally {
