@@ -3,7 +3,6 @@ import fs from "fs/promises";
 import path from "path";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { ensureCeoMailAccount } from "@/lib/mail/account";
 
 export async function GET(
   _req: NextRequest,
@@ -14,16 +13,14 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const account = await ensureCeoMailAccount(session.user.id);
-  if (!account) {
-    return NextResponse.json({ error: "Mail not configured" }, { status: 400 });
-  }
-
   const { id } = await ctx.params;
+  // Scoped to any mailbox the user owns, not just the one env-configured
+  // account — an attachment on accounts@/pmkusum@ must be just as
+  // downloadable as one on akshay@.
   const att = await prisma.mailAttachment.findFirst({
     where: {
       id,
-      message: { accountId: account.id },
+      message: { account: { userId: session.user.id } },
     },
   });
 

@@ -706,12 +706,12 @@ export async function saveVacationSettingsAction(input: {
       excludedSenders: input.excludedSenders,
       fromAddress: account.address,
     });
-    await withManageSieve(async (client) => {
+    await withManageSieve(account, async (client) => {
       await client.putScript(VACATION_SCRIPT_NAME, script);
       await client.setActive(VACATION_SCRIPT_NAME);
     });
   } else {
-    await withManageSieve(async (client) => {
+    await withManageSieve(account, async (client) => {
       await client.deactivateAll();
     });
   }

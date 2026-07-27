@@ -1,6 +1,6 @@
 import { ImapFlow } from "imapflow";
 import { prisma } from "@/lib/prisma";
-import { getCeoMailConfig } from "@/lib/mail/ceo-config";
+import { getMailConfig } from "@/lib/mail/ceo-config";
 
 function sanitizeLabelName(name: string): string {
   const clean = name
@@ -15,9 +15,11 @@ function sanitizeLabelName(name: string): string {
   return clean;
 }
 
-async function connectImap() {
-  const cfg = getCeoMailConfig();
-  if (!cfg) throw new Error("CEO mail not configured");
+async function connectImap(accountId: string) {
+  const account = await prisma.mailAccount.findUnique({ where: { id: accountId } });
+  if (!account) throw new Error("Mail account not found");
+  const cfg = await getMailConfig(account);
+  if (!cfg) throw new Error("Mail account not configured");
   const client = new ImapFlow({
     host: cfg.host,
     port: cfg.imapPort,
@@ -48,7 +50,7 @@ export async function createMailLabel(opts: {
   });
   if (existing) return existing;
 
-  const client = await connectImap();
+  const client = await connectImap(opts.accountId);
   try {
     try {
       await client.mailboxCreate(pathName);

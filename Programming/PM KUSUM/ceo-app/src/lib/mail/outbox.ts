@@ -1,6 +1,6 @@
 import nodemailer from "nodemailer";
 import { prisma } from "@/lib/prisma";
-import { getCeoMailConfig } from "@/lib/mail/ceo-config";
+import { getMailConfig } from "@/lib/mail/ceo-config";
 import { htmlToText } from "@/lib/mail/normalize";
 import { assertAutonomy } from "@/lib/mail/ai/policy";
 import { appendSentMessage } from "@/lib/mail/imap-mailbox";
@@ -19,8 +19,10 @@ export async function flushOutboxItem(
     throw new Error("Scheduled send not due yet");
   }
 
-  const cfg = getCeoMailConfig();
-  if (!cfg) throw new Error("CEO mail not configured (CEO_MAIL_USER / CEO_MAIL_PASS)");
+  const account = await prisma.mailAccount.findUnique({ where: { id: row.accountId } });
+  if (!account) throw new Error("Mail account not found");
+  const cfg = await getMailConfig(account);
+  if (!cfg) throw new Error("Mail account not configured");
 
   const transport = nodemailer.createTransport({
     host: cfg.host,

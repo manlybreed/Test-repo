@@ -1,6 +1,6 @@
 import { ImapFlow } from "imapflow";
 import { prisma } from "@/lib/prisma";
-import { getCeoMailConfig } from "@/lib/mail/ceo-config";
+import { getMailConfig } from "@/lib/mail/ceo-config";
 import { htmlToText } from "@/lib/mail/normalize";
 import { buildRawMime } from "@/lib/mail/mime";
 import { randomUUID } from "crypto";
@@ -46,9 +46,11 @@ function parseImapDraftRef(raw: string | null | undefined): {
   return { path, uid };
 }
 
-async function connectImap() {
-  const cfg = getCeoMailConfig();
-  if (!cfg) throw new Error("CEO mail not configured");
+async function connectImap(accountId: string) {
+  const account = await prisma.mailAccount.findUnique({ where: { id: accountId } });
+  if (!account) throw new Error("Mail account not found");
+  const cfg = await getMailConfig(account);
+  if (!cfg) throw new Error("Mail account not configured");
   const client = new ImapFlow({
     host: cfg.host,
     port: cfg.imapPort,
@@ -101,7 +103,7 @@ export async function saveMailDraft(input: {
   inReplyTo?: string | null;
   referencesHdr?: string | null;
 }) {
-  const { client, cfg } = await connectImap();
+  const { client, cfg } = await connectImap(input.accountId);
   const to = input.to;
   const cc = input.cc || [];
   const bcc = input.bcc || [];
@@ -230,7 +232,7 @@ export async function deleteLocalDraft(accountId: string, draftId: string) {
   const ref = parseImapDraftRef(row.smtpMessageId);
   if (ref) {
     try {
-      const { client } = await connectImap();
+      const { client } = await connectImap(accountId);
       try {
         const lock = await client.getMailboxLock(ref.path);
         try {

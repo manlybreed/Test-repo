@@ -58,6 +58,11 @@ import {
   type SignatureRow,
 } from "@/components/mail/signatures-panel";
 import { VacationPanel } from "@/components/mail/vacation-panel";
+import { MailboxesPanel } from "@/components/mail/mailboxes-panel";
+import {
+  listMailAccountsAction,
+  type MailAccountSummary,
+} from "@/actions/mail-accounts";
 import { haptic } from "@/components/mail/haptics";
 import { playSendSound, playSendFlyAnimation } from "@/components/mail/sound";
 import { useSpeechToText } from "@/components/mail/use-speech-to-text";
@@ -1165,6 +1170,8 @@ export function MailClient({
   const [sigList, setSigList] = useState<SignatureRow[]>(signatures);
   const [showSignatures, setShowSignatures] = useState(false);
   const [showVacation, setShowVacation] = useState(false);
+  const [showMailboxes, setShowMailboxes] = useState(false);
+  const [mailAccounts, setMailAccounts] = useState<MailAccountSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [composeHtml, setComposeHtml] = useState("");
@@ -4079,6 +4086,24 @@ export function MailClient({
                       setShowSettingsMenu(false);
                       startTransition(async () => {
                         haptic("tap");
+                        const rows = await listMailAccountsAction();
+                        setMailAccounts(rows);
+                        setShowMailboxes(true);
+                      });
+                    }}
+                  >
+                    <MailIcon size={14} /> Mailboxes
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-left hover:bg-white/5"
+                    style={{ color: "var(--text)" }}
+                    onClick={() => {
+                      setShowSettingsMenu(false);
+                      startTransition(async () => {
+                        haptic("tap");
                         const rows = await listLabelRulesAction();
                         setLabelRules(rows);
                         setShowRules(true);
@@ -4255,6 +4280,13 @@ export function MailClient({
       />
 
       <VacationPanel open={showVacation} onClose={() => setShowVacation(false)} />
+
+      <MailboxesPanel
+        open={showMailboxes}
+        onClose={() => setShowMailboxes(false)}
+        accounts={mailAccounts}
+        onChange={setMailAccounts}
+      />
 
       <AnimatePresence>
         {showRules && (
