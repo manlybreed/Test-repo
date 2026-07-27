@@ -126,3 +126,35 @@ not feature checklists.
   fixed for the cases found so far) and still the more robust long-term
   fix. Deferred pending explicit sign-off since it's a real refactor, not a
   bug fix.
+
+---
+
+## Reported bugs
+
+- [ ] **Not yet fixed — AI attachment summary shows empty for an attachment
+  that does exist.** In the "Raisar Solar Plant ... Part 1" email thread,
+  running AI summary on the attachment related to Santosh Yadav's net worth
+  returns an empty summary even though the file is genuinely attached and
+  present. Reported 2026-07-27 — explicitly deferred, do not fix yet.
+- [x] **[FIXED] Threads column showed stale Inbox content after trashing
+  from All Inbox.** Delete a thread while viewing All Inbox, then land
+  on/click Trash: the Mailboxes sidebar correctly highlighted Trash as
+  selected, but the Threads column kept rendering the old All Inbox list.
+  Root cause: two long-lived effects — the SSE live-update listener
+  (`useEffect(..., [configured])`) and the fallback poll's `runSync` —
+  captured `reloadActiveView` in a closure at mount/subscribe time and
+  never refreshed it, so a background-sync-triggered reload fired *after*
+  the user had switched folders still reloaded whichever mailbox was
+  active back when the effect first subscribed, silently overwriting the
+  correct view. A same-request-ordering sequence guard (added first, for a
+  narrower race between a mutation's own reload and a folder switch) was
+  necessary but insufficient here, since this reload wasn't out of order —
+  it just targeted the wrong folder. Fixed by routing both call sites
+  through a ref that's reassigned to the latest `reloadActiveView` closure
+  every render, so any deferred reload always targets whatever mailbox is
+  actually selected at the moment it fires. Verified live by rapid-fire
+  trashing a thread and immediately switching to Trash, then waiting past
+  a full background-resync cycle (12+s) to confirm the correct Trash
+  content never got clobbered.
+  [mail-client.tsx](src/components/mail/mail-client.tsx) —
+  `fix/mail-stale-folder-after-trash`, merged to main.
