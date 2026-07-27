@@ -714,3 +714,57 @@ not feature checklists.
   [labels.ts](src/lib/mail/labels.ts),
   [attachments/[id]/route.ts](src/app/api/mail/attachments/[id]/route.ts) —
   `feature/mail-multi-account-schema-and-credentials`, merged to main.
+
+---
+
+## 2026-07-28 — Multi-mailbox support, Phase 2: action-layer account resolution
+
+Refactored `actions/mail.ts` so thread/message-scoped actions resolve their
+account from the thread itself instead of always defaulting to the primary
+env mailbox — the real gap this closes: several of these actions
+(`snoozeThread`, `setThreadPriority`, `setThreadImportant`, `triageThreadAction`)
+had **no ownership check on `threadId` at all** before this change, and
+several more (`summarizeThreadAction`, `draftReplyAction`,
+`multilingualDraftAction`, `extractCommitmentsAction`, the label-correction
+trio) resolved to the *wrong* account's id whenever the thread belonged to
+anything other than the primary mailbox, which would have silently broken
+those features the moment a second mailbox existed. New helper
+`requireAccountForThread(threadId)` in `actions/mail.ts` (mirrors
+`requireAccount()`'s return shape) wraps the new
+`requireOwnedAccountForThread` from `account.ts`, and now backs:
+`trashThreadAction`, `archiveThreadAction`, `moveThreadToFolderAction`,
+`archiveThreadsAction`/`trashThreadsAction`/`moveThreadsToFolderAction`
+(bulk — derive from the first selected id, a known limitation for a future
+cross-account multi-select), `setThreadImportant`, `getMailThread`,
+`markThreadRead`, `snoozeThread`, `setThreadPriority`, `triageThreadAction`,
+`summarizeThreadAction`, `draftReplyAction`, `multilingualDraftAction`,
+`extractCommitmentsAction`, `correctSmartLabelAction`,
+`suggestLabelCorrectionAction`, `applyLabelCorrectionAction` (from
+`sourceThreadId`), and `undoLabelCorrectionAction` (from the snapshot's
+first thread id, for the "folder" kind — the "smart" kind never scoped by
+account to begin with).
+
+**Scope deliberately narrowed from the original plan**: the plan also
+called for adding an explicit `accountId` parameter to ~50 mailbox-level
+actions (sync, bootstrap, search, compose, ask-mailbox, digest,
+signatures/vacation/label-rules CRUD, etc). Skipped for now — Phase 3
+(sidebar switcher) doesn't exist yet, so no caller can pass anything but
+the default account regardless, meaning that plumbing would be untested
+and inert until Phase 3 actually needs it. Folding it into Phase 3 instead,
+where a real UI caller will exist to pass real values and the change can
+be verified by actually switching mailboxes.
+
+Verified: `npx tsc --noEmit`, `npx eslint src/actions/mail.ts
+src/lib/mail/account.ts`, `npx vitest run src/lib/mail` (118 passed, 1
+skipped), null-byte scan — all clean. Live regression on akshay@ (the only
+account with real credentials): opened a thread (`getMailThread` +
+`markThreadRead`), toggled Mark/Unmark important (`setThreadImportant`),
+changed priority via the P2 dropdown (`setThreadPriority`), and filtered by
+a smart label chip — all worked exactly as before, confirming
+`requireAccountForThread` resolves the same account `requireAccount()` used
+to for a single-mailbox session. No server errors in dev-server logs
+throughout.
+
+[account.ts](src/lib/mail/account.ts),
+[mail.ts](src/actions/mail.ts) —
+`feature/mail-multi-account-action-layer`, merged to main.
