@@ -2600,24 +2600,33 @@ export function MailClient({
         }
 
         // The brief is the only place a recipient like "send mail to Akshay
-        // on akshayroyal678@gmail.com" gets typed — if To is still empty,
-        // pull a recipient out of it instead of silently drafting to no one.
+        // on akshayroyal678@gmail.com" gets typed. Always parse it for a
+        // recipient/name — even if To is already filled (e.g. this is a
+        // second Draft click on the same brief) — since the name hint is a
+        // property of the *instruction*, not of whether To happens to be
+        // populated yet; only gating on "To empty" here would silently
+        // drop the hint on any run after the first.
         let recipients = splitAddrs(to);
-        if (!recipients.length) {
-          const resolved = await extractDraftRecipientsAction(brief).catch(
-            () => null,
-          );
-          if (resolved?.to.length) {
-            recipients = resolved.to;
-            setTo(resolved.to.join(", "));
-          }
+        const resolved = await extractDraftRecipientsAction(brief).catch(
+          () => null,
+        );
+        if (!recipients.length && resolved?.to.length) {
+          recipients = resolved.to;
+          setTo(resolved.to.join(", "));
         }
+        // knownName is whatever the user's own instruction named the
+        // recipient as (e.g. "...belonging to Baneshwari Royal") when
+        // there's no matching contact/client record to confirm it from —
+        // still worth carrying through to the draft, since the source is
+        // the user's own words, not a guess.
+        const recipientNameHint = resolved?.knownName || undefined;
 
         const d = await draftNewMailAction({
           to: recipients,
           subject: subject.trim() || undefined,
           intent: brief,
           tone: DEFAULT_DRAFT_TONE,
+          recipientNameHint,
         });
         if (d?.html) {
           setComposeHtml(d.html);

@@ -104,6 +104,12 @@ export async function draftNewMail(opts: {
   intent: string;
   subject?: string;
   tone?: string;
+  /** A recipient name the user's own instruction named explicitly (e.g.
+   * "...belonging to Baneshwari Royal") — a fallback for recipientName
+   * when no contact/client record confirms a name for the address. Unlike
+   * topicReference, this comes from the user's own words about *this*
+   * email, not from unrelated retrieved correspondence, so it's trusted. */
+  recipientNameHint?: string;
 }): Promise<{ html: string; subject?: string; tone: string } | null> {
   if (!getAnthropic()) return null;
   const intent = opts.intent.trim();
@@ -148,7 +154,11 @@ export async function draftNewMail(opts: {
   // text) into an inference of whether a name is "allowed". Ambiguity in
   // that reconciliation is exactly what let the model fall back to
   // pattern-matching a name out of unrelated retrieved mail instead.
-  const recipientName = contactHit?.displayName || clientHit?.name || null;
+  const recipientName =
+    contactHit?.displayName ||
+    clientHit?.name ||
+    opts.recipientNameHint?.trim() ||
+    null;
 
   const raw = await claudeJson<{ html: string; subject?: string }>({
     model: "sonnet",

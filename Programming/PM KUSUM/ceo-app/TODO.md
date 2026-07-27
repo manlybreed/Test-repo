@@ -355,3 +355,45 @@ not feature checklists.
   [voice-commands.ts](src/lib/mail/voice-commands.ts),
   [mail-client.tsx](src/components/mail/mail-client.tsx) —
   `feature/mail-wide-voice-command`, merged to main.
+
+---
+
+## Follow-up — 2026-07-27 (second AI Draft greeting report)
+
+- [x] **[FIXED — plumbing bug, not a prompt/NLU issue] AI Draft still
+  didn't greet a recipient named explicitly in the instruction, in a
+  differently-shaped brief.** Reported with a screenshot: "draft a mail to
+  md@thebluridge.com belonging to Baneshwari Royal regarding the sample
+  mail" opened "Hi," with the body saying "I am reaching out on behalf of
+  Baneshwari Royal" — treating the named person as a third party instead
+  of the recipient.
+  Root cause verified directly (ran the exact regex against the exact
+  string before touching any code): `resolveDraftRecipients`
+  (`src/lib/mail/ai/draft.ts`) *already* correctly extracts "Baneshwari
+  Royal" as `knownName` from this brief — the existing "name after to/for"
+  pattern happens to match "...belonging **to** Baneshwari Royal" further
+  in the sentence. The extraction was right; the bug was that
+  `runAiDraft()` (`mail-client.tsx`) computed `resolved.knownName` and then
+  never passed it anywhere — `draftNewMailAction`/`draftNewMail` had no
+  parameter to receive it, and independently tried to re-derive a name
+  from contact/client DB records alone, which fail for any address (like
+  this test one) that isn't already a known contact.
+  Fixed by threading it through: added `recipientNameHint` to
+  `draftNewMailAction`/`draftNewMail`, used as a fallback in the
+  `recipientName` priority order (confirmed contact/client name still wins
+  if one exists; the hint only fills in when there's no DB record to
+  confirm a name from). Also found and fixed a second-order inconsistency
+  while stress-testing this: the extraction only ran when To was still
+  empty, so a second "Draft" click on the *same* brief (To now filled in
+  from the first click) silently dropped the hint and reverted to "Hi,".
+  Decoupled the two: extraction (and the name hint) now runs on every
+  Draft click regardless of To's state; only the *address* backfill is
+  gated on To being empty, so a manually-entered recipient is never
+  overwritten.
+  Verified live: 3 consecutive "Draft" clicks on the same brief (the exact
+  scenario that broke on the 2nd click before this fix) all opened "Dear
+  Baneshwari Royal,"; confirmed no regression on the no-recipient-at-all
+  case (still "Hi,").
+  [draft.ts](src/lib/mail/ai/draft.ts), [mail.ts](src/actions/mail.ts),
+  [mail-client.tsx](src/components/mail/mail-client.tsx) —
+  `fix/mail-ai-draft-recipient-name-hint-plumbing`, merged to main.

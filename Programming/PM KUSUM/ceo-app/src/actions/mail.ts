@@ -1194,6 +1194,11 @@ export async function draftNewMailAction(input: {
   intent: string;
   subject?: string;
   tone?: string;
+  /** A recipient name the *user's own instruction* named explicitly (e.g.
+   * "...belonging to Baneshwari Royal") when no contact/client record
+   * confirms it — still a real signal, not a guess, so it's worth carrying
+   * through as a fallback for the greeting. */
+  recipientNameHint?: string;
 }) {
   const { account } = await requireAccount();
   return draftNewMail({
@@ -1202,6 +1207,7 @@ export async function draftNewMailAction(input: {
     intent: input.intent,
     subject: input.subject,
     tone: input.tone || DEFAULT_DRAFT_TONE,
+    recipientNameHint: input.recipientNameHint,
   });
 }
 
