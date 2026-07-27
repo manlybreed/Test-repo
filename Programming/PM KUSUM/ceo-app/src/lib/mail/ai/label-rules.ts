@@ -67,6 +67,8 @@ export type MatchingThreadPreview = {
   subject: string;
   fromAddress: string | null;
   fromName: string | null;
+  /** Only populated by findBroadCandidateThreads, for classification context. */
+  snippet?: string | null;
 };
 
 /**
@@ -120,6 +122,80 @@ export async function findMatchingExistingThreads(
   return threads.map((t) => ({
     id: t.id,
     subject: t.subject,
+    fromAddress: t.messages[0]?.fromAddress ?? null,
+    fromName: t.messages[0]?.fromName ?? null,
+  }));
+}
+
+const BROAD_CANDIDATE_CAP = 60;
+
+/**
+ * A deliberately loose, OR-based first pass — either criterion matching is
+ * enough to become a candidate, not both — used only to build the pool that
+ * classifySimilarThreads then judges for genuine similarity (label-
+ * correction.ts). This exists because the strict AND in
+ * findMatchingExistingThreads silently under-matches real similar mail: two
+ * emails using the same sender and the same underlying template/purpose
+ * routinely have almost no literal subject-line overlap once you factor in
+ * a different company/client/project name in the subject (e.g. "Bhaureji
+ * Surajmal Green Energy... Bharatpur-Part 3" vs "Kumha Solar... Bharatpur-
+ * Part 1" — same sender, same PM KUSUM financing template, near-zero shared
+ * subject substring). Casting a wider net here and pruning false positives
+ * with an LLM judgment call afterward finds those matches without turning
+ * "or" into "everything from this sender, regardless of topic."
+ *
+ * Capped smaller than the 200 final-results cap (RETROACTIVE_CAP) — every
+ * candidate here gets its subject+snippet sent to Claude in one batched
+ * classification call, so this cap is about keeping that prompt a
+ * reasonable size, not about final result count.
+ */
+export async function findBroadCandidateThreads(
+  accountId: string,
+  criteria: { fromContains: string | null; subjectContains: string | null },
+  opts?: { excludeThreadId?: string; limit?: number },
+): Promise<MatchingThreadPreview[]> {
+  const limit = Math.min(
+    Math.max(opts?.limit ?? BROAD_CANDIDATE_CAP, 1),
+    BROAD_CANDIDATE_CAP,
+  );
+
+  const or: Record<string, unknown>[] = [];
+  if (criteria.fromContains) {
+    or.push({
+      messages: {
+        some: { fromAddress: { contains: criteria.fromContains, mode: "insensitive" } },
+      },
+    });
+  }
+  if (criteria.subjectContains) {
+    or.push({ subject: { contains: criteria.subjectContains, mode: "insensitive" } });
+  }
+  if (!or.length) return [];
+
+  const threads = await prisma.mailThread.findMany({
+    where: {
+      accountId,
+      ...(opts?.excludeThreadId ? { id: { not: opts.excludeThreadId } } : {}),
+      OR: or,
+    },
+    orderBy: { lastMessageAt: "desc" },
+    take: limit,
+    select: {
+      id: true,
+      subject: true,
+      snippet: true,
+      messages: {
+        orderBy: { date: "desc" },
+        take: 1,
+        select: { fromAddress: true, fromName: true },
+      },
+    },
+  });
+
+  return threads.map((t) => ({
+    id: t.id,
+    subject: t.subject,
+    snippet: t.snippet,
     fromAddress: t.messages[0]?.fromAddress ?? null,
     fromName: t.messages[0]?.fromName ?? null,
   }));

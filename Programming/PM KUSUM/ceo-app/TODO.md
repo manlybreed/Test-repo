@@ -585,3 +585,59 @@ not feature checklists.
   [label-rules.ts](src/lib/mail/ai/label-rules.ts),
   [mail-client.tsx](src/components/mail/mail-client.tsx) —
   `feature/mail-label-correction-selectable-matches`, merged to main.
+
+---
+
+## Follow-up — 2026-07-28 (root-caused "finds 1-2, not the real ~10+")
+
+- [x] **[ROOT-CAUSE FIX] Label correction found only 1-2 "similar" emails
+  when there were genuinely far more.** User feedback: "the labelling
+  is not really auto applying to genuine similar mails. though the
+  similar mails may be 10 but it would find just 1 or 2. search on how
+  to check if two mails are similar for label correction and fix this."
+  Researched industry practice first (embeddings/cosine-similarity and
+  LLM-judged semantic similarity are standard for this; Superhuman's
+  Custom Auto Labels literally has the AI judge category membership from
+  a natural-language description rather than keyword-matching) — then
+  root-caused the actual bug rather than tuning constants: confirmed live
+  that `suggestLabelMatchCriteria`'s own proposed `subjectContains`
+  ("KUSUM") didn't even appear in the *source* email's own subject
+  ("Bhaureji Surajmal Green Energy Pvt Ltd, Component A, Bharatpur-Part
+  3") — because `findMatchingExistingThreads` requires `fromContains
+  AND subjectContains` to both match, any templated business email using
+  the same sender/purpose but naming a different company/client each
+  time (confirmed: 55+ "Component A" PM KUSUM financing threads across
+  a dozen different company names, all from the same sender) was
+  silently excluded by the AND gate the moment the subject keyword
+  didn't happen to also appear.
+  Fixed by making "similar existing mail" a real two-stage retrieve-then-
+  judge pipeline instead of a single keyword filter — the same shape as
+  this codebase's other retrieval+AI features, not a new pattern:
+  1. `findBroadCandidateThreads` (new, label-rules.ts) — deliberately
+     loose OR match (either criterion alone qualifies), capped at 60
+     candidates, to build a recall-favoring pool.
+  2. `classifySimilarThreads` (new, label-correction.ts) — one batched
+     Claude call judging which of those candidates are genuinely the
+     *same kind* of mail as the source (same purpose/template, even with
+     a different name/subject), not just a keyword/sender coincidence.
+     Falls back to the old strict-AND result (never to the unfiltered
+     broad pool) if classification is unavailable — degrade to fewer,
+     verified matches, never to more, unverified ones.
+  Verified live end-to-end on the exact reported case: re-running the
+  Bhaureji Surajmal → PM KUSUM correction now finds **46-47 genuinely
+  similar threads** (Kumha Solar, Sky Volt Raisar, Sky Volt Ajabpura,
+  Khandela Solarplus, Pachlawada Solarplus, Solarseed Agri Tech, Dhabla
+  Solar, Shree Radhey, Monvi Energy, Sakarwada — all different companies,
+  same PM KUSUM financing template) instead of the 1-2 it found before,
+  confirmed both via a standalone script exercising the real pipeline and
+  via the live UI's new review checklist. The classifier isn't a rubber
+  stamp either — it excluded ~13-14 of the 60 broad candidates, so
+  precision is intact alongside the recall fix. Did not click "Apply to
+  46" during verification — a 46-thread bulk mutation on the real,
+  live business mailbox is a decision for the user to make deliberately,
+  not something to trigger as a side effect of testing.
+  [label-correction.ts](src/lib/mail/ai/label-correction.ts),
+  [label-rules.ts](src/lib/mail/ai/label-rules.ts),
+  [mail.ts](src/actions/mail.ts),
+  [mail-client.tsx](src/components/mail/mail-client.tsx) —
+  `fix/mail-label-correction-semantic-similarity`, merged to main.
