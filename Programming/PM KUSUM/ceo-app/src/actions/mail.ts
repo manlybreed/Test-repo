@@ -6,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { requireCeoAction as requireCeo } from "@/lib/session";
 import { auth } from "@/lib/auth";
 import { ceoMailConfigured } from "@/lib/mail/ceo-config";
-import { ensureCeoMailAccount } from "@/lib/mail/account";
+import { ensureCeoMailAccount, requireOwnedAccountForThread } from "@/lib/mail/account";
 import { syncCeoMail, verifyCeoImap } from "@/lib/mail/sync";
 import { cancelScheduled, flushDueScheduled, flushOutboxItem } from "@/lib/mail/outbox";
 import { assertAutonomy } from "@/lib/mail/ai/policy";
@@ -101,6 +101,22 @@ async function requireAccount() {
   return { account, userId: session?.user?.id as string };
 }
 
+/**
+ * Same shape as requireAccount(), but for actions whose real scope is a
+ * specific thread rather than "the" mailbox — resolves and verifies
+ * ownership of the account that thread actually belongs to (which may be
+ * any of the user's configured mailboxes, not just the primary one), instead
+ * of always defaulting to the primary env account regardless of which
+ * mailbox the thread lives in.
+ */
+async function requireAccountForThread(threadId: string) {
+  await requireCeo();
+  const session = await auth();
+  const userId = session?.user?.id as string;
+  const { account } = await requireOwnedAccountForThread(threadId, userId);
+  return { account, userId };
+}
+
 export async function isCeoMailConfigured() {
   await requireCeo();
   return ceoMailConfigured();
@@ -184,7 +200,7 @@ export async function listMailFolders() {
 }
 
 export async function trashThreadAction(threadId: string) {
-  const { account } = await requireAccount();
+  const { account } = await requireAccountForThread(threadId);
   assertAutonomy("delete", { confirmed: true });
   if (threadId.startsWith("outbox:") || threadId.startsWith("outbox-item:")) {
     throw new Error("Use Drafts/Outbox controls for local items");
@@ -204,7 +220,7 @@ export async function trashThreadAction(threadId: string) {
 }
 
 export async function archiveThreadAction(threadId: string) {
-  const { account } = await requireAccount();
+  const { account } = await requireAccountForThread(threadId);
   assertAutonomy("archive");
   if (threadId.startsWith("outbox:") || threadId.startsWith("outbox-item:")) {
     throw new Error("Use Drafts/Outbox controls for local items");
@@ -223,7 +239,7 @@ export async function moveThreadToFolderAction(
   threadId: string,
   folderId: string,
 ) {
-  const { account } = await requireAccount();
+  const { account } = await requireAccountForThread(threadId);
   assertAutonomy("move");
   if (threadId.startsWith("outbox:") || threadId.startsWith("outbox-item:")) {
     throw new Error("Use Drafts/Outbox controls for local items");
@@ -250,10 +266,11 @@ function realThreadIds(ids: string[]) {
 }
 
 export async function archiveThreadsAction(threadIds: string[]) {
-  const { account, userId } = await requireAccount();
+  await requireCeo();
   assertAutonomy("archive");
   const ids = realThreadIds(threadIds);
   if (!ids.length) return { ok: true as const, archivePath: null };
+  const { account, userId } = await requireAccountForThread(ids[0]!);
   const result = await archiveMailThreads({ accountId: account.id, threadIds: ids });
   void syncCeoMail({ userId, maxPerFolder: 40, maxTriageNew: 0 }).catch(() => undefined);
   revalidateMail();
@@ -261,10 +278,11 @@ export async function archiveThreadsAction(threadIds: string[]) {
 }
 
 export async function trashThreadsAction(threadIds: string[]) {
-  const { account, userId } = await requireAccount();
+  await requireCeo();
   assertAutonomy("delete", { confirmed: true });
   const ids = realThreadIds(threadIds);
   if (!ids.length) return { ok: true as const, trashPath: null };
+  const { account, userId } = await requireAccountForThread(ids[0]!);
   const result = await trashMailThreads({ accountId: account.id, threadIds: ids });
   void syncCeoMail({ userId, maxPerFolder: 40, maxTriageNew: 0 }).catch(() => undefined);
   revalidateMail();
@@ -272,10 +290,11 @@ export async function trashThreadsAction(threadIds: string[]) {
 }
 
 export async function moveThreadsToFolderAction(threadIds: string[], folderId: string) {
-  const { account, userId } = await requireAccount();
+  await requireCeo();
   assertAutonomy("move");
   const ids = realThreadIds(threadIds);
   if (!ids.length) return { ok: true as const, path: null };
+  const { account, userId } = await requireAccountForThread(ids[0]!);
   const result = await moveMailThreadsToFolder({
     accountId: account.id,
     threadIds: ids,
@@ -287,7 +306,7 @@ export async function moveThreadsToFolderAction(threadIds: string[], folderId: s
 }
 
 export async function setThreadImportant(threadId: string, important: boolean) {
-  await requireAccount();
+  await requireAccountForThread(threadId);
   assertAutonomy("important");
   await prisma.mailThread.update({
     where: { id: threadId },
@@ -502,7 +521,7 @@ export async function getMailThread(
   threadId: string,
   opts?: { folderId?: string; folderRole?: string },
 ) {
-  const { account } = await requireAccount();
+  const { account } = await requireAccountForThread(threadId);
   let folderId = opts?.folderId;
   let folderRole = opts?.folderRole || null;
   if (folderId && !folderRole) {
@@ -538,7 +557,7 @@ export async function getMailThread(
 }
 
 export async function markThreadRead(threadId: string) {
-  const { account } = await requireAccount();
+  const { account } = await requireAccountForThread(threadId);
   assertAutonomy("mark_read");
   // Unread is Inbox-scoped — don't touch Sent/Drafts/Trash copies
   await prisma.mailMessage.updateMany({
@@ -559,7 +578,7 @@ export async function markThreadRead(threadId: string) {
 }
 
 export async function snoozeThread(threadId: string, untilIso: string) {
-  await requireAccount();
+  await requireAccountForThread(threadId);
   assertAutonomy("snooze");
   await prisma.mailThread.update({
     where: { id: threadId },
@@ -569,7 +588,7 @@ export async function snoozeThread(threadId: string, untilIso: string) {
 }
 
 export async function setThreadPriority(threadId: string, priority: string) {
-  await requireAccount();
+  await requireAccountForThread(threadId);
   await prisma.mailThread.update({
     where: { id: threadId },
     data: { priority },
@@ -1149,13 +1168,13 @@ export async function triageThreadAction(
   threadId: string,
   opts?: { force?: boolean },
 ) {
-  await requireAccount();
+  await requireAccountForThread(threadId);
   // Manual Triage always re-runs so the user can refresh categorization
   return triageThread(threadId, { force: opts?.force ?? true });
 }
 
 export async function summarizeThreadAction(threadId: string) {
-  const { account } = await requireAccount();
+  const { account } = await requireAccountForThread(threadId);
   return summarizeThread(account.id, threadId);
 }
 
@@ -1196,7 +1215,7 @@ export async function draftReplyAction(input: {
   intent?: string;
   tone?: string;
 }) {
-  const { account } = await requireAccount();
+  const { account } = await requireAccountForThread(input.threadId);
   return draftReply({
     accountId: account.id,
     threadId: input.threadId,
@@ -1276,7 +1295,7 @@ export async function multilingualDraftAction(input: {
   language: string;
   intent?: string;
 }) {
-  const { account } = await requireAccount();
+  const { account } = await requireAccountForThread(input.threadId);
   return multilingualDraft({
     accountId: account.id,
     threadId: input.threadId,
@@ -1286,7 +1305,7 @@ export async function multilingualDraftAction(input: {
 }
 
 export async function extractCommitmentsAction(threadId: string) {
-  const { account } = await requireAccount();
+  const { account } = await requireAccountForThread(threadId);
   return extractCommitments(account.id, threadId);
 }
 
@@ -1433,7 +1452,7 @@ export async function correctSmartLabelAction(
   threadId: string,
   newLabel: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const { account } = await requireAccount();
+  const { account } = await requireAccountForThread(threadId);
   if (!isSmartLabel(newLabel)) return { ok: false, error: "Unknown label" };
   assertAutonomy("label");
 
@@ -1498,7 +1517,7 @@ export async function suggestLabelCorrectionAction(input: {
   threadId: string;
   targetLabel: string;
 }): Promise<LabelCorrectionSuggestion | null> {
-  const { account } = await requireAccount();
+  const { account } = await requireAccountForThread(input.threadId);
 
   const latest = await prisma.mailMessage.findFirst({
     where: { threadId: input.threadId, accountId: account.id },
@@ -1608,7 +1627,7 @@ export async function applyLabelCorrectionAction(input: {
   folderId?: string;
   folderName?: string;
 }): Promise<{ snapshot: LabelCorrectionSnapshot | null; ruleCreated: boolean }> {
-  const { account } = await requireAccount();
+  const { account } = await requireAccountForThread(input.sourceThreadId);
   const rule = {
     matchJson: JSON.stringify({
       fromContains: input.fromContains,
@@ -1685,7 +1704,15 @@ export async function applyLabelCorrectionAction(input: {
 export async function undoLabelCorrectionAction(
   snapshot: LabelCorrectionSnapshot,
 ): Promise<{ restored: number }> {
-  const { account } = await requireAccount();
+  // "folder" snapshots carry real threadIds to derive the owning mailbox
+  // from; "smart" snapshots don't scope their undo by accountId at all
+  // (undoSmartLabelRetroactive works off the snapshot items directly), so
+  // there's no thread to — or need to — derive an account from there.
+  const anchorThreadId =
+    snapshot.kind === "folder" ? snapshot.items[0]?.threadId : undefined;
+  const { account } = anchorThreadId
+    ? await requireAccountForThread(anchorThreadId)
+    : await requireAccount();
 
   if (snapshot.kind === "smart") {
     const result = await undoSmartLabelRetroactive(snapshot.items);
