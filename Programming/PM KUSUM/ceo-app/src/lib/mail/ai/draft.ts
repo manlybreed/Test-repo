@@ -17,43 +17,63 @@ const DraftSchema = z.object({
   subject: z.string().optional(),
 });
 
-const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-// "send mail to Akshay", "draft something for Priya Sharma" — a short
-// Capitalized name phrase right after to/for.
-const NAME_AFTER_TO_RE =
-  /\b(?:to|for)\s+([A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+){0,2})\b/;
+// The only regex left in this file: a plain shape check on the email
+// address Claude returns below. That string is about to become a literal
+// SMTP recipient, so it needs validating as one regardless of how it was
+// extracted — this is a format check, not a parsing/understanding step.
+const EMAIL_SHAPE_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
  * AI Draft's brief box is the only place a fresh-compose instruction like
- * "send mail to Akshay on akshayroyal678@gmail.com" gets typed — but the To
+ * "write a mail to yogesh ji on abc@gmail.com" gets typed — but the To
  * field it's supposed to control was never wired to it, so the recipient
  * silently stayed blank (or whatever was already typed) no matter what the
- * instruction said. This pulls a recipient out of that free text: an
- * explicit email address always wins (deterministic, no guessing); failing
- * that, a capitalized name after "to"/"for" is resolved against the
- * contact index the same way "recall NAME" already does.
+ * instruction said.
+ *
+ * This used to pattern-match "a Capitalized word after to/for", which
+ * doesn't generalize: real instructions use lowercase names ("yogesh
+ * ji"), honorifics, and orderings a fixed pattern can't anticipate (e.g.
+ * "regarding the cricket screening to Ram. xyz@gmail.com" — a period
+ * right after the name, no space before the email). "Who is this email
+ * for" is a genuine language-understanding task, so it goes through
+ * Claude instead of a regex trying to approximate understanding.
  */
 export async function resolveDraftRecipients(
   accountId: string,
   intent: string,
 ): Promise<{ to: string[]; knownName: string | null }> {
-  const emails = Array.from(
-    new Set((intent.match(EMAIL_RE) || []).map((e) => e.toLowerCase())),
-  );
-  const candidateName = intent.match(NAME_AFTER_TO_RE)?.[1]?.trim() || null;
+  if (!getAnthropic()) return { to: [], knownName: null };
 
-  if (emails.length) {
+  const raw = await claudeJson<{
+    recipientEmail: string | null;
+    recipientName: string | null;
+  }>({
+    model: "haiku",
+    system: `Read this instruction describing a new email to draft, and identify who it is being sent to. Return JSON {recipientEmail, recipientName}.
+- recipientEmail: the exact email address given for the recipient, copied exactly — null if none is given. Never invent or guess one.
+- recipientName: the recipient's name, if the instruction names them — regardless of capitalization, and with any honorific (ji, sir, madam, etc.) stripped off. Only the person this email is being SENT TO, not someone merely mentioned as the topic/subject of the email. null if the instruction doesn't name the recipient.
+Respond with null for a field rather than guessing.`,
+    user: intent,
+    maxTokens: 150,
+  });
+
+  const emailCandidate = raw?.recipientEmail?.trim().toLowerCase() || null;
+  const email =
+    emailCandidate && EMAIL_SHAPE_RE.test(emailCandidate) ? emailCandidate : null;
+  const nameFromModel = raw?.recipientName?.trim() || null;
+
+  if (email) {
     // Cross-check against the contact index for a real display name, so
     // the draft addresses the recipient correctly instead of guessing.
-    const [hit] = await findContacts(accountId, emails[0]!, 1).catch(() => []);
-    return { to: emails, knownName: hit?.displayName || candidateName };
+    const [hit] = await findContacts(accountId, email, 1).catch(() => []);
+    return { to: [email], knownName: hit?.displayName || nameFromModel };
   }
 
-  if (!candidateName) return { to: [], knownName: null };
-  const address = await resolvePersonAddress(accountId, candidateName).catch(
+  if (!nameFromModel) return { to: [], knownName: null };
+  const address = await resolvePersonAddress(accountId, nameFromModel).catch(
     () => null,
   );
-  return address ? { to: [address], knownName: candidateName } : { to: [], knownName: null };
+  return { to: address ? [address] : [], knownName: nameFromModel };
 }
 
 /** AI-07 grounded draft; AI-09 uses account.styleJson */

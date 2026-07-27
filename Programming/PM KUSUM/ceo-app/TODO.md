@@ -397,3 +397,52 @@ not feature checklists.
   [draft.ts](src/lib/mail/ai/draft.ts), [mail.ts](src/actions/mail.ts),
   [mail-client.tsx](src/components/mail/mail-client.tsx) —
   `fix/mail-ai-draft-recipient-name-hint-plumbing`, merged to main.
+
+---
+
+## Follow-up — 2026-07-27 (regex replaced with AI for recipient extraction)
+
+- [x] **[FIXED — regex replaced with an actual AI call, per explicit
+  instruction] AI Draft's recipient extraction missed a lowercase/
+  honorific name.** Test case: "write a mail to yogesh ji on
+  abc@gmail.com regarding hr policy." opened "Hi," instead of naming
+  Yogesh — the "name after to/for" pattern in `resolveDraftRecipients`
+  only matched Capitalized words, so a casually-typed lowercase name with
+  an honorific ("yogesh ji") never matched at all.
+  Root cause: pattern-matching was being asked to do a genuine language-
+  understanding task (who is this email for, in arbitrary phrasing/
+  casing/honorifics) that no fixed regex can generalize to. Replaced the
+  whole extraction with a Claude (haiku) call that reads the instruction
+  and returns `{recipientEmail, recipientName}` directly — the only
+  regex left is a plain shape check (`user@domain.tld`) on the email
+  Claude returns, kept because that string becomes a literal SMTP
+  recipient and needs format validation regardless of how it was
+  extracted; that's a technical safety check, not a parsing step.
+  Verified live with 4 test cases the user provided, run through the
+  actual app end-to-end:
+  1. "write a mail to yogesh ji on abc@gmail.com regarding hr policy." →
+     To: abc@gmail.com, opens "Dear Yogesh ji," (lowercase name +
+     honorific, handled correctly).
+  2. "write a mail to rahul.narayan@gmail.com regarding loan
+     application" → To: rahul.narayan@gmail.com, opens "Dear Rahul
+     Narayan," — no name was stated separately, but the model reasonably
+     read it off the email's own local-part (a real name shape, not a
+     hallucination pulled from unrelated context).
+  3. "write a mail regarding the cricket game screening to Ram.
+     xyz@gmail.com" → To: xyz@gmail.com, opens "Dear Ram," — correctly
+     split "Ram." (name, trailing period) from the actual email address
+     despite no space and an ambiguous period, something the old regex
+     could plausibly have gotten wrong.
+  4. "write a mail regarding intro call to xyz@gmail.com" → To:
+     xyz@gmail.com, opens "Hi," — no name given and none invented, since
+     "xyz" isn't name-shaped (contrast with case 2).
+  Also found in passing during this test run: the dev Postgres container
+  hit "too many clients" at one point (`docker logs bluridge-ceo-db`),
+  causing one draft attempt to silently return nothing — a transient
+  infra issue from a very long dev session's accumulated hot-reload
+  connections, not a code bug. Confirmed the DB was healthy again
+  (15/100 connections) before continuing; worth restarting the dev DB
+  container occasionally on very long sessions, not something to code a
+  fix for.
+  [draft.ts](src/lib/mail/ai/draft.ts) —
+  `fix/mail-ai-draft-recipient-extraction-uses-ai`, merged to main.
