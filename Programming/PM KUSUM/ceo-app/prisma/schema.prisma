@@ -1033,6 +1033,17 @@ model MailLabelRule {
   label       String
   enabled     Boolean @default(true)
   sortOrder   Int     @default(0)
+  /// True when `label` is one of triage.ts's SMART_LABELS (subject to
+  /// mergeSmartLabels's replace-wholesale behavior) rather than a custom
+  /// label/folder name — triageThread consults these to keep a correction
+  /// from being silently overwritten by the next AI triage pass.
+  isSmartLabel   Boolean @default(false)
+  /// Audit trail: which thread's label correction created this rule.
+  /// Null for rules the user authored directly in the Auto-label rules panel.
+  sourceThreadId String?
+  /// "manual" (typed into the Auto-label rules panel) | "correction"
+  /// (auto-created from a label-correction "Always do this" action).
+  origin         String  @default("manual")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 

@@ -446,3 +446,89 @@ not feature checklists.
   fix for.
   [draft.ts](src/lib/mail/ai/draft.ts) —
   `fix/mail-ai-draft-recipient-extraction-uses-ai`, merged to main.
+
+---
+
+## 2026-07-28 — Label correction: retroactive fix + standing rule
+
+- [x] **[FEATURE] Correcting a label now offers to fix similar existing
+  mail and/or apply automatically to future mail — for both label
+  systems.** Previously, relabeling one email was completely isolated:
+  moving a thread to a custom label folder ("Move to…") only ever moved
+  that one thread, and AI smart-label chips (Needs reply, Banking,
+  Receipt, etc.) had no correction affordance at all. Researched industry
+  precedent first (Gmail's "Also apply filter to matching conversations"
+  checkbox, Outlook's "Create Rule from message," Superhuman's Custom
+  Auto Labels with a live match preview, Notion Mail's "a correction
+  teaches the system" framing) and built accordingly:
+  - New correction affordance on smart-label chips in the reader header
+    (`correctSmartLabelAction`) — previously these chips were pure
+    display, no way to fix a wrong AI classification at all.
+  - After either correction path, `suggestLabelCorrectionAction` asks
+    Claude what makes *this* email generalizable (exact sender vs. whole
+    domain vs. a subject keyword vs. "nothing — one-off"), then runs a
+    real live-match query against existing threads — a non-blocking
+    toast offers **"Apply to N"** (retroactive relabel/move, capped at
+    200, most-recent-first) and **"Always do this"** (a standing rule),
+    both strictly opt-in — nothing executes without an explicit click.
+    If Claude finds nothing generalizable, no toast appears at all —
+    today's single-thread-only behavior, unchanged.
+  - "Always do this" reuses the existing `MailLabelRule`/"Auto-label
+    rules" panel machinery (extended with `isSmartLabel`, `origin`,
+    `sourceThreadId` columns) rather than a parallel concept — rules
+    created this way show a "learned" tag in the same panel the user
+    already knows.
+  - **Root-cause gap closed, not papered over**: smart labels are
+    replaced wholesale on every triage run
+    (`mergeSmartLabels`/`refineSmartLabels`), and `refineSmartLabels`'s
+    own deterministic `BANKING_FROM` regex guardrail runs *before* any
+    correction is consulted — so a standing correction could get
+    silently reverted by the very next re-triage. Fixed by adding
+    `applySmartLabelCorrections` in `triage.ts`, consulted right after
+    `refineSmartLabels`, so a matching per-account correction rule wins
+    over the deterministic heuristics (applied in both `triageThread` and
+    `repairSmartLabels`).
+  - Retroactive apply returns a snapshot (previous folder id / previous
+    labelsJson per thread) so the toast can offer **Undo** — mirrors the
+    app's existing `pendingSend` undo-toast pattern exactly, including
+    the self-clearing timer.
+  Verified live end-to-end against the real mailbox:
+  1. Corrected "Ranjeet Kumar 3 (Consumer Bank, KMBL)" from Banking →
+     Needs reply (it's a meeting request, not a transactional alert) →
+     toast found 1 other thread from the same sender → "Apply to 1"
+     correctly relabeled it too (confirmed via DB).
+  2. **Proved the root-cause fix actually matters**, not just that it
+     "still worked": `ranjeet.kumar13@kotak.com` matches
+     `BANKING_FROM`'s `/kotak/` pattern, so
+     `refineSmartLabels(["NEEDS_REPLY"], ...)` alone — confirmed in
+     isolation — returns `["BANKING"]` regardless of the model's own
+     classification. Created the standing correction rule, force-
+     re-triaged the thread (`triageThread(id, {force:true})`), and
+     confirmed the label stayed "Needs reply" instead of reverting to
+     "Banking" — the exact regression this fix exists to prevent.
+  3. Corrected a HackerNoon "Company of the Week" digest from Newsletter
+     → FYI and back; "Apply to 45" found the real count of matching
+     HackerNoon mail; "Always do this" created a rule
+     (`{"fromContains":"accounts@hackernoon.com"}`, `isSmartLabel: true,
+     origin: "correction"`) that shows a "learned" tag in the Auto-label
+     rules panel.
+  4. Used "Move to…" on a real thread (GST Workings → a custom label
+     folder) — confirmed the same suggestion toast fires for custom
+     labels too ("2 similar emails — apply … too?"), proving the unified
+     flow covers both label systems as intended, then reverted the test
+     move.
+  Also found in passing: the long-lived dev server (alive ~1.5 days from
+  an earlier session) held a stale in-memory Prisma Client from before
+  this session's `prisma db push`, causing `Unknown argument
+  isSmartLabel` on the very first live "Always do this" attempt —
+  regenerating the client on disk doesn't hot-swap an already-running
+  Node process's `require` cache. Restarted the dev server to pick up
+  the regenerated client; not a code defect, but worth remembering on
+  long-running sessions that touch `schema.prisma`.
+  [schema.prisma](prisma/schema.prisma),
+  [label-rules.ts](src/lib/mail/ai/label-rules.ts),
+  [label-correction.ts](src/lib/mail/ai/label-correction.ts),
+  [triage.ts](src/lib/mail/ai/triage.ts),
+  [mail.ts](src/actions/mail.ts),
+  [mail-client.tsx](src/components/mail/mail-client.tsx) —
+  `feature/mail-label-correction`, merged to main.
