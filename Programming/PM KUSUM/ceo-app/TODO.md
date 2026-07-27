@@ -81,7 +81,23 @@ not feature checklists.
    Gmail/Outlook/Thunderbird/Superhuman convention) and removed the
    duplicate menu entry. `feature/mail-forward-toolbar-button`, merged to
    main.
-5. **[FIXED]** ~15 debug/test emails from this session's own QA work
+5. **[CRITICAL, FIXED — found by the user right after this audit shipped]**
+   Trash/Archive/Move-to-folder moved the message correctly on the IMAP
+   server, but locally just hard-deleted the MailMessage/MailThread rows
+   and relied on a fire-and-forget, non-awaited, error-swallowed
+   full-mailbox resync to reimport the message into its new folder. That
+   resync scans every folder over a fresh IMAP connection and can easily
+   take many seconds with no "still syncing" indicator — so trashing a
+   thread and immediately checking Trash showed nothing there, identical
+   to data loss. Reported live: "i moved one thread to trash, can't find
+   it." Fixed by using `messageMove`'s UIDPLUS uidMap (old UID -> new UID)
+   to repoint the local rows at the target folder/UID in the same
+   request, instead of deleting and hoping. Verified live for both Trash
+   and Archive by querying the DB directly right after each action and
+   confirming the thread appears in its new folder instantly.
+   [imap-mailbox.ts](src/lib/mail/imap-mailbox.ts) —
+   `fix/mail-trash-archive-move-lost-cache`, merged to main.
+6. **[FIXED]** ~15 debug/test emails from this session's own QA work
    ("Close button tight-timing test", "Send FX debug marker test", "Console
    debug 2", etc.) were sitting in the live inbox mixed in with real
    correspondence. Bulk-selected and moved to Trash (reversible) via the
