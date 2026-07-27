@@ -254,3 +254,40 @@ not feature checklists.
   [ask.ts](src/lib/mail/ai/ask.ts),
   [mail-client.tsx](src/components/mail/mail-client.tsx) —
   `fix/mail-ai-draft-recipient-and-ask-history`, merged to main.
+
+---
+
+## Voice commands for AI assist — 2026-07-27
+
+- [x] **[DONE] Every AI-assist field in Mail now supports voice commands.**
+  Scoped to Mail only (confirmed with the user — the rest of the CEO
+  Command Center app wasn't touched). Added a mic button to the AI Draft
+  brief, the draft refine/exact-change box, and the Ask mailbox bar: press
+  it, speak one instruction, and — like a real voice command rather than
+  plain dictation — it auto-runs the corresponding action (Draft / Apply /
+  Ask) as soon as the browser detects you've stopped talking, instead of
+  just filling the field and waiting for a separate click.
+  Built on the Web Speech API (`useSpeechToText` in the new
+  [use-speech-to-text.ts](src/components/mail/use-speech-to-text.ts)) —
+  supported in Chrome/Edge; the mic button renders nothing at all on
+  Firefox/Safari rather than showing a dead control. `runAiDraft` and
+  `applyDraftRefine` gained an optional override-text parameter so a
+  just-finished voice command can act on its own transcript immediately,
+  instead of reading state that the triggering `setState` call hasn't
+  flushed into that render's closure yet.
+  Verified live: real microphone capture can't be exercised in this
+  sandboxed environment (device access is blocked), so the recognizer's
+  constructor was mocked to fire a synthetic final transcript through the
+  actual component wiring — confirmed for all three fields that the
+  transcript lands in the field and the corresponding action (Ask/Draft/
+  Refine) fires and returns a real result, and that the mic correctly
+  resets to idle afterward.
+  Noted in passing, not fixed here (separate from voice input): dictating
+  a brief with no recipient mentioned at all can still occasionally drift
+  to a hallucinated greeting name despite the "use a neutral greeting if
+  none is given" instruction added in the AI Draft fix above — the
+  instruction reduces this but a brief with zero recipient signal is a
+  different case from the one that was reported and fixed.
+  [use-speech-to-text.ts](src/components/mail/use-speech-to-text.ts),
+  [mail-client.tsx](src/components/mail/mail-client.tsx) —
+  `feature/mail-voice-commands`, merged to main.
