@@ -131,11 +131,36 @@ not feature checklists.
 
 ## Reported bugs
 
-- [ ] **Not yet fixed — AI attachment summary shows empty for an attachment
-  that does exist.** In the "Raisar Solar Plant ... Part 1" email thread,
-  running AI summary on the attachment related to Santosh Yadav's net worth
-  returns an empty summary even though the file is genuinely attached and
-  present. Reported 2026-07-27 — explicitly deferred, do not fix yet.
+- [x] **[FIXED] AI attachment summary showed empty for an attachment that
+  does exist.** In the "Sky volt Raisar Pvt Ltd,Component A,Jaipur-Part 1"
+  email thread, running AI summary on Santosh Yadav's Net Worth Certificate
+  returned an empty/useless summary even though the file was genuinely
+  attached and present. Root cause: `pdf-parse` only reads a PDF's
+  embedded text layer. This certificate (like most of the KYC PDFs in this
+  thread — Aadhar cards, PAN cards, net worth certificates, ID photos) is a
+  scanned/photographed document with no text layer at all, so extraction
+  "succeeded" with 2 stray characters instead of failing outright — and
+  `summarizeAttachment` happily fed those 2 characters to Claude, which
+  naturally had nothing to summarize. Image attachments (.jpeg/.png) had
+  the identical problem one step earlier: they never go through text
+  extraction at all (always `SKIPPED`), so AI summary always returned "No
+  extractable text." for every photo attachment in the mailbox.
+  Fixed by adding a vision fallback: when extracted text is empty or below
+  a 30-character usability threshold, the attachment's actual PDF/image
+  bytes are now sent directly to Claude (`document`/`image` content
+  blocks) instead of relying on the text layer — Claude reads scanned
+  documents directly, no OCR pipeline needed. Capped at 20MB per file to
+  stay under API request limits; falls back to "No extractable text." only
+  if the file is missing, too large, or an unsupported type.
+  Verified live against the real mailbox: Santosh Yadav's Net Worth
+  Certificate now returns "...Net Worth: ₹380.61 Lakh... signed by CA
+  Kamal Kant Vashisht... UDIN: 26464645TMUCXA5505..." (previously empty);
+  same for Divya Kumawat's certificate in the same thread. Confirmed no
+  regression on a normal text-PDF (Sky Volt Raisar-AOA.pdf, 41K chars of
+  extracted text) — still summarized via the original text path, unchanged.
+  [claude.ts](src/lib/mail/ai/claude.ts),
+  [attachments.ts](src/lib/mail/ai/attachments.ts) —
+  `fix/mail-attachment-summary-vision-fallback`, merged to main.
 - [x] **[FIXED] Threads column showed stale Inbox content after trashing
   from All Inbox.** Delete a thread while viewing All Inbox, then land
   on/click Trash: the Mailboxes sidebar correctly highlighted Trash as
