@@ -1,4 +1,4 @@
-import { claudeJson, getAnthropic } from "@/lib/mail/ai/claude";
+import { claudeJson, fenceMailData, getAnthropic } from "@/lib/mail/ai/claude";
 
 export type LabelMatchCriteria = {
   fromContains: string | null;
@@ -50,4 +50,48 @@ If this looks like a one-off — a personal note, a unique one-time request, not
     subjectContains,
     ruleName: raw.ruleName?.trim() || opts.targetLabel,
   };
+}
+
+/**
+ * "Is this existing thread genuinely similar to the one just corrected" is
+ * the same class of problem this session already hit once with recipient
+ * extraction: a keyword/substring test can't tell that "Bhaureji Surajmal
+ * Green Energy Pvt Ltd, Component A, Bharatpur-Part 3" and "Kumha Solar Pvt
+ * Ltd, Component A, Bharatpur-Part 1" are the same *kind* of mail (the same
+ * PM KUSUM financing template, sent about different company entities) —
+ * their subjects share almost no literal substring. So candidate threads
+ * are fetched with a deliberately broad, OR-based query (see
+ * findBroadCandidateThreads in label-rules.ts) and then judged here, with
+ * the model reading each candidate's actual content — the same
+ * retrieve-then-classify shape as this codebase's existing RAG retrieval,
+ * just reranking for "same kind of mail" instead of topical relevance to a
+ * search query.
+ */
+export async function classifySimilarThreads(opts: {
+  targetLabel: string;
+  source: { subject: string; fromAddress: string; snippet: string };
+  candidates: {
+    id: string;
+    subject: string;
+    fromAddress: string;
+    snippet: string;
+  }[];
+}): Promise<string[] | null> {
+  if (!getAnthropic()) return null;
+  if (!opts.candidates.length) return [];
+
+  const raw = await claudeJson<{ similarIds: string[] }>({
+    model: "haiku",
+    maxTokens: 1024,
+    system: `A human just labeled sourceEmail "${opts.targetLabel}". Decide which of the candidate emails are genuinely the SAME KIND of mail and deserve that same label — same purpose, topic, or template as sourceEmail, even if the sender, company/person name, or exact subject wording differs (e.g. the same kind of templated business email sent about a different client, project, or entity is still the same kind of mail). Do not require literal keyword overlap — judge by what the email is actually about and for. Exclude anything that only superficially shares a sender or a word but is actually a different topic or purpose. Return JSON {similarIds: string[]} — the "id" values of matching candidates only (from the "candidates" array), or an empty array if none are genuinely similar.`,
+    user: fenceMailData({
+      sourceEmail: opts.source,
+      targetLabel: opts.targetLabel,
+      candidates: opts.candidates,
+    }),
+  });
+
+  if (!raw || !Array.isArray(raw.similarIds)) return null;
+  const validIds = new Set(opts.candidates.map((c) => c.id));
+  return raw.similarIds.filter((id) => validIds.has(id));
 }

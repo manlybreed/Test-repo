@@ -1,5 +1,8 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { suggestLabelMatchCriteria } from "@/lib/mail/ai/label-correction";
+import {
+  suggestLabelMatchCriteria,
+  classifySimilarThreads,
+} from "@/lib/mail/ai/label-correction";
 
 /**
  * suggestLabelMatchCriteria calls Claude (via claudeJson), so — consistent
@@ -53,5 +56,45 @@ describe("suggestLabelMatchCriteria — deterministic guard clauses", () => {
       targetLabel: "  ",
     });
     expect(result).toBeNull();
+  });
+});
+
+/**
+ * classifySimilarThreads calls Claude too, so — same convention as above —
+ * only the deterministic guard clauses are unit-tested here. Its actual
+ * judgment quality (does it correctly recognize the same PM KUSUM financing
+ * template sent about a different company as "similar," does it correctly
+ * exclude a same-sender-different-topic email) is exercised live, the same
+ * way suggestLabelMatchCriteria's real classification quality is.
+ */
+describe("classifySimilarThreads — deterministic guard clauses", () => {
+  const originalKey = process.env.ANTHROPIC_API_KEY;
+
+  beforeEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+  });
+
+  afterEach(() => {
+    if (originalKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = originalKey;
+  });
+
+  it("returns null without attempting a call when no Anthropic key is configured", async () => {
+    const result = await classifySimilarThreads({
+      targetLabel: "PM_KUSUM",
+      source: { subject: "s", fromAddress: "a@b.com", snippet: "" },
+      candidates: [{ id: "1", subject: "s2", fromAddress: "a@b.com", snippet: "" }],
+    });
+    expect(result).toBeNull();
+  });
+
+  it("returns an empty array without attempting a call when there are no candidates", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key-not-a-real-secret";
+    const result = await classifySimilarThreads({
+      targetLabel: "PM_KUSUM",
+      source: { subject: "s", fromAddress: "a@b.com", snippet: "" },
+      candidates: [],
+    });
+    expect(result).toEqual([]);
   });
 });

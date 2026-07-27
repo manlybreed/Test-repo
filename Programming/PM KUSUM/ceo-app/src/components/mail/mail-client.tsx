@@ -6563,7 +6563,9 @@ export function MailClient({
                       <span style={{ color: "var(--text-dim)" }}>
                         {labelSuggestion.selectedIds.size} of{" "}
                         {labelSuggestion.matches.length} selected
-                        {labelSuggestion.matchesCapped ? " (200 most recent)" : ""}
+                        {labelSuggestion.matchesCapped
+                          ? " (most recent — there may be more)"
+                          : ""}
                       </span>
                       <div className="flex shrink-0 gap-2">
                         <button

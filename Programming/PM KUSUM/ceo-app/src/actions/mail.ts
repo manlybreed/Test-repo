@@ -18,12 +18,16 @@ import {
 import { createMailLabel } from "@/lib/mail/labels";
 import {
   findMatchingExistingThreads,
+  findBroadCandidateThreads,
   applyLabelRuleRetroactively,
   undoSmartLabelRetroactive,
   type MatchingThreadPreview,
   type SmartLabelSnapshotItem,
 } from "@/lib/mail/ai/label-rules";
-import { suggestLabelMatchCriteria } from "@/lib/mail/ai/label-correction";
+import {
+  suggestLabelMatchCriteria,
+  classifySimilarThreads,
+} from "@/lib/mail/ai/label-correction";
 import {
   isSmartLabel,
   mergeSmartLabels,
@@ -1469,10 +1473,26 @@ export type LabelCorrectionSuggestion = {
 
 /**
  * After a single-thread label correction (either "Move to…" or a smart-label
- * fix), ask Claude what makes that email generalizable, then look up real
- * existing matches — shown in full so the user can select/deselect before
- * applying anything. Returns null when nothing generalizes (a one-off
- * email), in which case the UI shows no suggestion at all.
+ * fix), ask Claude what makes that email generalizable, then find which
+ * *existing* mail deserves the same treatment — shown in full so the user
+ * can select/deselect before applying anything. Returns null when nothing
+ * generalizes (a one-off email), in which case the UI shows no suggestion
+ * at all.
+ *
+ * Finding "similar existing mail" is deliberately two stages, not one
+ * substring query: a strict fromContains-AND-subjectContains match badly
+ * under-finds real matches whenever the same sender/template is used across
+ * different subject text (a templated business email naming a different
+ * client/company each time shares almost no subject substring with its
+ * siblings despite being the exact same kind of mail). So candidates are
+ * fetched with a deliberately loose OR query (findBroadCandidateThreads),
+ * then Claude judges which of those candidates are genuinely similar given
+ * their actual content (classifySimilarThreads) — retrieve broad, then let
+ * a real understanding step prune it, the same shape as this codebase's
+ * other retrieve-then-judge AI features. If classification is unavailable
+ * (no API key, model hiccup), this falls back to the narrower strict-match
+ * result rather than the unfiltered broad pool — degrade to "fewer, safe"
+ * matches, never to "more, unverified" ones.
  */
 export async function suggestLabelCorrectionAction(input: {
   threadId: string;
@@ -1487,33 +1507,66 @@ export async function suggestLabelCorrectionAction(input: {
   });
   if (!latest) return null;
 
+  const sourceSnippet = latest.snippet || latest.bodyText?.slice(0, 400) || "";
+
   const criteria = await suggestLabelMatchCriteria({
     fromAddress: latest.fromAddress,
     subject: latest.subject,
-    snippet: latest.snippet || latest.bodyText?.slice(0, 400) || undefined,
+    snippet: sourceSnippet || undefined,
     targetLabel: input.targetLabel,
   });
   if (!criteria) return null;
 
-  const rule = {
-    matchJson: JSON.stringify({
-      fromContains: criteria.fromContains,
-      subjectContains: criteria.subjectContains,
-    }),
-  };
-  // Ask for one past the cap so we know whether it was actually capped,
-  // rather than silently under-reporting "200" when there were exactly 200.
-  const matches = await findMatchingExistingThreads(account.id, rule, {
-    excludeThreadId: input.threadId,
-    limit: 201,
-  });
-  const matchesCapped = matches.length > 200;
+  const broadCandidates = await findBroadCandidateThreads(
+    account.id,
+    criteria,
+    { excludeThreadId: input.threadId },
+  );
+
+  let matches: MatchingThreadPreview[] = [];
+  let matchesCapped = false;
+
+  if (broadCandidates.length) {
+    const classified = await classifySimilarThreads({
+      targetLabel: input.targetLabel,
+      source: {
+        subject: latest.subject,
+        fromAddress: latest.fromAddress,
+        snippet: sourceSnippet,
+      },
+      candidates: broadCandidates.map((c) => ({
+        id: c.id,
+        subject: c.subject,
+        fromAddress: c.fromAddress || "",
+        snippet: c.snippet || "",
+      })),
+    });
+
+    if (classified) {
+      const keep = new Set(classified);
+      matches = broadCandidates.filter((c) => keep.has(c.id));
+      matchesCapped = broadCandidates.length >= 60;
+    } else {
+      const rule = {
+        matchJson: JSON.stringify({
+          fromContains: criteria.fromContains,
+          subjectContains: criteria.subjectContains,
+        }),
+      };
+      const fallback = await findMatchingExistingThreads(account.id, rule, {
+        excludeThreadId: input.threadId,
+        limit: 201,
+      });
+      matchesCapped = fallback.length > 200;
+      matches = fallback.slice(0, 200);
+    }
+  }
 
   return {
     fromContains: criteria.fromContains,
     subjectContains: criteria.subjectContains,
     ruleName: criteria.ruleName,
-    matches: matches.slice(0, 200),
+    matches,
     matchesCapped,
   };
 }
