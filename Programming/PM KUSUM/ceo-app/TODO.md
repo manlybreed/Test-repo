@@ -158,3 +158,18 @@ not feature checklists.
   content never got clobbered.
   [mail-client.tsx](src/components/mail/mail-client.tsx) —
   `fix/mail-stale-folder-after-trash`, merged to main.
+- [x] **[FIXED] Threads column kept its old scroll position when switching
+  mailboxes.** Scroll down in All Inbox, then click Trash (or any other
+  mailbox): the new folder's thread list rendered starting from wherever
+  the previous folder happened to be scrolled to, instead of resetting to
+  the top. Reported 2026-07-27. Fixed with a `useEffect` keyed on
+  `[activeFolder, activeSmartLabel, threadPage]` that scrolls the Threads
+  `<ul>` back to the top — deliberately a separate effect from data
+  fetching (not inside `reloadActiveView`, which is also called by
+  background live-sync refreshes of the *same* view) so a passive sync
+  tick never yanks your scroll position while you're mid-read. Verified
+  live: scrolled 400px into Inbox, switched to Trash, landed at
+  `scrollTop: 0`; then scrolled within Trash and waited 8s past a sync
+  tick to confirm position held steady.
+  [mail-client.tsx](src/components/mail/mail-client.tsx) —
+  `fix/mail-scroll-reset-on-folder-switch`, merged to main.

@@ -1190,6 +1190,8 @@ export function MailClient({
    * another.
    */
   const threadsFetchSeqRef = useRef(0);
+  /** The scrollable Threads <ul> — reset to the top on every mailbox/page switch. */
+  const threadsListRef = useRef<HTMLUListElement>(null);
   /** Always the current render's reloadActiveView — see its assignment site. */
   const reloadActiveViewRef = useRef<() => Promise<void>>(async () => {});
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -1585,6 +1587,16 @@ export function MailClient({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [configured, activeFolder, activeSmartLabel, threadPage]);
+
+  // Switching mailboxes/pages should always land back at the top of the
+  // list — otherwise the new folder renders starting from wherever the
+  // previous one happened to be scrolled to. Deliberately separate from
+  // the data-fetching effect above (and from reloadActiveView itself, used
+  // by background syncs) so a live-update refresh of the *same* view never
+  // yanks the scroll position out from under someone mid-read.
+  useEffect(() => {
+    threadsListRef.current?.scrollTo({ top: 0 });
+  }, [activeFolder, activeSmartLabel, threadPage]);
 
   function openThread(id: string) {
     if ((showCompose || composeFullscreen) && composeIsDirty()) {
@@ -4426,6 +4438,7 @@ export function MailClient({
             </AnimatePresence>
           </div>
           <motion.ul
+            ref={threadsListRef}
             variants={listStagger}
             initial="hidden"
             animate="show"
