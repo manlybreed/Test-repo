@@ -136,18 +136,26 @@ export type SmartLabelSnapshotItem = { threadId: string; previousLabelsJson: str
  * move instead — handled by the caller via moveMailThreadsToFolder, since
  * that's IMAP-specific, not a labelsJson concern. This function only
  * covers the smart-label branch.
+ *
+ * Pass `threadIds` when the caller already knows exactly which threads to
+ * touch (e.g. a user-reviewed, checkbox-selected subset of the live
+ * match list) — this skips re-querying `findMatchingExistingThreads` so
+ * "what was shown and selected" is exactly "what happens," not a fresh
+ * re-match that could have drifted since the suggestion was shown.
  */
 export async function applyLabelRuleRetroactively(
   accountId: string,
   rule: { matchJson: string },
-  opts: { label: string; excludeThreadId?: string; limit?: number },
+  opts: { label: string; excludeThreadId?: string; limit?: number; threadIds?: string[] },
 ): Promise<{ snapshot: SmartLabelSnapshotItem[] }> {
-  const candidates = await findMatchingExistingThreads(accountId, rule, opts);
+  const candidateIds =
+    opts.threadIds ??
+    (await findMatchingExistingThreads(accountId, rule, opts)).map((c) => c.id);
   const snapshot: SmartLabelSnapshotItem[] = [];
 
-  for (const c of candidates) {
-    const thread = await prisma.mailThread.findUnique({
-      where: { id: c.id },
+  for (const id of candidateIds) {
+    const thread = await prisma.mailThread.findFirst({
+      where: { id, accountId },
       select: { labelsJson: true },
     });
     if (!thread) continue;
@@ -156,13 +164,13 @@ export async function applyLabelRuleRetroactively(
     // Idempotent: a candidate that already carries the label is left alone
     // and doesn't appear in the undo snapshot.
     if (nextJson === thread.labelsJson) continue;
-    snapshot.push({ threadId: c.id, previousLabelsJson: thread.labelsJson });
+    snapshot.push({ threadId: id, previousLabelsJson: thread.labelsJson });
     await prisma.mailThread.update({
-      where: { id: c.id },
+      where: { id },
       data: { labelsJson: nextJson },
     });
     await prisma.mailAiCache
-      .deleteMany({ where: { threadId: c.id, kind: "TRIAGE" } })
+      .deleteMany({ where: { threadId: id, kind: "TRIAGE" } })
       .catch(() => undefined);
   }
 
