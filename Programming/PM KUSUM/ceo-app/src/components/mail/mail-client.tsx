@@ -25,7 +25,6 @@ import {
   Loader2,
   Mail as MailIcon,
   Maximize2,
-  Mic,
   Minimize2,
   Minus,
   MoreHorizontal,
@@ -42,7 +41,6 @@ import {
   ShieldAlert,
   SlidersHorizontal,
   Sparkles,
-  Square,
   Star,
   Trash2,
   WandSparkles,
@@ -68,8 +66,11 @@ import {
 } from "@/actions/mail-accounts";
 import { haptic } from "@/components/mail/haptics";
 import { playSendSound, playSendFlyAnimation } from "@/components/mail/sound";
-import { useSpeechToText } from "@/components/mail/use-speech-to-text";
-import { parseMailVoiceCommand } from "@/lib/mail/voice-commands";
+import { VoiceButton } from "@/components/voice/voice-button";
+import {
+  useRegisterCommands,
+  type RegisteredCommand,
+} from "@/lib/commands/use-register-commands";
 import { buildFolderTree, type FolderTreeNode } from "@/lib/mail/folder-tree";
 import {
   askMailAction,
@@ -753,49 +754,6 @@ function IconBtn({
     >
       {icon}
     </motion.button>
-  );
-}
-
-/**
- * Voice command for a single AI-assist field — every one of them (AI
- * Draft brief, draft refine instruction, Ask mailbox) is a free-text
- * instruction box, so the same mic button drops into all three. Press it,
- * speak one instruction, and the caller's `onText` both fills the field
- * and (at each call site) immediately runs the corresponding action —
- * Draft/Refine/Ask — rather than just transcribing and waiting for a
- * separate click. Renders nothing on browsers without SpeechRecognition
- * (Firefox, Safari) rather than showing a mic that silently does nothing
- * when clicked.
- */
-function VoiceButton({
-  onText,
-  size = "md",
-  disabled,
-}: {
-  onText: (text: string) => void;
-  size?: "md" | "lg";
-  disabled?: boolean;
-}) {
-  const { supported, listening, error, toggle } = useSpeechToText(onText);
-
-  useEffect(() => {
-    if (error) {
-      haptic("warn");
-    }
-  }, [error]);
-
-  if (!supported) return null;
-
-  return (
-    <IconBtn
-      title={listening ? "Stop voice command" : "Voice command"}
-      icon={listening ? <Square size={13} /> : <Mic size={14} />}
-      active={listening}
-      danger={Boolean(error)}
-      size={size}
-      disabled={disabled}
-      onClick={toggle}
-    />
   );
 }
 
@@ -3427,87 +3385,193 @@ export function MailClient({
     haptic("tap");
   }
 
-  /** Mail-wide voice command dispatcher — unlike the three field-scoped mic
-   * buttons (AI Draft brief, refine, Ask), this one is always available on
-   * the Mail tab and can act on the app itself: compose, navigate folders,
-   * search, or act on whatever thread is currently open. */
-  function handleMailVoiceCommand(text: string) {
-    const cmd = parseMailVoiceCommand(text);
-    switch (cmd.type) {
-      case "compose":
-        composeNew();
-        break;
-      case "openFolder": {
-        if (cmd.folder === "SMART_INBOX") {
-          selectSmartInbox();
-          break;
-        }
-        if (cmd.folder === "OUTBOX") {
-          selectOutbox();
-          break;
-        }
-        const folder = folderList.find((f) => f.role === cmd.folder);
-        if (folder) {
-          selectFolder(folder.id);
-          setStatus(`Opened ${folder.name}`);
-        } else {
-          setStatus(`No ${cmd.folder.toLowerCase()} folder found`);
+  /** Every mail action reachable by voice or typed command, registered with
+   * the shared command registry (src/lib/commands/registry.ts) so the same
+   * entries are matchable from this page's own voice input AND, once wired
+   * up, from the app-wide ⌘K bar / global voice entry point. Guard
+   * conditions (thread must be open, etc.) live in each handler exactly as
+   * they did in the old bespoke regex dispatcher — only the matching
+   * mechanism moved to command-score's fuzzy scoring. */
+  function openFolderByRole(role: string, label: string) {
+    const folder = folderList.find((f) => f.role === role);
+    if (folder) {
+      selectFolder(folder.id);
+      setStatus(`Opened ${folder.name}`);
+    } else {
+      setStatus(`No ${label} folder found`);
+      haptic("warn");
+    }
+  }
+
+  const mailCommands: RegisteredCommand[] = [
+    {
+      id: "mail.compose",
+      label: "Compose new email",
+      description: "Open a new blank email to compose",
+      phrases: [
+        "compose",
+        "compose new email",
+        "write new email",
+        "new email",
+        "new message",
+        "draft new email",
+        "start new email",
+      ],
+      handler: () => composeNew(),
+    },
+    {
+      id: "mail.open-smart-inbox",
+      label: "Open Smart Inbox",
+      description: "Navigate to the Smart Inbox view",
+      phrases: ["smart inbox", "open smart inbox", "go to smart inbox", "show smart inbox"],
+      handler: () => selectSmartInbox(),
+    },
+    {
+      id: "mail.open-inbox",
+      label: "Open Inbox",
+      description: "Navigate to the Inbox folder",
+      phrases: ["inbox", "open inbox", "go to inbox", "show inbox", "all inbox"],
+      handler: () => openFolderByRole("INBOX", "inbox"),
+    },
+    {
+      id: "mail.open-sent",
+      label: "Open Sent",
+      description: "Navigate to the Sent folder",
+      phrases: ["sent", "open sent", "go to sent", "sent mail", "sent folder"],
+      handler: () => openFolderByRole("SENT", "sent"),
+    },
+    {
+      id: "mail.open-drafts",
+      label: "Open Drafts",
+      description: "Navigate to the Drafts folder",
+      phrases: ["drafts", "draft folder", "open drafts", "go to drafts"],
+      handler: () => openFolderByRole("DRAFTS", "drafts"),
+    },
+    {
+      id: "mail.open-trash",
+      label: "Open Trash",
+      description: "Navigate to the Trash folder",
+      phrases: ["trash folder", "deleted items", "open trash", "go to trash", "view trash"],
+      handler: () => openFolderByRole("TRASH", "trash"),
+    },
+    {
+      id: "mail.open-junk",
+      label: "Open Junk",
+      description: "Navigate to the Junk/Spam folder",
+      phrases: ["junk", "spam", "open junk", "go to junk", "junk mail"],
+      handler: () => openFolderByRole("JUNK", "junk"),
+    },
+    {
+      id: "mail.open-archive",
+      label: "Open Archive folder",
+      description: "Navigate to the Archive folder",
+      phrases: ["archive folder", "open archive", "go to archive", "view archive", "archived mail"],
+      handler: () => openFolderByRole("ARCHIVE", "archive"),
+    },
+    {
+      id: "mail.open-outbox",
+      label: "Open Outbox",
+      description: "Navigate to the Outbox",
+      phrases: ["outbox", "open outbox", "go to outbox", "outbox folder"],
+      handler: () => selectOutbox(),
+    },
+    {
+      id: "mail.search",
+      label: "Search mail",
+      description: "Search mail for a query",
+      phrases: ["search", "search mail", "search for", "find", "look for", "find mail"],
+      extractArgs: (raw) => {
+        const match = raw
+          .trim()
+          .match(/^(?:search(?: mail| for)?|find|look for)\s+(.+)/i);
+        return match?.[1]?.trim() ? { query: match[1].trim() } : null;
+      },
+      handler: (args) => {
+        const query = typeof args?.query === "string" ? args.query : "";
+        if (!query) {
+          setStatus('Say what to search for, e.g. "search invoices from BSS"');
           haptic("warn");
+          return;
         }
-        break;
-      }
-      case "search":
         setActiveSmartLabel(null);
-        setThreadQuery(cmd.query);
-        setStatus(`Searching "${cmd.query}"…`);
-        break;
-      case "archive":
+        setThreadQuery(query);
+        setStatus(`Searching "${query}"…`);
+      },
+    },
+    {
+      id: "mail.archive",
+      label: "Archive open thread",
+      description: "Archive the currently open mail thread",
+      phrases: ["archive", "archive this", "archive this email", "archive this thread", "archive current email"],
+      handler: () => {
         if (!selectedId || selectedId.startsWith("outbox")) {
           setStatus("Open a thread first to archive it");
           haptic("warn");
-          break;
+          return;
         }
         archiveSelected();
-        break;
-      case "trash":
+      },
+    },
+    {
+      id: "mail.trash",
+      label: "Trash open thread",
+      description: "Move the currently open mail thread to Trash",
+      phrases: ["trash", "delete", "trash this", "delete this", "trash this email", "delete this email", "move to trash"],
+      handler: () => {
         if (!selectedId || selectedId.startsWith("outbox")) {
           setStatus("Open a thread first to trash it");
           haptic("warn");
-          break;
+          return;
         }
         trashSelected();
-        break;
-      case "reply":
+      },
+    },
+    {
+      id: "mail.reply",
+      label: "Reply",
+      description: "Reply to the currently open mail thread",
+      phrases: ["reply", "reply to this", "reply to this email"],
+      handler: () => {
         if (!selectedId) {
           setStatus("Open a thread first to reply");
           haptic("warn");
-          break;
+          return;
         }
         setShowCompose(true);
         haptic("tap");
-        break;
-      case "replyAll":
+      },
+    },
+    {
+      id: "mail.reply-all",
+      label: "Reply all",
+      description: "Reply to all recipients of the currently open mail thread",
+      phrases: ["reply all", "reply to all"],
+      handler: () => {
         if (!messages.length) {
           setStatus("Open a thread first to reply all");
           haptic("warn");
-          break;
+          return;
         }
         replyAll();
-        break;
-      case "forward":
+      },
+    },
+    {
+      id: "mail.forward",
+      label: "Forward",
+      description: "Forward the currently open mail thread",
+      phrases: ["forward", "forward this", "forward this email", "forward this message"],
+      handler: () => {
         if (!messages.length) {
           setStatus("Open a thread first to forward it");
           haptic("warn");
-          break;
+          return;
         }
         composeForward();
-        break;
-      case "ask":
-        setAskQ(cmd.question);
-        runAsk(cmd.question);
-        break;
-    }
-  }
+      },
+    },
+  ];
+
+  useRegisterCommands(mailCommands);
 
   function runAutocomplete() {
     startTransition(async () => {
@@ -4107,11 +4171,6 @@ export function MailClient({
             }
             disabled={syncing || categorizing}
             onClick={() => runSync()}
-          />
-          <VoiceButton
-            size="lg"
-            disabled={syncing}
-            onText={handleMailVoiceCommand}
           />
 
           {/* AI mailbox actions, grouped */}

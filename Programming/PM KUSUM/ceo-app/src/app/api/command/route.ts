@@ -24,6 +24,7 @@ For ANY question about live data (counts, latest invoice number, how much was sp
 Navigation URLs:
 - /ceo — overview dashboard
 - /ceo/assistant — AI chat (has full database access, use for all data questions)
+- /ceo/mail — email inbox, compose, calendar/meeting scheduling
 - /ceo/projects — PM KUSUM plants / disclosure forms
 - /ceo/agreements — agreements
 - /ceo/invoices — invoices

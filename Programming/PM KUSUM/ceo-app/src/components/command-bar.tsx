@@ -2,7 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
+import { matchCommand, type CommandContext } from "@/lib/commands/registry";
+import { invokeCommand } from "@/lib/commands/use-register-commands";
 
 type ResultState =
   | { type: "idle" }
@@ -20,19 +22,38 @@ const QUICK_CMDS = [
   { label: "Go to Assistant", icon: "✦", query: "open ai assistant" },
 ];
 
-export function CommandBar({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function CommandBar({
+  open,
+  onClose,
+  initialQuery,
+}: {
+  open: boolean;
+  onClose: () => void;
+  /** Pre-fills and immediately runs a query when the bar opens — used by
+   * the global voice entry point (ceo-shell.tsx) to hand off an utterance
+   * that didn't match a registered command, so it resolves through this
+   * exact same /api/command path a typed query would. */
+  initialQuery?: string;
+}) {
   const [query, setQuery] = useState("");
   const [result, setResult] = useState<ResultState>({ type: "idle" });
   const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
+  const pathname = usePathname();
 
   useEffect(() => {
-    if (open) {
-      setQuery("");
+    if (!open) return;
+    if (initialQuery) {
+      setQuery(initialQuery);
       setResult({ type: "idle" });
-      setTimeout(() => inputRef.current?.focus(), 80);
+      run(initialQuery);
+      return;
     }
-  }, [open]);
+    setQuery("");
+    setResult({ type: "idle" });
+    setTimeout(() => inputRef.current?.focus(), 80);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialQuery]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -45,6 +66,19 @@ export function CommandBar({ open, onClose }: { open: boolean; onClose: () => vo
   async function run(q: string) {
     const trimmed = (q || query).trim();
     if (!trimmed) return;
+
+    // Tier 1: the same fuzzy-matched shared command registry voice input
+    // uses (src/lib/commands/registry.ts) — whatever page is mounted (e.g.
+    // Mail) may have registered real actions here, so a typed command gets
+    // the identical fast path a spoken one does before falling back to
+    // nav-intent/LLM resolution below.
+    const ctx: CommandContext = { route: pathname };
+    const match = matchCommand(trimmed, ctx);
+    if (match) {
+      onClose();
+      invokeCommand(match.entry.id, match.args);
+      return;
+    }
 
     // Fast client-side navigation shortcuts
     const nav = detectNavIntent(trimmed);
@@ -99,6 +133,8 @@ export function CommandBar({ open, onClose }: { open: boolean; onClose: () => vo
       return "/ceo/time";
     if (/\b(assistant|chat|ai)\b/.test(lower) && /\b(go|open|show|nav)\b/.test(lower))
       return "/ceo/assistant";
+    if (/\b(mail|email|inbox)\b/.test(lower) && /\b(go|open|show|list|view|nav)\b/.test(lower))
+      return "/ceo/mail";
     if (/\b(dashboard|overview|home)\b/.test(lower)) return "/ceo";
     return null;
   }
