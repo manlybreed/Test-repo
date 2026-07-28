@@ -23,6 +23,13 @@ const DraftSchema = z.object({
 // extracted — this is a format check, not a parsing/understanding step.
 const EMAIL_SHAPE_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/** Shared system-prompt rule for referencing already-attached files (or their absence). */
+function attachmentPromptRule(attachedDocuments: string[]): string {
+  return attachedDocuments.length
+    ? `attachedDocuments in mail_data lists file names already attached to this email. Mention near the end of the body that these documents are enclosed, and list each one by name (e.g. a short "Attached:" line followed by a bulleted <ul> of the file names, as siblings — never a <ul> nested inside a <p>) so the recipient knows exactly what's included. Do not invent documents beyond this list.`
+    : `attachedDocuments in mail_data is empty — do not claim anything is attached or enclosed.`;
+}
+
 /**
  * AI Draft's brief box is the only place a fresh-compose instruction like
  * "write a mail to yogesh ji on abc@gmail.com" gets typed — but the To
@@ -82,6 +89,9 @@ export async function draftReply(opts: {
   threadId: string;
   intent?: string;
   tone?: string;
+  /** Filenames of files already attached to this compose — so the draft
+   * can mention/list them instead of writing as if nothing were enclosed. */
+  attachments?: string[];
 }): Promise<{ html: string; subject?: string; tone: string } | null> {
   if (!getAnthropic()) return null;
 
@@ -97,14 +107,16 @@ export async function draftReply(opts: {
   });
   const { packed } = packChunks(chunks);
   const sig = account?.signatures[0]?.htmlBody || "";
+  const attachedDocuments = opts.attachments?.filter(Boolean) || [];
 
   const raw = await claudeJson<{ html: string; subject?: string }>({
     model: "sonnet",
     system: `Draft an HTML email reply (body only, no outer html/body tags). Return JSON {html, subject?}.
 Ground facts only in mail_data. Do not invent commitments. Leave a <!--SIGNATURE--> marker where signature should go.
 Default voice: ${DEFAULT_DRAFT_TONE}
-Style hints: ${styleInPrompt(account?.styleJson) || "professional concise"}`,
-    user: `${fenceMailData(packed)}\n\nIntent: ${opts.intent || "reply appropriately"}\nTone: ${tone}`,
+Style hints: ${styleInPrompt(account?.styleJson) || "professional concise"}
+${attachmentPromptRule(attachedDocuments)}`,
+    user: `${fenceMailData({ threadContext: packed, attachedDocuments: attachedDocuments.length ? attachedDocuments : null })}\n\nIntent: ${opts.intent || "reply appropriately"}\nTone: ${tone}`,
   });
 
   const parsed = DraftSchema.safeParse(raw);
@@ -130,10 +142,14 @@ export async function draftNewMail(opts: {
    * topicReference, this comes from the user's own words about *this*
    * email, not from unrelated retrieved correspondence, so it's trusted. */
   recipientNameHint?: string;
+  /** Filenames of files already attached to this compose — so the draft
+   * can mention/list them instead of writing as if nothing were enclosed. */
+  attachments?: string[];
 }): Promise<{ html: string; subject?: string; tone: string } | null> {
   if (!getAnthropic()) return null;
   const intent = opts.intent.trim();
   if (!intent) throw new Error("Describe what the email should say");
+  const attachedDocuments = opts.attachments?.filter(Boolean) || [];
 
   const tone = opts.tone?.trim() || DEFAULT_DRAFT_TONE;
   const account = await prisma.mailAccount.findUnique({
@@ -193,7 +209,8 @@ mail_data.topicReference is unrelated background material retrieved by keyword m
 Ground any factual claims (dates, figures, commitments) only in topicReference or knownClient — never invent them.
 Leave a <!--SIGNATURE--> marker where the signature should go.
 Default voice: ${DEFAULT_DRAFT_TONE}
-Style hints: ${styleInPrompt(account?.styleJson) || "professional concise"}`,
+Style hints: ${styleInPrompt(account?.styleJson) || "professional concise"}
+${attachmentPromptRule(attachedDocuments)}`,
     user: `${fenceMailData({
       recipientName,
       knownClient: clientHit
@@ -202,6 +219,7 @@ Style hints: ${styleInPrompt(account?.styleJson) || "professional concise"}`,
       recipients: opts.to,
       suggestedSubject: opts.subject || null,
       topicReference: packed || null,
+      attachedDocuments: attachedDocuments.length ? attachedDocuments : null,
     })}\n\nWrite about: ${intent}\nTone: ${tone}`,
   });
 
