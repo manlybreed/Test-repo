@@ -1105,3 +1105,37 @@ clean.
 [idle-watcher.ts](src/lib/mail/idle-watcher.ts),
 [mail-accounts.ts](src/actions/mail-accounts.ts) —
 `fix/mail-remove-account-cleanup`, merged to main.
+
+---
+
+## 2026-07-28 — Add/remove-mailbox status visibility
+
+Requested after the user re-added accounts@/pmkusum@ following the remove-
+cleanup fix above: `addMailAccountAction` returns as soon as the account +
+credential rows exist, then syncs and connects IDLE in the background — for
+a large mailbox (pmkusum@ took several minutes earlier this session) the
+settings panel showed nothing at all about what was actually happening
+next. `MailboxesPanel` now subscribes to the same accountId-tagged SSE
+stream `mail-client.tsx` already uses for live updates, scoped to just the
+mailbox being added: "Connecting to the mail server…" while waiting for the
+first event, "Importing messages… (N so far)" on a `mail:updated` event,
+and "Live — watching for new mail" once both the INBOX and SENT IDLE
+watchers report `mail:idle` (auto-clears a few seconds after that). A sync
+error shows inline and is deliberately *not* auto-cleared; a 60-second
+safety-net timeout clears a stuck "Connecting…"/"Importing…" status if IDLE
+is disabled (`CEO_MAIL_IDLE=0`) or something else keeps it from ever
+resolving, without touching a genuine error message.
+
+Removing a mailbox now shows "Removing mailbox and local data… this can
+take a moment for a large mailbox" on that row (DB delete + IDLE stop +
+filesystem cleanup, per the fix above, can take a few seconds) instead of
+the Remove button just sitting disabled with no explanation.
+
+Verified: tsc, eslint, vitest (118 passed), null-byte scan — all clean.
+Confirmed accounts@ (re-added by the user in parallel with this work, since
+password entry has to happen in their own browser) synced correctly (5
+folders, 123 messages) and the running dev server picked up the change via
+Fast Refresh with no errors.
+
+[mailboxes-panel.tsx](src/components/mail/mailboxes-panel.tsx) —
+`feature/mail-account-add-remove-status`, merged to main.
