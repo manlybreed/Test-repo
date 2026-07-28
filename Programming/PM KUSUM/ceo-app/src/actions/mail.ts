@@ -77,7 +77,6 @@ import {
   extractAttachmentText,
   summarizeAttachment,
 } from "@/lib/mail/ai/attachments";
-import { buildIcsInvite } from "@/lib/mail/ai/meeting";
 import {
   confirmUnsubscribeAction,
   suggestBulkCleanup,
@@ -1418,23 +1417,6 @@ export async function extractAttachmentAction(attachmentId: string) {
 export async function summarizeAttachmentAction(attachmentId: string) {
   await requireCeo();
   return summarizeAttachment(attachmentId);
-}
-
-export async function buildMeetingInviteAction(input: {
-  title: string;
-  description?: string;
-  startIso: string;
-  endIso: string;
-  attendees: string[];
-  confirmed: boolean;
-  accountId?: string;
-}) {
-  const { account } = await requireAccount(input.accountId);
-  return buildIcsInvite({
-    ...input,
-    organizerEmail: account.address,
-    attendeeEmails: input.attendees,
-  });
 }
 
 export async function bulkCleanupSuggestionsAction(accountId?: string) {

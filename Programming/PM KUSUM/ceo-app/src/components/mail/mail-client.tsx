@@ -60,6 +60,8 @@ import {
 } from "@/components/mail/signatures-panel";
 import { VacationPanel } from "@/components/mail/vacation-panel";
 import { MailboxesPanel } from "@/components/mail/mailboxes-panel";
+import { CalendarPanel } from "@/components/mail/calendar-panel";
+import { ScheduleMeetingPanel } from "@/components/mail/schedule-meeting-panel";
 import {
   listMailAccountsAction,
   type MailAccountSummary,
@@ -110,7 +112,6 @@ import {
   findContactsAction,
   refreshStyleAction,
   summarizeAttachmentAction,
-  buildMeetingInviteAction,
   bulkCleanupSuggestionsAction,
   unsubscribeCandidateAction,
   dismissReminderAction,
@@ -1191,6 +1192,11 @@ export function MailClient({
   const [showSignatures, setShowSignatures] = useState(false);
   const [showVacation, setShowVacation] = useState(false);
   const [showMailboxes, setShowMailboxes] = useState(false);
+  const [showCalendarPanel, setShowCalendarPanel] = useState(false);
+  const [scheduleMeetingDefaults, setScheduleMeetingDefaults] = useState<{
+    title: string;
+    attendees: string[];
+  } | null>(null);
   const [mailAccounts, setMailAccounts] = useState<MailAccountSummary[]>([]);
   // Loaded once at mount (not just when opening the Mailboxes settings
   // panel) so the sidebar switcher has the mailbox list without waiting
@@ -3354,13 +3360,6 @@ export function MailClient({
   }
 
   function runMeetingInvite() {
-    const title =
-      window.prompt("Meeting title", selectedThread?.subject || "Meeting") || "";
-    if (!title.trim()) return;
-    const start = new Date();
-    start.setDate(start.getDate() + 1);
-    start.setHours(10, 0, 0, 0);
-    const end = new Date(start.getTime() + 30 * 60 * 1000);
     const attendees = [
       ...new Set(
         messages
@@ -3368,33 +3367,11 @@ export function MailClient({
           .filter((e) => e && !e.includes("thebluridge.com")),
       ),
     ].slice(0, 8);
-    startTransition(async () => {
-      try {
-        const invite = await buildMeetingInviteAction({
-          title: title.trim(),
-          description: "Scheduled from BluRidge Mail",
-          startIso: start.toISOString(),
-          endIso: end.toISOString(),
-          attendees,
-          confirmed: true,
-          accountId: accountInfo?.id,
-        });
-        const blob = new Blob([invite.ics], {
-          type: "text/calendar;charset=utf-8",
-        });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = invite.filename;
-        a.click();
-        URL.revokeObjectURL(url);
-        setStatus("ICS downloaded — attach or forward as needed");
-        haptic("success");
-      } catch (e) {
-        setStatus(e instanceof Error ? e.message : "Invite failed");
-        haptic("warn");
-      }
+    setScheduleMeetingDefaults({
+      title: selectedThread?.subject || "Meeting",
+      attendees,
     });
+    haptic("tap");
   }
 
   function runBulkCleanup() {
@@ -4255,6 +4232,20 @@ export function MailClient({
                     style={{ color: "var(--text)" }}
                     onClick={() => {
                       setShowSettingsMenu(false);
+                      setShowCalendarPanel(true);
+                      haptic("tap");
+                    }}
+                  >
+                    <CalendarClock size={14} /> Calendar
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-left hover:bg-white/5"
+                    style={{ color: "var(--text)" }}
+                    onClick={() => {
+                      setShowSettingsMenu(false);
                       startTransition(async () => {
                         haptic("tap");
                         const rows = await listLabelRulesAction(accountInfo?.id);
@@ -4444,6 +4435,21 @@ export function MailClient({
         onClose={() => setShowMailboxes(false)}
         accounts={mailAccounts}
         onChange={setMailAccounts}
+      />
+
+      <CalendarPanel
+        open={showCalendarPanel}
+        onClose={() => setShowCalendarPanel(false)}
+        accountId={accountInfo?.id}
+        accountAddress={accountInfo?.address}
+      />
+
+      <ScheduleMeetingPanel
+        open={Boolean(scheduleMeetingDefaults)}
+        onClose={() => setScheduleMeetingDefaults(null)}
+        accountId={accountInfo?.id}
+        defaultTitle={scheduleMeetingDefaults?.title || "Meeting"}
+        defaultAttendees={scheduleMeetingDefaults?.attendees || []}
       />
 
       <AnimatePresence>
@@ -5898,7 +5904,7 @@ export function MailClient({
                                   },
                                 },
                                 {
-                                  label: "Meeting ICS",
+                                  label: "Schedule meeting",
                                   onClick: runMeetingInvite,
                                 },
                                 {

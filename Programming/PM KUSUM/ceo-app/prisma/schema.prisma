@@ -774,6 +774,7 @@ model MailAccount {
   contacts      MailContact[]
   vacationResponder MailVacationResponder?
   credential    MailAccountCredential?
+  googleCalendar GoogleCalendarConnection?
 }
 
 /// Encrypted IMAP/SMTP connection details for a mailbox added via the
@@ -798,6 +799,27 @@ model MailAccountCredential {
   passwordEncrypted String
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
+}
+
+/// A mailbox's connected Google account for real Calendar/Meet scheduling
+/// (distinct from the mailbox's own IMAP/SMTP credentials above — this is
+/// a separate real Google Workspace/Gmail account for the same address,
+/// e.g. akshay@thebluridge.com's mail is on a self-hosted mailserver but
+/// its calendar lives on Google). 1:1 with MailAccount, same shape/cascade
+/// as MailAccountCredential; refreshTokenEncrypted uses the same
+/// credential-crypto.ts AES-256-GCM helper and MAIL_CREDENTIALS_KEY — no
+/// new secret needed.
+model GoogleCalendarConnection {
+  id                    String   @id @default(cuid())
+  accountId             String   @unique
+  account               MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  googleEmail           String
+  refreshTokenEncrypted String
+  accessToken           String?
+  accessTokenExpiresAt  DateTime?
+  scope                 String
+  connectedAt           DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 }
 
 /// Out-of-office / vacation responder — a Sieve script pushed via ManageSieve.
