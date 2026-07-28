@@ -825,3 +825,59 @@ each) via the existing Add-mailbox UI.
 [mail.ts](src/actions/mail.ts),
 [sync.ts](src/lib/mail/sync.ts) —
 `feature/mail-multi-account-switcher-ui`, merged to main.
+
+---
+
+## 2026-07-28 — Multi-mailbox support, Phase 3 (part 2): sidebar switcher UI
+
+Built the actual switcher on top of the accountId plumbing from part 1: a
+sidebar section listing every configured mailbox (color-coded via the
+existing `labelTone` hash, in both the expanded and folder-collapsed
+sidebar states), loaded once at mount via `listMailAccountsAction()`
+rather than waiting on Settings to be opened. Clicking a mailbox calls
+`getMailBootstrap(accountId)` and replaces folders/threads/signatures/
+reminders, landing back on Smart Inbox (the previously active folder id
+belongs to the old account and won't exist in the new one). Threaded
+`accountId` through every mailbox-level action call in `mail-client.tsx`
+(~34 call sites), `RecipientAutocomplete`, `SignaturesPanel`, and
+`VacationPanel`. Added a "From {address}" line to the docked reply card
+(only shown once there's more than one mailbox) — the fullscreen compose
+already had this from earlier in the session, it just needed to keep
+reflecting whichever account is active now that more than one exists.
+
+**Real bug found and fixed while verifying against all three mailboxes**:
+after switching to a secondary mailbox, marking a thread important (or
+any other action that calls `revalidateMail()`) silently snapped the view
+back to the primary mailbox. Root cause: `page.tsx`'s server component
+has no notion of a client-side switch — it always calls
+`getMailBootstrap()` with no accountId, so its `account`/`folders`/
+`threads`/`signatures` props always describe the primary mailbox, and
+`revalidatePath("/ceo/mail")` (called by nearly every mutating action)
+makes Next.js re-run that server component and push those primary-only
+props back down. An existing effect synced those props into local state
+unconditionally on every change — including this one. Fixed by skipping
+that sync whenever the currently active account differs from what the
+incoming props describe.
+
+Verified live against all three real mailboxes end to end: switching
+correctly swaps folders/threads/signatures for accounts@ (101 threads)
+and pmkusum@ (150 threads); opened a thread and toggled Mark
+important on accounts@ and confirmed the view stayed on accounts@
+afterward (the bug above, now fixed); opened fullscreen compose on
+accounts@ and confirmed it showed "From accounts@thebluridge.com" with
+that mailbox's own default signature ("Best regards, Accounts"); switched
+back to akshay@ and confirmed a manual refresh still works exactly as
+before (no regression to the single-mailbox path). tsc, eslint, vitest
+(118 passed), null-byte scan — all clean.
+
+**Deferred to Phase 4**: a full per-compose "From" override dropdown
+(letting a single compose send from a different account than the
+sidebar's active one) — genuinely only needed once the unified "All
+Inboxes" view exists and you can be looking at merged threads without an
+unambiguous "current" account; today's single-active-mailbox model makes
+compose-from already unambiguous.
+
+[mail-client.tsx](src/components/mail/mail-client.tsx),
+[signatures-panel.tsx](src/components/mail/signatures-panel.tsx),
+[vacation-panel.tsx](src/components/mail/vacation-panel.tsx) —
+`feature/mail-multi-account-switcher-ui-client`, merged to main.
