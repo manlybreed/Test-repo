@@ -841,12 +841,14 @@ function RecipientAutocomplete({
   onChange,
   placeholder,
   wrapClassName,
+  accountId,
 }: {
   id?: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   wrapClassName?: string;
+  accountId?: string;
 }) {
   const [suggestions, setSuggestions] = useState<ContactSuggestion[]>([]);
   const [open, setOpen] = useState(false);
@@ -873,7 +875,7 @@ function RecipientAutocomplete({
       return;
     }
     debounceRef.current = setTimeout(() => {
-      void findContactsAction(fragment)
+      void findContactsAction(fragment, accountId)
         .then((rows) => {
           setSuggestions(rows);
           setOpen(rows.length > 0);
@@ -1172,6 +1174,12 @@ export function MailClient({
   const [showVacation, setShowVacation] = useState(false);
   const [showMailboxes, setShowMailboxes] = useState(false);
   const [mailAccounts, setMailAccounts] = useState<MailAccountSummary[]>([]);
+  // Loaded once at mount (not just when opening the Mailboxes settings
+  // panel) so the sidebar switcher has the mailbox list without waiting
+  // on the user to open Settings first.
+  useEffect(() => {
+    listMailAccountsAction().then(setMailAccounts).catch(() => undefined);
+  }, []);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [composeHtml, setComposeHtml] = useState("");
@@ -1651,7 +1659,7 @@ export function MailClient({
       startNavTransition(async () => {
         const startedAt = performance.now();
         try {
-          const rows = (await searchThreadsAction(q)) as Thread[];
+          const rows = (await searchThreadsAction(q, accountInfo?.id)) as Thread[];
           const elapsedMs = Math.round(performance.now() - startedAt);
           if (threadsFetchSeqRef.current !== seq) return;
           setThreads(rows);
@@ -1669,7 +1677,7 @@ export function MailClient({
       });
     }, 480);
     return () => window.clearTimeout(handle);
-  }, [threadQuery]);
+  }, [threadQuery, accountInfo?.id]);
 
   // Restore folder / smart-label view when search is cleared
   useEffect(() => {
@@ -1682,6 +1690,13 @@ export function MailClient({
   }, [threadQuery]);
 
   useEffect(() => {
+    // These props always describe the *primary* mailbox — page.tsx's server
+    // component calls getMailBootstrap() with no accountId, and Next.js
+    // re-runs it on every revalidatePath() a mutating action triggers. If
+    // the user has switched to a different mailbox via the sidebar
+    // switcher, blindly applying these on the next revalidation would
+    // silently snap the view back to primary out from under them.
+    if (accountInfo && account && accountInfo.id !== account.id) return;
     setFolderList(folders);
     setAccountInfo(account);
     setReminders(initialReminders);
@@ -1917,7 +1932,7 @@ export function MailClient({
     setShowCompose(true);
     setStatus("Forwarding — add a recipient");
     if (last.hasAttachments) {
-      void forwardMessageAttachmentsAction(last.id)
+      void forwardMessageAttachmentsAction(last.id, accountInfo?.id)
         .then((atts) => {
           if (!atts.length) return;
           setComposeAttachments((prev) => [...prev, ...atts]);
@@ -1952,12 +1967,44 @@ export function MailClient({
     if (data.signatures) setSigList(data.signatures as SignatureRow[]);
   }
 
+  /** Switch the active mailbox — refetches everything scoped to an account
+   * (folders, threads, signatures, reminders) and lands back on Smart
+   * Inbox, since the previously active folder id belongs to the old
+   * account and won't exist in the new one. */
+  async function switchAccount(target: MailAccountSummary) {
+    if (target.id === accountInfo?.id) return;
+    haptic("tap");
+    startNavTransition(async () => {
+      const data = await getMailBootstrap(target.id);
+      if (!data.configured) return;
+      setAccountInfo(data.account);
+      setFolderList(data.folders);
+      setReminders(data.reminders);
+      setSigList(data.signatures as SignatureRow[]);
+      setThreadQuery("");
+      setActiveSmartLabel(null);
+      setSelectedThreadIds(new Set());
+      setSelectedId(null);
+      setMessages([]);
+      setShowCompose(false);
+      setComposeFullscreen(false);
+      setThreadPage(1);
+      setThreadTotal(0);
+      setActiveFolder(SMART_INBOX_ID);
+      setThreads(data.threads as Thread[]);
+    });
+  }
+
   async function reloadActiveView(page = threadPage) {
     const seq = ++threadsFetchSeqRef.current;
     const stale = () => threadsFetchSeqRef.current !== seq;
 
     if (activeSmartLabel) {
-      const res = await listMailThreads({ label: activeSmartLabel, page });
+      const res = await listMailThreads({
+        label: activeSmartLabel,
+        page,
+        accountId: accountInfo?.id,
+      });
       if (stale()) return;
       setThreads(res.rows as Thread[]);
       setThreadTotal(res.total);
@@ -1965,14 +2012,18 @@ export function MailClient({
       return;
     }
     if (activeFolder === OUTBOX_ID) {
-      const rows = (await listOutboxAction()) as Thread[];
+      const rows = (await listOutboxAction(accountInfo?.id)) as Thread[];
       if (stale()) return;
       setThreads(rows);
       setThreadTotal(0);
       return;
     }
     if (activeFolder === SMART_INBOX_ID) {
-      const res = await listMailThreads({ smartInbox: true, page });
+      const res = await listMailThreads({
+        smartInbox: true,
+        page,
+        accountId: accountInfo?.id,
+      });
       if (stale()) return;
       setThreads(res.rows as Thread[]);
       setThreadTotal(res.total);
@@ -1982,12 +2033,19 @@ export function MailClient({
     if (activeFolder) {
       const folder = folderList.find((f) => f.id === activeFolder);
       if (folder?.role === "DRAFTS") {
-        const rows = (await listDraftsFolderAction(activeFolder)) as Thread[];
+        const rows = (await listDraftsFolderAction(
+          activeFolder,
+          accountInfo?.id,
+        )) as Thread[];
         if (stale()) return;
         setThreads(rows);
         setThreadTotal(0);
       } else {
-        const res = await listMailThreads({ folderId: activeFolder, page });
+        const res = await listMailThreads({
+          folderId: activeFolder,
+          page,
+          accountId: accountInfo?.id,
+        });
         if (stale()) return;
         setThreads(res.rows as Thread[]);
         setThreadTotal(res.total);
@@ -2086,7 +2144,7 @@ export function MailClient({
     setComposeFullscreen(true);
     setCommitments([]);
     startNavTransition(async () => {
-      const d = await getDraftAction(id);
+      const d = await getDraftAction(id, accountInfo?.id);
       if (!d) {
         setStatus("Draft not found");
         haptic("warn");
@@ -2171,6 +2229,7 @@ export function MailClient({
       bodyHtml: composeHtml || "<p></p>",
       inReplyTo: headers.inReplyTo,
       referencesHdr: headers.referencesHdr,
+      accountId: accountInfo?.id,
     });
     setDraftId(saved.id);
     return saved;
@@ -2212,6 +2271,7 @@ export function MailClient({
       bodyHtml: composeHtml || "<p></p>",
       inReplyTo: headers.inReplyTo,
       referencesHdr: headers.referencesHdr,
+      accountId: accountInfo?.id,
     };
     setStatus("Saving draft…");
     void saveDraftAction(snapshot)
@@ -2252,7 +2312,7 @@ export function MailClient({
     for (const f of Array.from(files)) fd.append("files", f);
     setUploadingAtt(true);
     setStatus("Uploading attachment…");
-    void uploadComposeAttachmentAction(fd)
+    void uploadComposeAttachmentAction(fd, accountInfo?.id)
       .then((uploaded) => {
         setComposeAttachments((prev) => [...prev, ...uploaded]);
         setStatus(
@@ -2351,6 +2411,7 @@ export function MailClient({
       draftId: draftId || undefined,
       attachments: composeAttachments.length ? composeAttachments : undefined,
       undoWindowSeconds: undoWindowSec,
+      accountId: accountInfo?.id,
     })
       .then(async (row) => {
         if (row.status === "FAILED") {
@@ -2406,7 +2467,7 @@ export function MailClient({
     setPendingSend(null);
     startTransition(async () => {
       try {
-        await cancelScheduledSend(id);
+        await cancelScheduledSend(id, accountInfo?.id);
         setStatus("Send cancelled");
         haptic("success");
         // Restore the exact compose state — including which view (docked
@@ -2435,7 +2496,7 @@ export function MailClient({
   /** Actually dispatch a queued send — called by the undo-window timer, or
    * immediately when the user dismisses the toast via its close button. */
   function flushPendingSendNow(outboxId: string) {
-    void flushQueuedSendAction(outboxId)
+    void flushQueuedSendAction(outboxId, accountInfo?.id)
       .then(() => {
         setPendingSend((p) => (p?.outboxId === outboxId ? null : p));
         setStatus("Sent");
@@ -2785,7 +2846,7 @@ export function MailClient({
     setStatus("Discarding draft…");
     startNavTransition(async () => {
       try {
-        await deleteDraftAction(id);
+        await deleteDraftAction(id, accountInfo?.id);
         setStatus("Draft discarded");
         haptic("success");
       } catch (e) {
@@ -2853,9 +2914,10 @@ export function MailClient({
         // populated yet; only gating on "To empty" here would silently
         // drop the hint on any run after the first.
         let recipients = splitAddrs(to);
-        const resolved = await extractDraftRecipientsAction(brief).catch(
-          () => null,
-        );
+        const resolved = await extractDraftRecipientsAction(
+          brief,
+          accountInfo?.id,
+        ).catch(() => null);
         if (!recipients.length && resolved?.to.length) {
           recipients = resolved.to;
           setTo(resolved.to.join(", "));
@@ -2873,6 +2935,7 @@ export function MailClient({
           intent: brief,
           tone: DEFAULT_DRAFT_TONE,
           recipientNameHint,
+          accountId: accountInfo?.id,
         });
         if (d?.html) {
           setComposeHtml(d.html);
@@ -2990,7 +3053,7 @@ export function MailClient({
     if (!name) return;
     startTransition(async () => {
       try {
-        const folder = await createMailLabelAction(name);
+        const folder = await createMailLabelAction(name, accountInfo?.id);
         setFolderList((prev) =>
           prev.some((f) => f.id === folder.id) ? prev : [...prev, folder],
         );
@@ -3085,6 +3148,7 @@ export function MailClient({
           limit: BATCH,
           skipRepair: false,
           withBootstrap: false,
+          accountId: accountInfo?.id,
         });
         repaired = r.repaired || 0;
         processed += r.processed;
@@ -3109,6 +3173,7 @@ export function MailClient({
             limit: BATCH,
             skipRepair: true,
             withBootstrap: false,
+            accountId: accountInfo?.id,
           });
           processed += r.processed;
           labeled += r.labeled;
@@ -3243,6 +3308,7 @@ export function MailClient({
           endIso: end.toISOString(),
           attendees,
           confirmed: true,
+          accountId: accountInfo?.id,
         });
         const blob = new Blob([invite.ics], {
           type: "text/calendar;charset=utf-8",
@@ -3264,7 +3330,7 @@ export function MailClient({
 
   function runBulkCleanup() {
     startTransition(async () => {
-      const rows = await bulkCleanupSuggestionsAction();
+      const rows = await bulkCleanupSuggestionsAction(accountInfo?.id);
       setBulkSuggestions(rows);
       setStatus(
         rows.length
@@ -3289,8 +3355,8 @@ export function MailClient({
         const lower = q.toLowerCase();
         const recallMatch = lower.match(/^(recall|who is|about)\s+(.+)/i);
         const a = recallMatch
-          ? await recallPersonAction(recallMatch[2]!.trim())
-          : await askMailAction(q, historyForRequest);
+          ? await recallPersonAction(recallMatch[2]!.trim(), accountInfo?.id)
+          : await askMailAction(q, historyForRequest, accountInfo?.id);
         setAskA(a.answer);
         setAskCitations(a.citationRefs || []);
         setAskSources(a.sourceRefs || []);
@@ -3749,7 +3815,7 @@ export function MailClient({
     // Nav transition — must not freeze compose buttons via `pending`
     startNavTransition(async () => {
       try {
-        const r = await syncMailAction();
+        const r = await syncMailAction({ accountId: accountInfo?.id });
         if (r.bootstrap?.configured) applyBootstrap(r.bootstrap);
         await reloadActiveViewRef.current();
         const msg =
@@ -4009,7 +4075,7 @@ export function MailClient({
               onClick={() =>
                 startTransition(async () => {
                   haptic("tap");
-                  const d = await digestAction();
+                  const d = await digestAction(accountInfo?.id);
                   setDigest(
                     d.groups
                       .map(
@@ -4029,7 +4095,7 @@ export function MailClient({
               onClick={() =>
                 startTransition(async () => {
                   haptic("tap");
-                  const n = await createFollowUpRemindersAction();
+                  const n = await createFollowUpRemindersAction(accountInfo?.id);
                   setStatus(`Follow-ups queued: ${n.length}`);
                   haptic("success");
                 })
@@ -4045,7 +4111,7 @@ export function MailClient({
               onClick={() =>
                 startTransition(async () => {
                   haptic("tap");
-                  const style = await refreshStyleAction();
+                  const style = await refreshStyleAction(accountInfo?.id);
                   setStatus(
                     style
                       ? `Style refreshed (${style.sampleCount} sent samples)`
@@ -4104,7 +4170,7 @@ export function MailClient({
                       setShowSettingsMenu(false);
                       startTransition(async () => {
                         haptic("tap");
-                        const rows = await listLabelRulesAction();
+                        const rows = await listLabelRulesAction(accountInfo?.id);
                         setLabelRules(rows);
                         setShowRules(true);
                       });
@@ -4277,9 +4343,14 @@ export function MailClient({
         onClose={() => setShowSignatures(false)}
         signatures={sigList}
         onChange={setSigList}
+        accountId={accountInfo?.id}
       />
 
-      <VacationPanel open={showVacation} onClose={() => setShowVacation(false)} />
+      <VacationPanel
+        open={showVacation}
+        onClose={() => setShowVacation(false)}
+        accountId={accountInfo?.id}
+      />
 
       <MailboxesPanel
         open={showMailboxes}
@@ -4362,6 +4433,7 @@ export function MailClient({
                         label: ruleDraft.label.trim(),
                         fromContains: ruleDraft.fromContains || undefined,
                         subjectContains: ruleDraft.subjectContains || undefined,
+                        accountId: accountInfo?.id,
                       });
                       setLabelRules(await listLabelRulesAction());
                       setRuleDraft({
@@ -4412,7 +4484,7 @@ export function MailClient({
                       disabled={pending}
                       onClick={() =>
                         startTransition(async () => {
-                          await deleteLabelRuleAction(r.id);
+                          await deleteLabelRuleAction(r.id, accountInfo?.id);
                           setLabelRules(await listLabelRulesAction());
                         })
                       }
@@ -4567,6 +4639,30 @@ export function MailClient({
           </div>
           {foldersCollapsed ? (
             <div className="min-h-0 flex-1 space-y-1.5 overflow-auto p-1.5">
+              {mailAccounts.length > 1 && (
+                <div className="mb-1 flex flex-col items-center gap-1 pb-1" style={{ borderBottom: "1px solid var(--mail-border)" }}>
+                  {mailAccounts.map((a) => {
+                    const tone = labelTone(a.address);
+                    const active = a.id === accountInfo?.id;
+                    return (
+                      <button
+                        key={a.id}
+                        type="button"
+                        onClick={() => switchAccount(a)}
+                        title={a.address}
+                        className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-[0.6rem] font-semibold"
+                        style={{
+                          background: active ? tone.bg : "transparent",
+                          color: tone.fg,
+                          border: active ? `1px solid ${tone.fg}` : "1px solid transparent",
+                        }}
+                      >
+                        {(a.displayName || a.address)[0]?.toUpperCase()}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
               <FolderRow
                 compact
                 name="Smart Inbox"
@@ -4597,6 +4693,44 @@ export function MailClient({
             </div>
           ) : (
           <div className="min-h-0 flex-1 space-y-1 overflow-auto p-2">
+            {mailAccounts.length > 1 && (
+              <div className="mb-1 space-y-0.5 pb-1" style={{ borderBottom: "1px solid var(--mail-border)" }}>
+                {mailAccounts.map((a) => {
+                  const tone = labelTone(a.address);
+                  const active = a.id === accountInfo?.id;
+                  return (
+                    <button
+                      key={a.id}
+                      type="button"
+                      onClick={() => switchAccount(a)}
+                      title={a.address}
+                      className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs"
+                      style={{
+                        background: active ? "var(--bg-elevated)" : "transparent",
+                        color: active ? "var(--text-primary)" : "var(--mail-dim)",
+                        fontWeight: active ? 600 : 500,
+                      }}
+                    >
+                      <span
+                        className="h-2 w-2 shrink-0 rounded-full"
+                        style={{ background: tone.fg }}
+                      />
+                      <span className="truncate">
+                        {a.displayName || a.address}
+                      </span>
+                      {a.isPrimary && (
+                        <span
+                          className="ml-auto shrink-0 text-[0.6rem]"
+                          style={{ color: "var(--mail-dim)" }}
+                        >
+                          Primary
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             <FolderSection
               title="Mailboxes"
               open={mailboxesOpen}
@@ -4734,7 +4868,7 @@ export function MailClient({
                       className="shrink-0 cursor-pointer text-[0.65rem] opacity-80 hover:opacity-100"
                       onClick={() =>
                         startTransition(async () => {
-                          await dismissReminderAction(r.id);
+                          await dismissReminderAction(r.id, accountInfo?.id);
                           setReminders((prev) => prev.filter((x) => x.id !== r.id));
                           haptic("tap");
                         })
@@ -5659,6 +5793,7 @@ export function MailClient({
                                         address,
                                         threadId: selectedId!,
                                         confirmed: true,
+                                        accountId: accountInfo?.id,
                                       });
                                       setThreads((prev) =>
                                         prev.filter((x) => x.id !== selectedId),
@@ -5832,12 +5967,19 @@ export function MailClient({
                         }}
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-3">
-                          <p
-                            className="text-xs font-semibold uppercase tracking-[0.16em]"
-                            style={{ color: "var(--accent-bright)" }}
-                          >
-                            Reply
-                          </p>
+                          <div>
+                            <p
+                              className="text-xs font-semibold uppercase tracking-[0.16em]"
+                              style={{ color: "var(--accent-bright)" }}
+                            >
+                              Reply
+                            </p>
+                            {mailAccounts.length > 1 && (
+                              <p className="text-[0.65rem]" style={{ color: "var(--text-dim)" }}>
+                                From {accountInfo?.address}
+                              </p>
+                            )}
+                          </div>
                         </div>
 
                         <div
@@ -5874,6 +6016,7 @@ export function MailClient({
                                   placeholder="name@company.com, …"
                                   value={to}
                                   onChange={setTo}
+                                  accountId={accountInfo?.id}
                                 />
                                 <button
                                   type="button"
@@ -5897,6 +6040,7 @@ export function MailClient({
                                   placeholder="Optional carbon copy"
                                   value={cc}
                                   onChange={setCc}
+                                  accountId={accountInfo?.id}
                                 />
                               </div>
                             )}
@@ -5909,6 +6053,7 @@ export function MailClient({
                                   placeholder="Optional blind copy"
                                   value={bcc}
                                   onChange={setBcc}
+                                  accountId={accountInfo?.id}
                                 />
                               </div>
                             )}
@@ -6311,6 +6456,7 @@ export function MailClient({
                       placeholder="name@company.com, …"
                       value={to}
                       onChange={setTo}
+                      accountId={accountInfo?.id}
                     />
                     {/* Gmail-style: Cc/Bcc toggles from the To row, not the header */}
                     <button
@@ -6334,6 +6480,7 @@ export function MailClient({
                       wrapClassName="min-w-0"
                       value={cc}
                       onChange={setCc}
+                      accountId={accountInfo?.id}
                     />
                   </div>
                 )}
@@ -6345,6 +6492,7 @@ export function MailClient({
                       wrapClassName="min-w-0"
                       value={bcc}
                       onChange={setBcc}
+                      accountId={accountInfo?.id}
                     />
                   </div>
                 )}

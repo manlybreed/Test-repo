@@ -21,12 +21,13 @@ function toDateInputValue(d: string | Date | null | undefined) {
 export function VacationPanel({
   open,
   onClose,
+  accountId,
 }: {
   open: boolean;
   onClose: () => void;
+  accountId?: string;
 }) {
   const [pending, startTransition] = useTransition();
-  const [loaded, setLoaded] = useState(false);
   const [enabled, setEnabled] = useState(false);
   const [subject, setSubject] = useState("Out of office");
   const [message, setMessage] = useState(
@@ -39,8 +40,8 @@ export function VacationPanel({
   const [status, setStatus] = useState("");
 
   useEffect(() => {
-    if (!open || loaded) return;
-    void getVacationSettingsAction().then((row) => {
+    if (!open) return;
+    void getVacationSettingsAction(accountId).then((row) => {
       if (row) {
         setEnabled(row.enabled);
         setSubject(row.subject);
@@ -52,10 +53,16 @@ export function VacationPanel({
             .filter((s) => !DEFAULT_EXCLUDED_SENDER_PATTERNS.includes(s))
             .join(", "),
         );
+      } else {
+        setEnabled(false);
+        setSubject("Out of office");
+        setMessage("I'm currently out of office and will reply when I'm back.");
+        setStartDate("");
+        setEndDate("");
+        setExcludedSenders("");
       }
-      setLoaded(true);
     });
-  }, [open, loaded]);
+  }, [open, accountId]);
 
   function save(nextEnabled: boolean) {
     setError("");
@@ -85,6 +92,7 @@ export function VacationPanel({
           endDate: endDate ? new Date(endDate).toISOString() : new Date().toISOString(),
           excludedSenders: excluded,
           confirmed: true,
+          accountId,
         });
         setEnabled(nextEnabled);
         setStatus(nextEnabled ? "Out-of-office is now on" : "Out-of-office is now off");

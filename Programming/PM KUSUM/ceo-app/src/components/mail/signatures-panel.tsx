@@ -24,11 +24,13 @@ export function SignaturesPanel({
   onClose,
   signatures,
   onChange,
+  accountId,
 }: {
   open: boolean;
   onClose: () => void;
   signatures: SignatureRow[];
   onChange: (next: SignatureRow[]) => void;
+  accountId?: string;
 }) {
   const [pending, startTransition] = useTransition();
   const [editId, setEditId] = useState<string | null>(null);
@@ -56,7 +58,7 @@ export function SignaturesPanel({
   }
 
   function refresh() {
-    return listSignatures().then((rows) => {
+    return listSignatures(accountId).then((rows) => {
       onChange(rows as SignatureRow[]);
       return rows;
     });
@@ -228,6 +230,7 @@ export function SignaturesPanel({
                                 name: name.trim(),
                                 htmlBody: html,
                                 isDefault,
+                                accountId,
                               });
                               const rows = await refresh();
                               const saved =
@@ -263,7 +266,7 @@ export function SignaturesPanel({
                                 return;
                               }
                               try {
-                                await deleteSignature(editId);
+                                await deleteSignature(editId, accountId);
                                 await refresh();
                                 setEditId(null);
                                 setName("");
