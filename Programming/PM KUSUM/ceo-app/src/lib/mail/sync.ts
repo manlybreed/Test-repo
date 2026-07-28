@@ -1,4 +1,5 @@
 import { ImapFlow } from "imapflow";
+import { Prisma } from "@prisma/client";
 import { simpleParser } from "mailparser";
 import { prisma } from "@/lib/prisma";
 import { getCeoMailConfig, getMailConfig } from "@/lib/mail/ceo-config";
@@ -127,7 +128,7 @@ function roleBumpsThread(role: string) {
   return role === "INBOX" || role === "SENT";
 }
 
-export async function syncCeoMail(opts?: {
+type SyncOpts = {
   userId?: string | null;
   /** Sync this specific mailbox instead of resolving the env-based one via userId. */
   accountId?: string;
@@ -141,12 +142,42 @@ export async function syncCeoMail(opts?: {
    * Used by IMAP IDLE near-real-time pulls.
    */
   incremental?: boolean;
-}) {
+};
+
+type SyncResult = { accountId: string; imported: number; triaged: number };
+
+// Two overlapping syncs for the same account race on the same IMAP UIDs —
+// each does its own "does this message already exist?" check, does a lot of
+// async work in between (parse, thread lookup, disk write), then both try to
+// insert the same (folderId, imapUid) row, and the second hits a unique-
+// constraint error. Concurrent triggers are real: adding a mailbox kicks off
+// a best-effort background sync that can still be running when a manual
+// refresh (or another add) fires. Callers for the same account just await
+// the one already in flight instead of racing a second one.
+const inFlightSyncs = new Map<string, Promise<SyncResult>>();
+
+export async function syncCeoMail(opts?: SyncOpts): Promise<SyncResult> {
   const account = opts?.accountId
     ? await prisma.mailAccount.findUnique({ where: { id: opts.accountId } })
     : await ensureCeoMailAccount(opts?.userId);
   if (!account) throw new Error("Mail account not configured");
 
+  const existing = inFlightSyncs.get(account.id);
+  if (existing) return existing;
+
+  const run = runSync(account, opts).finally(() => {
+    inFlightSyncs.delete(account.id);
+  });
+  inFlightSyncs.set(account.id, run);
+  return run;
+}
+
+async function runSync(
+  account: NonNullable<
+    Awaited<ReturnType<typeof ensureCeoMailAccount>>
+  >,
+  opts?: SyncOpts,
+): Promise<SyncResult> {
   const max = opts?.maxPerFolder ?? 60;
   const maxTriageNew = opts?.maxTriageNew ?? 8;
   const incremental = Boolean(opts?.incremental);
@@ -450,35 +481,54 @@ export async function syncCeoMail(opts?: {
               role,
             );
 
-            const created = await prisma.mailMessage.create({
-              data: {
-                accountId: account.id,
-                folderId: folder.id,
-                threadId: thread.id,
-                rfcMessageId: rfcId,
-                imapUid: uid,
-                inReplyTo: inReplyTo || null,
-                referencesHdr: references,
-                fromAddress: fromAddr.toLowerCase(),
-                fromName,
-                toAddresses: JSON.stringify(toList),
-                ccAddresses: JSON.stringify(ccList),
-                subject,
-                date,
-                seen,
-                flagged,
-                answered,
-                bodyText,
-                bodyHtml,
-                snippet: snippetFromBody(bodyText),
-                hasAttachments: (parsed.attachments?.length || 0) > 0,
-                listUnsubscribe: listUnsub,
-                rawPath,
-                searchText: [subject, bodyText, fromAddr, ...toList]
-                  .filter(Boolean)
-                  .join("\n"),
-              },
-            });
+            // A slow-to-respond IMAP server (common on a mailbox's first
+            // sync) can leave this loop mid-message for a long time between
+            // the "does this UID already exist?" check above and this
+            // insert — long enough for another sync of the same account
+            // (e.g. the best-effort background sync kicked off right after
+            // adding the mailbox, still running in a different request) to
+            // insert the same (folderId, imapUid) row first. Treat that as
+            // "already imported by the other run", not a fatal error.
+            let created;
+            try {
+              created = await prisma.mailMessage.create({
+                data: {
+                  accountId: account.id,
+                  folderId: folder.id,
+                  threadId: thread.id,
+                  rfcMessageId: rfcId,
+                  imapUid: uid,
+                  inReplyTo: inReplyTo || null,
+                  referencesHdr: references,
+                  fromAddress: fromAddr.toLowerCase(),
+                  fromName,
+                  toAddresses: JSON.stringify(toList),
+                  ccAddresses: JSON.stringify(ccList),
+                  subject,
+                  date,
+                  seen,
+                  flagged,
+                  answered,
+                  bodyText,
+                  bodyHtml,
+                  snippet: snippetFromBody(bodyText),
+                  hasAttachments: (parsed.attachments?.length || 0) > 0,
+                  listUnsubscribe: listUnsub,
+                  rawPath,
+                  searchText: [subject, bodyText, fromAddr, ...toList]
+                    .filter(Boolean)
+                    .join("\n"),
+                },
+              });
+            } catch (e) {
+              const isDupe =
+                e instanceof Prisma.PrismaClientKnownRequestError &&
+                e.code === "P2002";
+              if (!isDupe) throw e;
+              touchedThreads.add(thread.id);
+              lastUid = Math.max(lastUid, uid);
+              continue;
+            }
 
             if (parsed.attachments?.length) {
               for (const att of parsed.attachments) {

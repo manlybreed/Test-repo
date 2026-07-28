@@ -6,7 +6,11 @@ import { prisma } from "@/lib/prisma";
 import { requireCeoAction as requireCeo } from "@/lib/session";
 import { auth } from "@/lib/auth";
 import { ceoMailConfigured } from "@/lib/mail/ceo-config";
-import { ensureCeoMailAccount, requireOwnedAccountForThread } from "@/lib/mail/account";
+import {
+  ensureCeoMailAccount,
+  requireOwnedAccount,
+  requireOwnedAccountForThread,
+} from "@/lib/mail/account";
 import { syncCeoMail, verifyCeoImap } from "@/lib/mail/sync";
 import { cancelScheduled, flushDueScheduled, flushOutboxItem } from "@/lib/mail/outbox";
 import { assertAutonomy } from "@/lib/mail/ai/policy";
@@ -93,12 +97,24 @@ function revalidateMail() {
   revalidatePath("/ceo/time");
 }
 
-async function requireAccount() {
+/**
+ * Resolves "the" mailbox an action operates on. With no accountId, this is
+ * the primary env-configured mailbox (today's only behavior, kept exactly
+ * as-is so nothing regresses). With an accountId — the client's "currently
+ * active mailbox" once the sidebar switcher is in play — resolves and
+ * verifies the session user actually owns that mailbox instead.
+ */
+async function requireAccount(accountId?: string) {
   await requireCeo();
   const session = await auth();
-  const account = await ensureCeoMailAccount(session?.user?.id);
+  const userId = session?.user?.id as string;
+  if (accountId) {
+    const account = await requireOwnedAccount(accountId, userId);
+    return { account, userId };
+  }
+  const account = await ensureCeoMailAccount(userId);
   if (!account) throw new Error("Configure CEO_MAIL_USER and CEO_MAIL_PASS");
-  return { account, userId: session?.user?.id as string };
+  return { account, userId };
 }
 
 /**
@@ -122,20 +138,24 @@ export async function isCeoMailConfigured() {
   return ceoMailConfigured();
 }
 
-export async function syncMailAction(opts?: { maxTriageNew?: number }) {
-  const { userId } = await requireAccount();
+export async function syncMailAction(opts?: {
+  maxTriageNew?: number;
+  accountId?: string;
+}) {
+  const { account, userId } = await requireAccount(opts?.accountId);
   const result = await syncCeoMail({
     userId,
+    accountId: account.id,
     maxPerFolder: 200,
     maxTriageNew: opts?.maxTriageNew ?? 8,
   });
   revalidateMail();
-  const bootstrap = await getMailBootstrap();
+  const bootstrap = await getMailBootstrap(account.id);
   return { ...result, bootstrap };
 }
 
-export async function createMailLabelAction(name: string) {
-  const { account } = await requireAccount();
+export async function createMailLabelAction(name: string, accountId?: string) {
+  const { account } = await requireAccount(accountId);
   const folder = await createMailLabel({ accountId: account.id, name });
   revalidateMail();
   return folder;
@@ -147,8 +167,9 @@ export async function backfillSmartLabelsAction(opts?: {
   skipRepair?: boolean;
   /** Skip bootstrap payload — client reloads the active view at the end. */
   withBootstrap?: boolean;
+  accountId?: string;
 }) {
-  const { account } = await requireAccount();
+  const { account } = await requireAccount(opts?.accountId);
   const limit = opts?.limit ?? 25;
   const skipRepair = Boolean(opts?.skipRepair);
   const withBootstrap = opts?.withBootstrap !== false;
@@ -168,7 +189,7 @@ export async function backfillSmartLabelsAction(opts?: {
     limit,
   });
   revalidateMail();
-  const bootstrap = withBootstrap ? await getMailBootstrap() : null;
+  const bootstrap = withBootstrap ? await getMailBootstrap(account.id) : null;
   return { ...result, repaired, bootstrap };
 }
 
@@ -183,8 +204,8 @@ export async function verifyCeoMailAction() {
   }
 }
 
-export async function listMailFolders() {
-  const { account } = await requireAccount();
+export async function listMailFolders(accountId?: string) {
+  const { account } = await requireAccount(accountId);
   const rows = await prisma.mailFolder.findMany({
     where: { accountId: account.id },
     orderBy: { path: "asc" },
@@ -329,8 +350,9 @@ export async function blockSenderAction(input: {
   /** Also move this currently-open thread to Trash. */
   threadId?: string;
   confirmed?: boolean;
+  accountId?: string;
 }) {
-  const { account } = await requireAccount();
+  const { account } = await requireAccount(input.accountId);
   assertAutonomy("block_sender", { confirmed: input.confirmed });
   const address = input.address.trim().toLowerCase();
   if (!address || !address.includes("@")) {
@@ -354,16 +376,16 @@ export async function blockSenderAction(input: {
   return row;
 }
 
-export async function listBlockedSendersAction() {
-  const { account } = await requireAccount();
+export async function listBlockedSendersAction(accountId?: string) {
+  const { account } = await requireAccount(accountId);
   return prisma.blockedSender.findMany({
     where: { accountId: account.id },
     orderBy: { createdAt: "desc" },
   });
 }
 
-export async function unblockSenderAction(id: string) {
-  const { account } = await requireAccount();
+export async function unblockSenderAction(id: string, accountId?: string) {
+  const { account } = await requireAccount(accountId);
   await prisma.blockedSender.deleteMany({
     where: { id, accountId: account.id },
   });
@@ -383,8 +405,9 @@ export async function listMailThreads(opts?: {
   /** 1-based page number for the thread list (ignored by priority filtering). */
   page?: number;
   pageSize?: number;
+  accountId?: string;
 }) {
-  const { account } = await requireAccount();
+  const { account } = await requireAccount(opts?.accountId);
   const pageSize = opts?.pageSize ?? THREADS_PAGE_SIZE;
   const page = Math.max(1, opts?.page ?? 1);
   const { rows, total } = await queryThreadsForView({
@@ -408,8 +431,8 @@ export async function listMailThreads(opts?: {
  * 2) Lexical match across subject / body / sender user@domain / attachments
  * 3) AI re-ranks the shortlist by intent
  */
-export async function searchThreadsAction(query: string) {
-  const { account } = await requireAccount();
+export async function searchThreadsAction(query: string, accountId?: string) {
+  const { account } = await requireAccount(accountId);
   const q = query.trim();
   if (q.length < 2) return [];
 
@@ -478,8 +501,8 @@ export async function searchThreadsAction(query: string) {
 }
 
 /** Pending / failed / recent sends (app outbox, not IMAP). */
-export async function listOutboxAction() {
-  const { account } = await requireAccount();
+export async function listOutboxAction(accountId?: string) {
+  const { account } = await requireAccount(accountId);
   await flushDueScheduled(10).catch(() => undefined);
   const rows = await prisma.mailOutbox.findMany({
     where: {
@@ -596,8 +619,8 @@ export async function setThreadPriority(threadId: string, priority: string) {
   revalidateMail();
 }
 
-export async function listSignatures() {
-  const { account } = await requireAccount();
+export async function listSignatures(accountId?: string) {
+  const { account } = await requireAccount(accountId);
   return prisma.mailSignature.findMany({
     where: { accountId: account.id },
     orderBy: [{ isDefault: "desc" }, { sortOrder: "asc" }],
@@ -609,8 +632,9 @@ export async function upsertSignature(input: {
   name: string;
   htmlBody: string;
   isDefault?: boolean;
+  accountId?: string;
 }) {
-  const { account } = await requireAccount();
+  const { account } = await requireAccount(input.accountId);
   if (input.isDefault) {
     await prisma.mailSignature.updateMany({
       where: { accountId: account.id },
@@ -645,8 +669,8 @@ export async function upsertSignature(input: {
   return row;
 }
 
-export async function deleteSignature(id: string) {
-  const { account } = await requireAccount();
+export async function deleteSignature(id: string, accountId?: string) {
+  const { account } = await requireAccount(accountId);
   const sig = await prisma.mailSignature.findFirst({
     where: { id, accountId: account.id },
   });
@@ -668,8 +692,8 @@ export async function deleteSignature(id: string) {
   return { ok: true };
 }
 
-export async function getVacationSettingsAction() {
-  const { account } = await requireAccount();
+export async function getVacationSettingsAction(accountId?: string) {
+  const { account } = await requireAccount(accountId);
   const row = await prisma.mailVacationResponder.findUnique({
     where: { accountId: account.id },
   });
@@ -699,8 +723,9 @@ export async function saveVacationSettingsAction(input: {
   endDate: string;
   excludedSenders: string[];
   confirmed: boolean;
+  accountId?: string;
 }) {
-  const { account } = await requireAccount();
+  const { account } = await requireAccount(input.accountId);
   if (!input.confirmed) {
     throw new Error("Vacation responder changes require confirmation");
   }
@@ -790,8 +815,9 @@ const MAX_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024; // 25 MB per mail (Gmail-li
  */
 export async function uploadComposeAttachmentAction(
   formData: FormData,
+  accountId?: string,
 ): Promise<ComposeAttachment[]> {
-  const { account } = await requireAccount();
+  const { account } = await requireAccount(accountId);
   const files = formData
     .getAll("files")
     .filter((f): f is File => f instanceof File);
@@ -834,8 +860,9 @@ export async function uploadComposeAttachmentAction(
  */
 export async function forwardMessageAttachmentsAction(
   messageId: string,
+  accountId?: string,
 ): Promise<ComposeAttachment[]> {
-  const { account } = await requireAccount();
+  const { account } = await requireAccount(accountId);
   const atts = await prisma.mailAttachment.findMany({
     where: { messageId, message: { accountId: account.id } },
   });
@@ -890,8 +917,9 @@ export async function sendMailAction(input: {
   attachments?: ComposeAttachment[];
   /** Undo-Send window, in seconds — clamped to a sane range. Default 10. */
   undoWindowSeconds?: number;
+  accountId?: string;
 }) {
-  const { account } = await requireAccount();
+  const { account } = await requireAccount(input.accountId);
   if (!input.confirmed) throw new Error("Send requires confirmation");
 
   // Attachment paths must live inside THIS account's upload dir — client-echoed
@@ -970,8 +998,8 @@ export async function sendMailAction(input: {
  * countdown has elapsed without being cancelled. Race-safe: a no-op if the
  * item was already sent or cancelled by the time this fires.
  */
-export async function flushQueuedSendAction(outboxId: string) {
-  const { account, userId } = await requireAccount();
+export async function flushQueuedSendAction(outboxId: string, accountId?: string) {
+  const { account, userId } = await requireAccount(accountId);
   const row = await prisma.mailOutbox.findFirst({
     where: { id: outboxId, accountId: account.id },
   });
@@ -1007,8 +1035,9 @@ export async function saveDraftAction(input: {
   bodyHtml: string;
   inReplyTo?: string;
   referencesHdr?: string;
+  accountId?: string;
 }) {
-  const { account } = await requireAccount();
+  const { account } = await requireAccount(input.accountId);
   assertAutonomy("draft");
   const row = await saveMailDraft({
     accountId: account.id,
@@ -1046,8 +1075,8 @@ export async function saveDraftAction(input: {
   };
 }
 
-export async function listDraftsAction() {
-  const { account } = await requireAccount();
+export async function listDraftsAction(accountId?: string) {
+  const { account } = await requireAccount(accountId);
   const rows = await listLocalDrafts(account.id);
   return rows.map((r) => ({
     id: r.id,
@@ -1065,8 +1094,8 @@ export async function listDraftsAction() {
 /**
  * Drafts mailbox list: local outbox drafts + IMAP drafts, de-duplicated by IMAP UID.
  */
-export async function listDraftsFolderAction(folderId: string) {
-  const { account } = await requireAccount();
+export async function listDraftsFolderAction(folderId: string, accountId?: string) {
+  const { account } = await requireAccount(accountId);
   const [local, { rows: imapRows }] = await Promise.all([
     listLocalDrafts(account.id),
     queryThreadsForView({
@@ -1127,8 +1156,8 @@ export async function listDraftsFolderAction(folderId: string) {
   );
 }
 
-export async function getDraftAction(draftId: string) {
-  const { account } = await requireAccount();
+export async function getDraftAction(draftId: string, accountId?: string) {
+  const { account } = await requireAccount(accountId);
   const row = await getLocalDraft(account.id, draftId);
   if (!row) return null;
   return {
@@ -1144,21 +1173,21 @@ export async function getDraftAction(draftId: string) {
   };
 }
 
-export async function deleteDraftAction(draftId: string) {
-  const { account } = await requireAccount();
+export async function deleteDraftAction(draftId: string, accountId?: string) {
+  const { account } = await requireAccount(accountId);
   const result = await deleteLocalDraft(account.id, draftId);
   revalidateMail();
   return result;
 }
 
-export async function cancelScheduledSend(outboxId: string) {
-  await requireAccount();
+export async function cancelScheduledSend(outboxId: string, accountId?: string) {
+  await requireAccount(accountId);
   await cancelScheduled(outboxId);
   revalidateMail();
 }
 
-export async function flushScheduledMailAction() {
-  await requireAccount();
+export async function flushScheduledMailAction(accountId?: string) {
+  await requireAccount(accountId);
   const rows = await flushDueScheduled();
   revalidateMail();
   return { flushed: rows.length };
@@ -1178,8 +1207,8 @@ export async function summarizeThreadAction(threadId: string) {
   return summarizeThread(account.id, threadId);
 }
 
-export async function digestAction() {
-  const { account } = await requireAccount();
+export async function digestAction(accountId?: string) {
+  const { account } = await requireAccount(accountId);
   const digest = await buildInboxDigest(account.id);
   await prisma.mailAccount.update({
     where: { id: account.id },
@@ -1188,24 +1217,28 @@ export async function digestAction() {
   return digest;
 }
 
-export async function searchMailAction(query: string) {
-  const { account } = await requireAccount();
+export async function searchMailAction(query: string, accountId?: string) {
+  const { account } = await requireAccount(accountId);
   return searchMail(account.id, query);
 }
 
-export async function askMailAction(question: string, history?: AskTurn[]) {
-  const { account } = await requireAccount();
+export async function askMailAction(
+  question: string,
+  history?: AskTurn[],
+  accountId?: string,
+) {
+  const { account } = await requireAccount(accountId);
   return askMailbox(account.id, question, history);
 }
 
-export async function recallPersonAction(person: string) {
-  const { account } = await requireAccount();
+export async function recallPersonAction(person: string, accountId?: string) {
+  const { account } = await requireAccount(accountId);
   return recallPerson(account.id, person);
 }
 
 /** Lightweight recipient suggestions for the To/Cc/Bcc autocomplete dropdown. */
-export async function findContactsAction(query: string) {
-  const { account } = await requireAccount();
+export async function findContactsAction(query: string, accountId?: string) {
+  const { account } = await requireAccount(accountId);
   const rows = await findContacts(account.id, query, 6);
   return rows.map((r) => ({ address: r.address, displayName: r.displayName }));
 }
@@ -1235,8 +1268,9 @@ export async function draftNewMailAction(input: {
    * confirms it — still a real signal, not a guess, so it's worth carrying
    * through as a fallback for the greeting. */
   recipientNameHint?: string;
+  accountId?: string;
 }) {
-  const { account } = await requireAccount();
+  const { account } = await requireAccount(input.accountId);
   return draftNewMail({
     accountId: account.id,
     to: input.to,
@@ -1250,8 +1284,8 @@ export async function draftNewMailAction(input: {
 /** Pull a recipient (explicit email, or a name resolved via the contact
  * index) out of an AI Draft brief like "send mail to Akshay on
  * akshayroyal678@gmail.com" — used to populate To when it's still empty. */
-export async function extractDraftRecipientsAction(intent: string) {
-  const { account } = await requireAccount();
+export async function extractDraftRecipientsAction(intent: string, accountId?: string) {
+  const { account } = await requireAccount(accountId);
   return resolveDraftRecipients(account.id, intent);
 }
 
@@ -1323,13 +1357,13 @@ export async function acceptCommitmentAction(input: {
   return task;
 }
 
-export async function followUpsAction() {
-  const { account } = await requireAccount();
+export async function followUpsAction(accountId?: string) {
+  const { account } = await requireAccount(accountId);
   return detectAwaitingReply(account.id);
 }
 
-export async function createFollowUpRemindersAction() {
-  const { account } = await requireAccount();
+export async function createFollowUpRemindersAction(accountId?: string) {
+  const { account } = await requireAccount(accountId);
   const rows = await createFollowUpReminders(account.id);
   revalidateMail();
   return rows;
@@ -1352,8 +1386,9 @@ export async function buildMeetingInviteAction(input: {
   endIso: string;
   attendees: string[];
   confirmed: boolean;
+  accountId?: string;
 }) {
-  const { account } = await requireAccount();
+  const { account } = await requireAccount(input.accountId);
   return buildIcsInvite({
     ...input,
     organizerEmail: account.address,
@@ -1361,8 +1396,8 @@ export async function buildMeetingInviteAction(input: {
   });
 }
 
-export async function bulkCleanupSuggestionsAction() {
-  const { account } = await requireAccount();
+export async function bulkCleanupSuggestionsAction(accountId?: string) {
+  const { account } = await requireAccount(accountId);
   return suggestBulkCleanup(account.id);
 }
 
@@ -1378,13 +1413,13 @@ export async function unsubscribeCandidateAction(
   });
 }
 
-export async function refreshStyleAction() {
-  const { account } = await requireAccount();
+export async function refreshStyleAction(accountId?: string) {
+  const { account } = await requireAccount(accountId);
   return refreshStyleFromSent(account.id);
 }
 
-export async function listRemindersAction() {
-  const { account } = await requireAccount();
+export async function listRemindersAction(accountId?: string) {
+  const { account } = await requireAccount(accountId);
   return prisma.mailReminder.findMany({
     where: { accountId: account.id, dismissed: false },
     orderBy: { dueAt: "asc" },
@@ -1392,8 +1427,8 @@ export async function listRemindersAction() {
   });
 }
 
-export async function dismissReminderAction(reminderId: string) {
-  const { account } = await requireAccount();
+export async function dismissReminderAction(reminderId: string, accountId?: string) {
+  const { account } = await requireAccount(accountId);
   await prisma.mailReminder.updateMany({
     where: { id: reminderId, accountId: account.id },
     data: { dismissed: true },
@@ -1402,8 +1437,8 @@ export async function dismissReminderAction(reminderId: string) {
   return { ok: true as const };
 }
 
-export async function listLabelRulesAction() {
-  const { account } = await requireAccount();
+export async function listLabelRulesAction(accountId?: string) {
+  const { account } = await requireAccount(accountId);
   return prisma.mailLabelRule.findMany({
     where: { accountId: account.id },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
@@ -1419,8 +1454,9 @@ export async function upsertLabelRuleAction(input: {
   isSmartLabel?: boolean;
   sourceThreadId?: string;
   origin?: "manual" | "correction";
+  accountId?: string;
 }) {
-  const { account } = await requireAccount();
+  const { account } = await requireAccount(input.accountId);
   return prisma.mailLabelRule.create({
     data: {
       accountId: account.id,
@@ -1438,8 +1474,8 @@ export async function upsertLabelRuleAction(input: {
   });
 }
 
-export async function deleteLabelRuleAction(ruleId: string) {
-  const { account } = await requireAccount();
+export async function deleteLabelRuleAction(ruleId: string, accountId?: string) {
+  const { account } = await requireAccount(accountId);
   await prisma.mailLabelRule.deleteMany({
     where: { id: ruleId, accountId: account.id },
   });
@@ -1692,6 +1728,7 @@ export async function applyLabelCorrectionAction(input: {
       isSmartLabel: input.isSmartLabel,
       sourceThreadId: input.sourceThreadId,
       origin: "correction",
+      accountId: account.id,
     });
     ruleCreated = true;
   }
@@ -1741,18 +1778,26 @@ export async function undoLabelCorrectionAction(
   return { restored };
 }
 
-export async function getMailBootstrap() {
+export async function getMailBootstrap(accountId?: string) {
   const session = await auth();
   if (!session?.user?.id) {
     throw new Error("Session expired — please refresh the page and log in again.");
   }
-  const configured = ceoMailConfigured();
-  if (!configured) {
-    return { configured: false as const };
-  }
-  const account = await ensureCeoMailAccount(session.user.id);
-  if (!account) {
-    return { configured: false as const };
+
+  let account;
+  if (accountId) {
+    // A specific (possibly non-primary) mailbox — doesn't depend on the
+    // CEO_MAIL_* env vars at all, so the ceoMailConfigured() gate below
+    // doesn't apply here.
+    account = await requireOwnedAccount(accountId, session.user.id);
+  } else {
+    if (!ceoMailConfigured()) {
+      return { configured: false as const };
+    }
+    account = await ensureCeoMailAccount(session.user.id);
+    if (!account) {
+      return { configured: false as const };
+    }
   }
   const inbox = await resolveSystemFolder(account.id, "INBOX");
   const [foldersRaw, { rows: threads }, signatures, reminders] = await Promise.all([
