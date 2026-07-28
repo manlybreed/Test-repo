@@ -24,6 +24,20 @@ const DraftSchema = z.object({
 const EMAIL_SHAPE_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
+ * Some senders' mail clients set the From header's display name to their
+ * own address ("himanshu@thebluridge.com" <himanshu@thebluridge.com>) —
+ * real data, but it carries no identity beyond what's already in the
+ * address field, so it shouldn't count as a "known name" for greeting
+ * purposes. Without this guard it silently outranks a genuine name (e.g.
+ * "Himanshu") pulled straight from the user's own instruction, since a
+ * non-null contact/client name was checked first in the priority order.
+ */
+function isRealName(name: string | null | undefined, address: string): boolean {
+  const n = name?.trim().toLowerCase();
+  return Boolean(n) && n !== address.trim().toLowerCase();
+}
+
+/**
  * Shared instruction for the <!--SIGNATURE--> marker — the signature
  * itself already opens with its own sign-off ("Best regards, Akshay,
  * ..."), so without this the model would routinely add its own "Best
@@ -83,7 +97,8 @@ Respond with null for a field rather than guessing.`,
     // Cross-check against the contact index for a real display name, so
     // the draft addresses the recipient correctly instead of guessing.
     const [hit] = await findContacts(accountId, email, 1).catch(() => []);
-    return { to: [email], knownName: hit?.displayName || nameFromModel };
+    const contactName = isRealName(hit?.displayName, email) ? hit!.displayName : null;
+    return { to: [email], knownName: contactName || nameFromModel };
   }
 
   if (!nameFromModel) return { to: [], knownName: null };
@@ -201,8 +216,8 @@ export async function draftNewMail(opts: {
   // that reconciliation is exactly what let the model fall back to
   // pattern-matching a name out of unrelated retrieved mail instead.
   const recipientName =
-    contactHit?.displayName ||
-    clientHit?.name ||
+    (isRealName(contactHit?.displayName, primaryTo) ? contactHit!.displayName : null) ||
+    (isRealName(clientHit?.name, primaryTo) ? clientHit!.name : null) ||
     opts.recipientNameHint?.trim() ||
     null;
 
