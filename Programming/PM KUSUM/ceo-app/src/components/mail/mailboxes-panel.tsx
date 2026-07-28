@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { Loader2 } from "lucide-react";
 import { haptic } from "@/components/mail/haptics";
 import {
   addMailAccountAction,
@@ -12,6 +13,20 @@ import {
 } from "@/actions/mail-accounts";
 
 const spring = { type: "spring" as const, stiffness: 420, damping: 32 };
+
+/** Live progress for the mailbox currently being added — connecting, then
+ * importing its first batch of mail, then watching in real time. Sourced
+ * from the same accountId-tagged SSE stream mail-client.tsx already uses,
+ * since the actual sync/IDLE-connect work happens in the background (a
+ * large first sync can take minutes) and would otherwise be invisible. */
+type AddSyncStatus = {
+  accountId: string;
+  address: string;
+  phase: "connecting" | "importing" | "live" | "error";
+  imported: number;
+  idleRoles: Set<string>;
+  errorMessage?: string;
+};
 
 type FormState = {
   address: string;
@@ -62,6 +77,88 @@ export function MailboxesPanel({
   const [error, setError] = useState("");
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [addSyncStatus, setAddSyncStatus] = useState<AddSyncStatus | null>(null);
+  /** Which mailbox is currently being removed — file cleanup on a large
+   * mailbox can take a few seconds, so the row shows that explicitly
+   * instead of the button just silently sitting there disabled. */
+  const [removingId, setRemovingId] = useState<string | null>(null);
+
+  // Subscribe only while a just-added mailbox's connect/import is being
+  // tracked — not a persistent connection for the whole time this panel
+  // happens to be open.
+  useEffect(() => {
+    if (!addSyncStatus || addSyncStatus.phase === "live" || addSyncStatus.phase === "error") {
+      return;
+    }
+    const accountId = addSyncStatus.accountId;
+    const es = new EventSource("/api/mail/live");
+    es.onmessage = (msg) => {
+      try {
+        const data = JSON.parse(msg.data) as {
+          type?: string;
+          accountId?: string;
+          imported?: number;
+          folderRole?: string;
+          message?: string;
+        };
+        if (data.accountId !== accountId) return;
+        if (data.type === "mail:updated") {
+          setAddSyncStatus((s) =>
+            s && s.accountId === accountId
+              ? { ...s, phase: s.phase === "live" ? s.phase : "importing", imported: data.imported ?? s.imported }
+              : s,
+          );
+        } else if (data.type === "mail:idle" && data.folderRole) {
+          setAddSyncStatus((s) => {
+            if (!s || s.accountId !== accountId) return s;
+            const idleRoles = new Set(s.idleRoles);
+            idleRoles.add(data.folderRole!);
+            const isLive = idleRoles.has("INBOX") && idleRoles.has("SENT");
+            return { ...s, idleRoles, phase: isLive ? "live" : s.phase };
+          });
+        } else if (data.type === "mail:error") {
+          setAddSyncStatus((s) =>
+            s && s.accountId === accountId
+              ? { ...s, phase: "error", errorMessage: data.message }
+              : s,
+          );
+        }
+      } catch {
+        /* ignore malformed */
+      }
+    };
+    return () => es.close();
+    // Deliberately scoped to accountId/phase only — re-subscribing on every
+    // imported-count tick would tear down and reopen the SSE connection
+    // constantly instead of just updating state through it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addSyncStatus?.accountId, addSyncStatus?.phase]);
+
+  // Once live, the status line has done its job — clear it after a beat
+  // rather than leaving a stale "Live" badge sitting there indefinitely.
+  useEffect(() => {
+    if (addSyncStatus?.phase !== "live") return;
+    const t = setTimeout(() => setAddSyncStatus(null), 5000);
+    return () => clearTimeout(t);
+  }, [addSyncStatus?.phase]);
+
+  // Safety net: if IDLE is disabled (CEO_MAIL_IDLE=0) or the connection
+  // never confirms for some other reason, "Connecting…"/"Importing…"
+  // would otherwise sit there forever instead of just fading out.
+  useEffect(() => {
+    if (!addSyncStatus || addSyncStatus.phase === "live" || addSyncStatus.phase === "error") {
+      return;
+    }
+    const accountId = addSyncStatus.accountId;
+    const t = setTimeout(() => {
+      setAddSyncStatus((s) => {
+        if (!s || s.accountId !== accountId || s.phase === "error") return s;
+        return null;
+      });
+    }, 60_000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addSyncStatus?.accountId]);
 
   function set<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -111,7 +208,7 @@ export function MailboxesPanel({
     setError("");
     startTransition(async () => {
       try {
-        await addMailAccountAction({
+        const created = await addMailAccountAction({
           address: form.address.trim(),
           displayName: form.displayName.trim() || undefined,
           host: form.host.trim(),
@@ -124,6 +221,17 @@ export function MailboxesPanel({
         });
         await refresh();
         setShowForm(false);
+        // The mailbox row itself is created already — connecting and
+        // importing its first batch of mail happens in the background
+        // (can take a while for a large mailbox), so track it visibly
+        // instead of the row just sitting there with no explanation.
+        setAddSyncStatus({
+          accountId: created.id,
+          address: created.address,
+          phase: "connecting",
+          imported: 0,
+          idleRoles: new Set(),
+        });
         haptic("success");
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not add mailbox");
@@ -141,6 +249,8 @@ export function MailboxesPanel({
       haptic("warn");
       return;
     }
+    setError("");
+    setRemovingId(accountId);
     startTransition(async () => {
       try {
         await removeMailAccountAction(accountId);
@@ -149,6 +259,8 @@ export function MailboxesPanel({
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not remove mailbox");
         haptic("warn");
+      } finally {
+        setRemovingId(null);
       }
     });
   }
@@ -227,7 +339,10 @@ export function MailboxesPanel({
             <div className="min-h-0 flex-1 space-y-3 overflow-auto p-4">
               {!showForm && (
                 <ul className="space-y-2">
-                  {accounts.map((a) => (
+                  {accounts.map((a) => {
+                    const removingThis = removingId === a.id;
+                    const syncingThis = addSyncStatus?.accountId === a.id ? addSyncStatus : null;
+                    return (
                     <li
                       key={a.id}
                       className="flex items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-sm"
@@ -244,11 +359,46 @@ export function MailboxesPanel({
                           {a.address}
                           {a.isPrimary ? " · primary" : ""}
                         </div>
+                        {syncingThis && (
+                          <div
+                            className="mt-1 flex items-center gap-1.5 text-xs"
+                            style={{
+                              color:
+                                syncingThis.phase === "error"
+                                  ? "#f87171"
+                                  : syncingThis.phase === "live"
+                                    ? "#4ade80"
+                                    : "var(--accent-bright)",
+                            }}
+                          >
+                            {syncingThis.phase !== "live" && syncingThis.phase !== "error" && (
+                              <Loader2 size={12} className="animate-spin" />
+                            )}
+                            <span>
+                              {syncingThis.phase === "connecting" &&
+                                "Connecting to the mail server…"}
+                              {syncingThis.phase === "importing" &&
+                                `Importing messages… (${syncingThis.imported} so far)`}
+                              {syncingThis.phase === "live" && "Live — watching for new mail"}
+                              {syncingThis.phase === "error" &&
+                                `Sync error: ${syncingThis.errorMessage || "unknown error"} — will keep retrying`}
+                            </span>
+                          </div>
+                        )}
+                        {removingThis && (
+                          <div
+                            className="mt-1 flex items-center gap-1.5 text-xs"
+                            style={{ color: "#f87171" }}
+                          >
+                            <Loader2 size={12} className="animate-spin" />
+                            <span>Removing mailbox and local data… this can take a moment for a large mailbox</span>
+                          </div>
+                        )}
                       </div>
                       {!a.isPrimary && (
                         <button
                           type="button"
-                          disabled={pending}
+                          disabled={pending || removingThis}
                           className="shrink-0 cursor-pointer rounded-lg px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-40"
                           style={{
                             background: "rgba(239,68,68,0.12)",
@@ -257,11 +407,12 @@ export function MailboxesPanel({
                           }}
                           onClick={() => remove(a.id, a.address)}
                         >
-                          Remove
+                          {removingThis ? "Removing…" : "Remove"}
                         </button>
                       )}
                     </li>
-                  ))}
+                    );
+                  })}
                 </ul>
               )}
 
