@@ -1592,3 +1592,34 @@ mic-permission fix) are still ahead.
 [ceo-shell.tsx](src/components/ceo-shell.tsx),
 [command-bar.tsx](src/components/command-bar.tsx) —
 `feature/global-command-registry-and-voice`, merged to main.
+
+---
+
+## 2026-07-29 — Fix: Clients/Financing/Ledgers/Employees missing from ⌘K nav
+
+Follow-up to the Phase 1 command-registry work above, flagged as a
+separate out-of-scope item during that phase's review rather than bundled
+in. Both `detectNavIntent()` in
+[command-bar.tsx](src/components/command-bar.tsx) (the client-side fast
+path) and the `/api/command`
+[route.ts](src/app/api/command/route.ts) LLM prompt's Navigation URLs list
+were missing four routes that genuinely exist in the sidebar
+(`ceo-shell.tsx`'s `NAV_SECTIONS`): `/ceo/clients`, `/ceo/financing`,
+`/ceo/ledgers`, `/ceo/employees` — unreachable from ⌘K entirely.
+
+Added a branch for each, plus split "employee" out of the payroll
+keyword set into its own `/ceo/employees` branch — they're two distinct
+pages today (Payroll vs. the employee directory), and the old regex
+would have swallowed "open employees" into `/ceo/payroll`.
+
+Verified live via ⌘K for all four new routes ("open clients" →
+`/ceo/clients`, "open financing" → `/ceo/financing`, "open ledgers" →
+`/ceo/ledgers`, "open employees" → `/ceo/employees`), plus a regression
+check that "open payroll" still resolves to `/ceo/payroll` after the
+keyword split. tsc/eslint clean, full vitest suite (162 tests) unaffected
+— no test suite covers this file, consistent with the rest of
+`command-bar.tsx`.
+
+[command-bar.tsx](src/components/command-bar.tsx),
+[api/command/route.ts](src/app/api/command/route.ts) —
+`fix/command-bar-missing-nav-routes`, merged to main.
