@@ -748,10 +748,10 @@ export async function fillDisclosureSectionsDocx(
 
   let xml = new TextDecoder("utf-8").decode(unzipped[docXmlKey]);
 
-  let section4 = sections.section4
+  const section4 = sections.section4
     ? applyFormV4Section4Financials(sections.section4)
     : null;
-  let section23 = sections.section23
+  const section23 = sections.section23
     ? (applyFormV4LiquidityToSection23(sections.section23, section4) as Section23)
     : null;
 
