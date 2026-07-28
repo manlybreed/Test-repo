@@ -4,7 +4,12 @@ import { claudeJson, fenceMailData, getAnthropic } from "@/lib/mail/ai/claude";
 import { packChunks, retrieveMail } from "@/lib/mail/ai/retrieve";
 import { DEFAULT_DRAFT_TONE } from "@/lib/mail/ai/draft-presets";
 import { styleInPrompt } from "@/lib/mail/ai/style";
-import { findContacts, resolvePersonAddress } from "@/lib/mail/contacts";
+import {
+  discoverContactName,
+  findContacts,
+  isRealName,
+  resolvePersonAddress,
+} from "@/lib/mail/contacts";
 
 export {
   DEFAULT_DRAFT_TONE,
@@ -22,20 +27,6 @@ const DraftSchema = z.object({
 // SMTP recipient, so it needs validating as one regardless of how it was
 // extracted — this is a format check, not a parsing/understanding step.
 const EMAIL_SHAPE_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-/**
- * Some senders' mail clients set the From header's display name to their
- * own address ("himanshu@thebluridge.com" <himanshu@thebluridge.com>) —
- * real data, but it carries no identity beyond what's already in the
- * address field, so it shouldn't count as a "known name" for greeting
- * purposes. Without this guard it silently outranks a genuine name (e.g.
- * "Himanshu") pulled straight from the user's own instruction, since a
- * non-null contact/client name was checked first in the priority order.
- */
-function isRealName(name: string | null | undefined, address: string): boolean {
-  const n = name?.trim().toLowerCase();
-  return Boolean(n) && n !== address.trim().toLowerCase();
-}
 
 /**
  * Shared instruction for the <!--SIGNATURE--> marker — the signature
@@ -94,11 +85,16 @@ Respond with null for a field rather than guessing.`,
   const nameFromModel = raw?.recipientName?.trim() || null;
 
   if (email) {
-    // Cross-check against the contact index for a real display name, so
-    // the draft addresses the recipient correctly instead of guessing.
+    // Cross-check against the contact index for a real (or emailid-derived)
+    // display name, so the draft addresses the recipient correctly instead
+    // of guessing. findContacts already falls back to nameFromLocalPart, so
+    // a hit here is never just the bare address restated.
     const [hit] = await findContacts(accountId, email, 1).catch(() => []);
-    const contactName = isRealName(hit?.displayName, email) ? hit!.displayName : null;
-    return { to: [email], knownName: contactName || nameFromModel };
+    const knownName =
+      hit?.displayName ||
+      nameFromModel ||
+      (await discoverContactName(accountId, email).catch(() => null));
+    return { to: [email], knownName };
   }
 
   if (!nameFromModel) return { to: [], knownName: null };
@@ -215,10 +211,15 @@ export async function draftNewMail(opts: {
   // text) into an inference of whether a name is "allowed". Ambiguity in
   // that reconciliation is exactly what let the model fall back to
   // pattern-matching a name out of unrelated retrieved mail instead.
+  // contactHit?.displayName is never just the bare address restated —
+  // findContacts already falls back to an emailid-derived guess for that.
   const recipientName =
-    (isRealName(contactHit?.displayName, primaryTo) ? contactHit!.displayName : null) ||
+    contactHit?.displayName ||
     (isRealName(clientHit?.name, primaryTo) ? clientHit!.name : null) ||
     opts.recipientNameHint?.trim() ||
+    (primaryTo
+      ? await discoverContactName(opts.accountId, primaryTo).catch(() => null)
+      : null) ||
     null;
 
   const raw = await claudeJson<{ html: string; subject?: string }>({

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { personNeedles, rankContacts } from "@/lib/mail/contacts";
+import {
+  isRealName,
+  nameFromLocalPart,
+  personNeedles,
+  rankContacts,
+} from "@/lib/mail/contacts";
 
 function contact(over: Partial<Parameters<typeof rankContacts>[0][number]> = {}) {
   return {
@@ -48,5 +53,28 @@ describe("R2 contacts", () => {
     const out = rankContacts(rows, personNeedles("sbi"), 5);
     expect(out).toHaveLength(1);
     expect(out[0]!.address).toBe("sbi@sbi.co.in");
+  });
+
+  it("isRealName rejects a name that's just the address restated", () => {
+    expect(isRealName("himanshu@thebluridge.com", "himanshu@thebluridge.com")).toBe(false);
+    expect(isRealName("Himanshu@TheBluRidge.com", "himanshu@thebluridge.com")).toBe(false);
+    expect(isRealName(null, "himanshu@thebluridge.com")).toBe(false);
+    expect(isRealName("", "himanshu@thebluridge.com")).toBe(false);
+    expect(isRealName("Himanshu Sharma", "himanshu@thebluridge.com")).toBe(true);
+  });
+
+  it("nameFromLocalPart derives a plausible name from the email address", () => {
+    expect(nameFromLocalPart("himanshu@thebluridge.com")).toBe("Himanshu");
+    expect(nameFromLocalPart("john.doe@company.com")).toBe("John Doe");
+    expect(nameFromLocalPart("jane_smith123@company.com")).toBe("Jane Smith");
+    expect(nameFromLocalPart("Ramesh-Kumar@vendor.in")).toBe("Ramesh Kumar");
+  });
+
+  it("nameFromLocalPart returns null for role/shared mailboxes rather than guessing", () => {
+    expect(nameFromLocalPart("noreply@company.com")).toBeNull();
+    expect(nameFromLocalPart("info@company.com")).toBeNull();
+    expect(nameFromLocalPart("accounts@thebluridge.com")).toBeNull();
+    expect(nameFromLocalPart("support@company.com")).toBeNull();
+    expect(nameFromLocalPart("12345@company.com")).toBeNull();
   });
 });
