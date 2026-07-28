@@ -1212,3 +1212,30 @@ opens with "Best regards,".
 [mail-client.tsx](src/components/mail/mail-client.tsx),
 [ai/draft.ts](src/lib/mail/ai/draft.ts) —
 `feature/mail-ai-draft-attachment-list`, merged to main.
+
+---
+
+## 2026-07-28 — Fix AI draft double sign-off
+
+Follow-up to the attachment-listing feature above, flagged as a separate
+issue noticed in passing: a real AI Draft for a new email ended with
+"Best regards,</p><p>Best regards,<br>Akshay<br>BluRidge Consulting" — the
+model's own closing line immediately followed by the signature block's own
+sign-off. The prompt told the model to leave a `<!--SIGNATURE-->` marker
+but never said not to write a sign-off of its own first, and the signature
+HTML (`MailSignature.htmlBody`) already opens with "Best regards, Akshay,
+...".
+
+`draftReply` and `draftNewMail` in
+[ai/draft.ts](src/lib/mail/ai/draft.ts) now share one
+`SIGNATURE_MARKER_RULE` string, added to both system prompts, that
+explicitly forbids a closing/sign-off line before the marker.
+
+Verified against the real Claude API (not mocked): 3 runs of
+`draftNewMail` (the original loan-email-with-attachments repro) and 1 run
+of `draftReply` (acknowledging a real thread) — all four produced exactly
+one sign-off phrase in the output (the signature's own), zero duplicates.
+tsc, eslint, vitest (118 passed) all clean.
+
+[ai/draft.ts](src/lib/mail/ai/draft.ts) —
+`fix/mail-ai-draft-double-signoff`, merged to main.
