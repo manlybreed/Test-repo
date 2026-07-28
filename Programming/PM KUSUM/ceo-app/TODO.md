@@ -1274,3 +1274,53 @@ clean.
 
 [ai/draft.ts](src/lib/mail/ai/draft.ts) —
 `fix/mail-ai-draft-address-as-displayname`, merged to main.
+
+---
+
+## 2026-07-28 — Smarter contact names: derive from emailid or real correspondence
+
+Requested explicitly: "check the database of contacts. make it smart, it
+should be able to extract names from emailid, or greeting from a
+particular mail." Follow-up to the two fixes above — those made bad names
+get *ignored*, but the contact index still had no way to find a *good*
+name when the header never carried one. Two new fallbacks in
+[contacts.ts](src/lib/mail/contacts.ts), both feeding straight into
+`findContacts`'s returned `ContactRow.displayName`, so every caller
+(AI-draft resolution, recipient autocomplete, recall) benefits without
+separate wiring:
+
+1. `nameFromLocalPart(address)` — deterministic, pure: "himanshu@…" ->
+   "Himanshu", "john.doe@…" -> "John Doe". Returns null (not a guess) for
+   role/shared-mailbox local-parts (info, noreply, support, accounts, …)
+   or a purely numeric local-part.
+2. `discoverContactName(accountId, address)` — AI-based last resort when
+   the local-part guess is also empty: reads one real message involving
+   the address (their own sign-off if they've sent mail, otherwise how
+   someone else greeted them) and asks Claude to read out a name only if
+   one is genuinely stated — never guessed from the address itself.
+   Persists the hit onto `MailContact` (creating the row if none existed)
+   so this only runs once per address; a real header name still overwrites
+   it later via the existing upsert logic in `bumpContact`.
+
+`isRealName` moved from `draft.ts` into `contacts.ts` alongside these,
+since it's now the shared guard all three build on.
+`resolveDraftRecipients`/`draftNewMail` fall through to
+`discoverContactName` as the final step before giving up and using "Hi,".
+
+Verified against the real Claude API and DB (not mocked): sampled real
+contacts — `ramesh.singh@tracxn.io` -> "Ramesh Singh",
+`rahul@thebluridge.com` -> "Rahul" — while `accounts@`/`noreply@`/`support@`
+style addresses correctly stayed null. `discoverContactName` extracted
+"Suresh Patil" from a fabricated sign-off in a throwaway test message and
+correctly persisted it onto a newly-created `MailContact` row (the
+create-vs-update path was a real gap caught during this verification — the
+first version only updated an existing row, silently never caching a
+discovery for a brand-new address). Confirmed live in the running dev
+server: drafting to rahul@thebluridge.com with a brief that never names
+him opens "Dear Rahul," purely from the emailid-derived guess. tsc,
+eslint, vitest (121 passed, 3 new) all clean.
+
+[contacts.ts](src/lib/mail/contacts.ts),
+[contacts.test.ts](src/lib/mail/contacts.test.ts),
+[ai/draft.ts](src/lib/mail/ai/draft.ts) —
+`feature/mail-smart-contact-names`, merged to main.
