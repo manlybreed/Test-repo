@@ -1801,3 +1801,88 @@ shortcut-help modal) is still ahead.
 [command-bar.tsx](src/components/command-bar.tsx),
 [ceo-shell.tsx](src/components/ceo-shell.tsx) —
 `feature/client-action-dispatch-and-page-primitives`, merged to main.
+
+---
+
+## 2026-07-29 — Phase 4 (final): voice availability + macOS mic fix
+
+Fourth and final phase of the voice/command plan
+(`~/.claude/plans/witty-finding-tiger.md`), closing out the work that
+started with "integrate voice and written commands to navigate the entire
+app." Three polish items:
+
+**Unsupported-browser messaging.** [VoiceButton](src/components/voice/voice-button.tsx)
+used to render nothing at all on Safari/Firefox (Web Speech API is
+Chrome/Edge-only — genuinely unfixable from here, not a bug to chase).
+Now renders a visible, disabled mic-off icon with a real tooltip
+explaining why, instead of the mic silently vanishing with zero
+explanation.
+
+**macOS desktop wrapper microphone fix.** Confirmed broken two separate
+ways, both now fixed: [macos/Info.plist](macos/Info.plist) had no
+`NSMicrophoneUsageDescription` (macOS refuses mic access without it), and
+[main.m](macos/Sources/BluRidgeCEO/main.m)'s `AppDelegate` only conformed
+to `WKNavigationDelegate` — without also implementing `WKUIDelegate`'s
+`requestMediaCapturePermissionForOrigin`, WKWebView silently denies every
+`getUserMedia()` call itself, before the OS-level permission system is
+ever involved. No system prompt, no error the page can see — exactly the
+"voice would silently fail in the packaged app" gap flagged when this
+plan was written. Fixed both; granting unconditionally is safe since the
+webview only ever loads our own embedded local server, never third-party
+content.
+
+**Shortcut-help modal.** Added a "Voice & ⌘K commands" section to Mail's
+existing keyboard-shortcuts modal, since the new capability from Phases
+1-3 is otherwise easy to never discover — notes it works from any page,
+not just Mail.
+
+**A real, separate pre-existing bug surfaced while trying to verify the
+mic fix on the actual packaged `.app`**: `npm run desktop:build` failed
+outright on a webpack "Module not found: 'stream'" error, confirmed via
+`git log` to predate this whole session's voice/command work (traces
+back to the earlier IMAP IDLE feature). Root-caused: `next.config.ts`'s
+`serverExternalPackages` excluded `imapflow` but not its own transitive
+dependency `@zone-eu/mailsplit`. Fixed that one line, which fixed that
+specific error — but re-running revealed the same class of problem runs
+much deeper (`socks`, `fs/promises`, `crypto` from the same
+`instrumentation.ts` → `idle-watcher.ts` chain), a substantially bigger,
+separate issue than a one-line fix. Kept the safe partial fix, flagged
+the rest as its own follow-up task rather than scope-creeping a
+production-build investigation into the voice-command plan.
+
+**Verification, and its honest limits**: the native macOS shell
+(`build-shell.sh`) compiles cleanly with the `WKUIDelegate` changes;
+`Info.plist` validated with `plutil -lint`; the unsupported-browser state
+verified live (temporarily forced `isSpeechToTextSupported()` to `false`,
+confirmed the disabled button renders with the correct title/aria-label,
+reverted — `git diff` confirmed the revert was clean); the expanded
+shortcut-help modal verified live through the real Mail-settings-menu
+flow. tsc, eslint, vitest (190 passed across 37 suites, no regressions)
+all clean. What could **not** be fully verified this phase: launching the
+actual packaged `.app` and confirming the OS mic-permission prompt
+appears end-to-end — blocked by the pre-existing production-build issue
+above, not by anything in this phase's own changes. The source-level fix
+is correct (a well-documented, standard WKUIDelegate pattern); the
+remaining verification step is now attached to the separate follow-up
+task instead of blocking this phase indefinitely.
+
+This closes out the 4-phase voice/command plan. What shipped across all
+four phases: a shared, fuzzy-matched command registry usable by both
+voice and typed ⌘K input everywhere in the app (not just Mail); a real
+confirmation-card gate so no irreversible action (schedule a meeting,
+send or trash mail) ever executes on the model's self-report alone, only
+a real click; the full assistant tool surface (invoices, payroll,
+agreements, mail, calendar) reachable from ⌘K/voice via a shared
+tool-calling loop; a `client_action` fallback so the LLM can trigger
+client-side UI primitives Tier 1's fuzzy matcher misses; and this
+phase's availability/safety polish. Two follow-ups remain tracked
+separately: the missing Clients/Financing/Ledgers/Employees ⌘K
+nav-intent entries (flagged earlier, not yet picked up), and the
+broader production-build breakage found here.
+
+[voice-button.tsx](src/components/voice/voice-button.tsx),
+[macos/Info.plist](macos/Info.plist),
+[macos/Sources/BluRidgeCEO/main.m](macos/Sources/BluRidgeCEO/main.m),
+[next.config.ts](next.config.ts),
+[mail-client.tsx](src/components/mail/mail-client.tsx) —
+`feature/voice-global-availability-and-safety-polish`, merged to main.
