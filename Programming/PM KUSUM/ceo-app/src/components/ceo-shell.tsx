@@ -9,6 +9,9 @@ import { useState, useEffect, useCallback, type MouseEvent } from "react";
 import { CommandBar } from "./command-bar";
 import { BluRidgeLogo } from "./bluridge-logo";
 import { LiveClock } from "./live-clock";
+import { VoiceButton } from "@/components/voice/voice-button";
+import { matchCommand, type CommandContext } from "@/lib/commands/registry";
+import { invokeCommand } from "@/lib/commands/use-register-commands";
 
 // ── SVG Icons ────────────────────────────────────────────────────────
 const FILL_ICONS = new Set(["home", "assistant", "agreement"]);
@@ -100,6 +103,7 @@ export function CeoShell({
 }) {
   const pathname = usePathname();
   const [cmdOpen, setCmdOpen] = useState(false);
+  const [cmdInitialQuery, setCmdInitialQuery] = useState<string | undefined>(undefined);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [navCollapsed, setNavCollapsed] = useState(false);
   const [hoverTip, setHoverTip] = useState<{
@@ -123,6 +127,31 @@ export function CeoShell({
   }
 
   const openCmd = useCallback(() => setCmdOpen(true), []);
+
+  const closeCmd = useCallback(() => {
+    setCmdOpen(false);
+    setCmdInitialQuery(undefined);
+  }, []);
+
+  /** Global voice entry point — resolves an utterance against every command
+   * currently registered with the shared registry (whatever page is
+   * mounted contributes its own commands via useRegisterCommands), same as
+   * the ⌘K bar's typed input. Anything that doesn't clearly match a known
+   * command hands off to the exact same /api/command resolver a typed
+   * query would use, via CommandBar's `initialQuery`. */
+  const handleGlobalVoice = useCallback(
+    (text: string) => {
+      const ctx: CommandContext = { route: pathname };
+      const match = matchCommand(text, ctx);
+      if (match) {
+        invokeCommand(match.entry.id, match.args);
+        return;
+      }
+      setCmdInitialQuery(text);
+      setCmdOpen(true);
+    },
+    [pathname],
+  );
 
   useEffect(() => {
     try {
@@ -486,6 +515,9 @@ export function CeoShell({
               <Icon d={ICONS.search} name="search" size={12} />
               <span className="cmd-shortcut"><kbd>⌘</kbd><kbd>K</kbd></span>
             </button>
+
+            {/* Global voice command — works on every page, not just Mail */}
+            <VoiceButton onText={handleGlobalVoice} />
           </div>
         </div>
 
@@ -507,7 +539,7 @@ export function CeoShell({
       </main>
 
       {/* Command Bar */}
-      <CommandBar open={cmdOpen} onClose={() => setCmdOpen(false)} />
+      <CommandBar open={cmdOpen} onClose={closeCmd} initialQuery={cmdInitialQuery} />
 
       {hoverTip && navCollapsed && (
         <div
