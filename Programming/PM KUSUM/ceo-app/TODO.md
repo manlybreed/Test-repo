@@ -768,3 +768,60 @@ throughout.
 [account.ts](src/lib/mail/account.ts),
 [mail.ts](src/actions/mail.ts) —
 `feature/mail-multi-account-action-layer`, merged to main.
+
+---
+
+## 2026-07-28 — Multi-mailbox support, Phase 3 (part 1): mailbox-level accountId support + a real sync crash fixed
+
+The user added two real second mailboxes (accounts@thebluridge.com,
+pmkusum@thebluridge.com) via the Phase 1 Add-mailbox UI, unblocking real
+verification instead of guessing. `requireAccount()` and
+`getMailBootstrap()` now take an optional `accountId`, and every
+mailbox-level action (sync, bootstrap, folders/threads list, search,
+compose/send/draft, signatures, vacation responder, label rules, blocked
+senders, reminders, and the AI toolbar actions — digest/ask-mailbox/
+recall/cleanup/style/follow-ups) accepts an explicit `accountId` now
+instead of always resolving to the primary env mailbox. Also fixed a real
+bug this surfaced: `applyLabelCorrectionAction`'s internal call to
+`upsertLabelRuleAction` wasn't passing the resolved account through, so a
+standing rule created from a secondary mailbox's thread would have
+silently landed on the primary account instead.
+
+**Real bug found and fixed while verifying against the two new
+mailboxes**: accounts@ synced cleanly on the first try, but pmkusum@
+crashed with `Unique constraint failed on the fields: (folderId,
+imapUid)` after importing only its INBOX. Root cause: `syncCeoMail` had
+no guard against two overlapping syncs for the same account racing on the
+same IMAP UID — the best-effort background sync `addMailAccountAction`
+kicks off right after adding a mailbox can still be mid-flight (a slow
+first connection, or a large mailbox) when a manual sync or a retry fires,
+and both land on the same "this UID doesn't exist yet" check moments
+apart, then both try to `create()` it. Fixed two ways: an in-process
+per-account mutex in `syncCeoMail` (concurrent calls for the same account
+now await the one already running instead of racing it), and a defensive
+catch around the message insert that treats that specific duplicate-key
+race as "already imported by the other run" rather than aborting the
+whole sync. Verified live: pmkusum@'s sync went from crashing after 1
+folder to completing cleanly across all 5 folders (280 messages), hitting
+and correctly absorbing the race 9 times in that one run.
+
+**Scope note**: this is the server-side foundation only. The actual
+sidebar account switcher UI, the client-side wiring that threads the
+active account through every one of the ~45 call sites in
+`mail-client.tsx`, and the compose "From" selector are not built yet —
+deliberately split off as their own follow-up rather than rushed
+alongside this, since that's a large surgery on a ~6,700-line component
+where a half-wired call site (some actions correctly following a switched
+mailbox, others silently still hitting the primary one) would be a worse,
+more confusing bug than not having the switcher at all.
+
+Verified: `npx tsc --noEmit`, `npx eslint src/actions/mail.ts
+src/lib/mail/sync.ts`, `npx vitest run src/lib/mail` (118 passed, 1
+skipped), null-byte scan — all clean. Live: `accounts@` and `pmkusum@`
+both fully synced with real credentials (106 and 280 messages, 5 folders
+each) via the existing Add-mailbox UI.
+
+[account.ts](src/lib/mail/account.ts),
+[mail.ts](src/actions/mail.ts),
+[sync.ts](src/lib/mail/sync.ts) —
+`feature/mail-multi-account-switcher-ui`, merged to main.
