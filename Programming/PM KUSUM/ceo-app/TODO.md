@@ -1495,3 +1495,100 @@ integration was verified live instead.
 [ai/tools.ts](src/lib/ai/tools.ts),
 [ai/draft.ts](src/lib/mail/ai/draft.ts) —
 `feature/calendar-ai-scheduling-tools`, merged to main.
+
+---
+
+## 2026-07-29 — Phase 1: unified voice + text command registry
+
+First phase of a 4-phase plan (`~/.claude/plans/witty-finding-tiger.md`) to
+make voice/typed commands control the whole app, not just mail search and
+drafting. Investigation found three fragmented command surfaces that never
+talked to each other: mail's own regex voice parser
+([voice-commands.ts](src/lib/mail/voice-commands.ts), now removed), the ⌘K
+command bar's local nav-intent regex + tool-less `/api/command` LLM call
+([command-bar.tsx](src/components/command-bar.tsx)), and the real
+~27-tool business-action engine (`ceoTools`/`runCeoTool` in
+[ai/tools.ts](src/lib/ai/tools.ts)) reachable only from `/ceo/assistant`
+with zero navigation or mail-mutation capability. Industry precedent
+(Superhuman's own command-palette design) pointed at fuzzy client-side
+matching as the fast path for known commands, with an LLM fallback for
+everything else — exactly what this phase builds.
+
+New [commands/registry.ts](src/lib/commands/registry.ts): a plain-data
+`CommandEntry` table (id, phrases, description, optional `isVisible`/
+`extractArgs`) matched via `command-score` — the actual library Superhuman
+uses, confirmed via `npm view`. Empirically verified (via direct `node -e`
+testing, not assumed) that scoring `commandScore(fullUtterance, phrase)` —
+utterance as the target, trigger phrase as the abbreviation — correctly
+finds a short phrase embedded in a longer sentence, and that each entry
+needs short alias words in its `phrases` array, not just long canonical
+phrases, or real utterances miss the match. New
+[commands/use-register-commands.ts](src/lib/commands/use-register-commands.ts):
+a `useRegisterCommands` hook implementing the VS Code "contribution"
+pattern — pages register their command entries + handlers (which close
+over local React state) on mount, unregistered on unmount, all funneling
+through one `invokeCommand(id, args)` dispatcher.
+
+[mail-client.tsx](src/components/mail/mail-client.tsx) is migrated onto
+the new registry: its old bespoke regex parser is gone, replaced by 14
+registered commands (compose, 8 folder-nav entries, search, archive,
+trash, reply, reply-all, forward) reusing the exact same handler functions
+the UI buttons already called. `VoiceButton`/`useSpeechToText` are
+extracted out of `components/mail/` into a neutral
+[components/voice/](src/components/voice/voice-button.tsx) location so
+any page can use them — the mail-wide command mic is removed as redundant
+now that [ceo-shell.tsx](src/components/ceo-shell.tsx) has a single global
+voice button next to ⌘K that works on every page. Critically, the ⌘K
+command bar's *typed* input now also tries the shared registry first
+(`matchCommand` before `detectNavIntent`/LLM), so a typed command gets the
+identical fast path a spoken one does — this was almost missed (the first
+pass only wired voice), caught by re-reading the plan's own design intent
+("this replaces detectNavIntent") before calling Phase 1 done. Also fixed
+a real pre-existing gap: `/ceo/mail` was missing from both `detectNavIntent`
+and the `/api/command` LLM prompt's nav list, making Mail unreachable from
+⌘K entirely.
+
+New [commands/registry.test.ts](src/lib/commands/registry.test.ts) mirrors
+the old `voice-commands.test.ts`'s scenarios (compose phrasing, folder nav,
+search-query extraction preserving case, reply-all-before-reply ordering,
+context-gated visibility, empty/no-match input) against the new
+fuzzy-matched API.
+
+**Verified live, not just in tests**: opened a real thread, typed
+"archive this" into ⌘K, and confirmed via the Network panel that it
+executed the real `archiveThreadAction` server action directly (no call to
+`/api/command` at all) — then confirmed the thread actually moved into the
+Archive folder, not just disappeared from the inbox view. Separately typed
+"open payroll" (a phrase nothing in the registry matches) and confirmed it
+still fell through to the existing `detectNavIntent` path and navigated
+correctly, proving the fallback is unbroken. Confirmed exactly one voice
+button exists app-wide (the new global one) and that it renders on both
+`/ceo/mail` and `/ceo/payroll`.
+
+**A real null-byte corruption slipped past the first verification pass**:
+two space characters in `use-register-commands.ts`'s id-join/split
+delimiter had silently been written as raw `\x00` bytes, which made
+`git`/`file(1)` treat the whole file as binary (visible as `Bin 0 -> 2325
+bytes` in the merge diff — the tell that caught it). The null-byte scan
+run beforehand missed it because it used `grep -I`, which *skips*
+binary-detected files instead of flagging them — the opposite of what a
+null-byte check needs. Fixed with a byte-level Python pass replacing
+`\x00` with a space, re-verified with `grep -a` (not `-I`) across every
+file touched this phase, and landed as a follow-up commit on `main` since
+it was caught after the merge had already happened.
+
+Verified: tsc, eslint, vitest (162 passed across all 32 suites, no
+regressions) all clean; live browser walkthrough as above.
+
+Phases 2-4 (mail send/trash gated behind a real confirmation-card UI +
+mail-mutation tools + shared tool-loop extraction; `client_action` LLM
+dispatch + non-mail page primitives; voice availability polish + macOS
+mic-permission fix) are still ahead.
+
+[commands/registry.ts](src/lib/commands/registry.ts),
+[commands/use-register-commands.ts](src/lib/commands/use-register-commands.ts),
+[voice/voice-button.tsx](src/components/voice/voice-button.tsx),
+[mail-client.tsx](src/components/mail/mail-client.tsx),
+[ceo-shell.tsx](src/components/ceo-shell.tsx),
+[command-bar.tsx](src/components/command-bar.tsx) —
+`feature/global-command-registry-and-voice`, merged to main.
