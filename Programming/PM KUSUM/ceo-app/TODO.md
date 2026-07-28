@@ -1139,3 +1139,37 @@ Fast Refresh with no errors.
 
 [mailboxes-panel.tsx](src/components/mail/mailboxes-panel.tsx) —
 `feature/mail-account-add-remove-status`, merged to main.
+
+---
+
+## 2026-07-28 — Fix VoiceButton hydration mismatch
+
+User reported a React hydration-mismatch error on `/ceo/mail`, with the
+diff showing a server-rendered `<div className="flex flex-wrap items-center
+gap-0.5 rounded-full pl-2.5 pr-1.5 py-1" ...>` where the client rendered a
+`<button>`. The stack trace pointed at `VoiceButton`/`IconBtn`, but neither
+actually contains a `<div>` with that markup — that div is the "AI mailbox
+actions" pill two elements later in the header row
+([mail-client.tsx:4140](src/components/mail/mail-client.tsx#L4140)). The
+real bug was one level down, in
+[use-speech-to-text.ts](src/components/mail/use-speech-to-text.ts):
+`isSpeechToTextSupported()` was called synchronously on every render,
+reading `window.SpeechRecognition` directly. On the server `window` doesn't
+exist, so `supported` was `false` and `VoiceButton` rendered nothing; on the
+client's first (hydration) render, in a browser that supports the Web
+Speech API (Chrome/Edge), `supported` was already `true` — an extra button
+appeared before the AI-actions pill, shifting it one slot over and causing
+React to try to hydrate that div against the shifted-in button.
+
+Fixed by making `supported` start `false` (matching SSR) on both sides and
+flipping it via `useState`/`useEffect` only after mount, so the client's
+hydration-pass render always matches the server's, and the real value
+applies as a normal post-hydration update.
+
+Verified: tsc, eslint, vitest (118 passed), null-byte scan — all clean.
+Confirmed live via a full (non-Fast-Refresh) page reload against the
+running dev server: no hydration-mismatch error in the console, page
+renders normally.
+
+[use-speech-to-text.ts](src/components/mail/use-speech-to-text.ts) —
+`fix/mail-voicebutton-hydration-mismatch`, merged to main.
