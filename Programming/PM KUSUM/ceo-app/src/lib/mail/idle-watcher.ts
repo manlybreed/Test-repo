@@ -1,29 +1,50 @@
 import { ImapFlow } from "imapflow";
 import { prisma } from "@/lib/prisma";
-import { getCeoMailConfig } from "@/lib/mail/ceo-config";
+import { getMailConfig } from "@/lib/mail/ceo-config";
 import { ensureCeoMailAccount } from "@/lib/mail/account";
 import { syncCeoMail } from "@/lib/mail/sync";
 import { publishMailLive } from "@/lib/mail/live-bus";
 
-type IdleGlobal = typeof globalThis & {
-  __ceoMailIdle?: {
-    started: boolean;
-    stopping: boolean;
-    clients: ImapFlow[];
-  };
+type AccountRef = {
+  id: string;
+  credentialKey: string;
+  address: string;
+  displayName?: string | null;
 };
 
-function idleState() {
+type PerAccountState = {
+  started: boolean;
+  stopping: boolean;
+  clients: ImapFlow[];
+};
+
+// One IDLE watcher per configured mailbox, not one global pair — keyed by
+// accountId so adding a mailbox can start its own loop independently of
+// whatever the others are doing, and so one mailbox's connection trouble
+// never affects another's.
+type IdleGlobal = typeof globalThis & {
+  __ceoMailIdle?: Map<string, PerAccountState>;
+};
+
+function idleStates(): Map<string, PerAccountState> {
   const g = globalThis as IdleGlobal;
-  if (!g.__ceoMailIdle) {
-    g.__ceoMailIdle = { started: false, stopping: false, clients: [] };
-  }
+  if (!g.__ceoMailIdle) g.__ceoMailIdle = new Map();
   return g.__ceoMailIdle;
 }
 
-async function connectIdleClient() {
-  const cfg = getCeoMailConfig();
-  if (!cfg) throw new Error("CEO mail not configured");
+function stateFor(accountId: string): PerAccountState {
+  const states = idleStates();
+  let s = states.get(accountId);
+  if (!s) {
+    s = { started: false, stopping: false, clients: [] };
+    states.set(accountId, s);
+  }
+  return s;
+}
+
+async function connectIdleClient(account: AccountRef) {
+  const cfg = await getMailConfig(account);
+  if (!cfg) throw new Error(`Mail account not configured: ${account.address}`);
   const client = new ImapFlow({
     host: cfg.host,
     port: cfg.imapPort,
@@ -76,9 +97,10 @@ function debounce(fn: () => void, ms: number) {
   };
 }
 
-async function pullDelta(role: "INBOX" | "SENT") {
+async function pullDelta(accountId: string, role: "INBOX" | "SENT") {
   try {
     const result = await syncCeoMail({
+      accountId,
       incremental: true,
       roles: [role],
       maxPerFolder: 80,
@@ -93,6 +115,7 @@ async function pullDelta(role: "INBOX" | "SENT") {
   } catch (e) {
     publishMailLive({
       type: "mail:error",
+      accountId,
       message: e instanceof Error ? e.message : "Idle sync failed",
       folderRole: role,
     });
@@ -141,6 +164,7 @@ async function applyExpunge(
   if (!uid) {
     // Seq-only expunge — catch up via delta pull
     await pullDelta(
+      accountId,
       folderPath.toLowerCase().includes("sent") ? "SENT" : "INBOX",
     );
     return;
@@ -166,12 +190,10 @@ async function applyExpunge(
   });
 }
 
-async function watchRole(role: "INBOX" | "SENT"): Promise<void> {
-  const state = idleState();
-  const account = await ensureCeoMailAccount(null);
-  if (!account) return;
+async function watchRole(account: AccountRef, role: "INBOX" | "SENT"): Promise<void> {
+  const state = stateFor(account.id);
 
-  const client = await connectIdleClient();
+  const client = await connectIdleClient(account);
   state.clients.push(client);
 
   const pathName = await resolveFolderPath(account.id, role, client);
@@ -183,7 +205,7 @@ async function watchRole(role: "INBOX" | "SENT"): Promise<void> {
   await client.mailboxOpen(pathName);
 
   const onExists = debounce(() => {
-    void pullDelta(role);
+    void pullDelta(account.id, role);
   }, 500);
 
   client.on("exists", (data: { count: number; prevCount: number }) => {
@@ -209,7 +231,7 @@ async function watchRole(role: "INBOX" | "SENT"): Promise<void> {
     type: "mail:idle",
     accountId: account.id,
     folderRole: role,
-    message: `Watching ${pathName}`,
+    message: `Watching ${pathName} (${account.address})`,
   });
 
   // Keep the promise pending until close/error — caller reconnects
@@ -220,19 +242,15 @@ async function watchRole(role: "INBOX" | "SENT"): Promise<void> {
   });
 }
 
-async function runWatcherLoop() {
-  const state = idleState();
+async function runWatcherLoop(account: AccountRef) {
+  const state = stateFor(account.id);
   let backoffMs = 2000;
 
   while (!state.stopping) {
-    if (!getCeoMailConfig()) {
-      await sleep(15_000);
-      continue;
-    }
-
     try {
       // Seed folder rows so path resolution works
       await syncCeoMail({
+        accountId: account.id,
         incremental: true,
         roles: ["INBOX", "SENT"],
         maxPerFolder: 40,
@@ -241,16 +259,18 @@ async function runWatcherLoop() {
 
       backoffMs = 2000;
       await Promise.all([
-        watchRole("INBOX").catch((e) => {
+        watchRole(account, "INBOX").catch((e) => {
           publishMailLive({
             type: "mail:error",
+            accountId: account.id,
             message: e instanceof Error ? e.message : "INBOX idle failed",
             folderRole: "INBOX",
           });
         }),
-        watchRole("SENT").catch((e) => {
+        watchRole(account, "SENT").catch((e) => {
           publishMailLive({
             type: "mail:error",
+            accountId: account.id,
             message: e instanceof Error ? e.message : "SENT idle failed",
             folderRole: "SENT",
           });
@@ -259,6 +279,7 @@ async function runWatcherLoop() {
     } catch (e) {
       publishMailLive({
         type: "mail:error",
+        accountId: account.id,
         message: e instanceof Error ? e.message : "Idle watcher failed",
       });
     }
@@ -275,25 +296,45 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** Start IMAP IDLE watchers once per process (Next instrumentation). */
-export function startMailIdleWatcher(): void {
+/**
+ * Start (or no-op if already running) the IDLE loop for one specific
+ * mailbox. Safe to call any time — used both at process startup (for
+ * every mailbox already configured) and right after adding a new one, so
+ * a freshly added mailbox goes live immediately without an app restart.
+ */
+export function ensureIdleClientFor(account: AccountRef): void {
   if (process.env.CEO_MAIL_IDLE === "0") return;
-  if (!getCeoMailConfig()) return;
-
-  const state = idleState();
+  const state = stateFor(account.id);
   if (state.started) return;
   state.started = true;
   state.stopping = false;
+  void runWatcherLoop(account);
+}
 
-  void runWatcherLoop();
+/** Start IMAP IDLE watchers for every configured mailbox, once per process (Next instrumentation). */
+export async function startMailIdleWatcher(): Promise<void> {
+  if (process.env.CEO_MAIL_IDLE === "0") return;
+
+  // Lazily creates the ceo_env row on a cold boot (mirrors the original
+  // single-account behavior) — otherwise the primary mailbox's watcher
+  // wouldn't start until someone actually loads the mail page first.
+  await ensureCeoMailAccount(null).catch(() => null);
+
+  const accounts = await prisma.mailAccount.findMany({
+    select: { id: true, credentialKey: true, address: true, displayName: true },
+  });
+  for (const account of accounts) {
+    ensureIdleClientFor(account);
+  }
 }
 
 export function stopMailIdleWatcher(): void {
-  const state = idleState();
-  state.stopping = true;
-  for (const c of state.clients) {
-    void c.logout().catch(() => undefined);
+  for (const state of idleStates().values()) {
+    state.stopping = true;
+    for (const c of state.clients) {
+      void c.logout().catch(() => undefined);
+    }
+    state.clients = [];
+    state.started = false;
   }
-  state.clients = [];
-  state.started = false;
 }

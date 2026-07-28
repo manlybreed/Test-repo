@@ -1325,6 +1325,12 @@ export function MailClient({
   const threadsListRef = useRef<HTMLUListElement>(null);
   /** Always the current render's reloadActiveView — see its assignment site. */
   const reloadActiveViewRef = useRef<() => Promise<void>>(async () => {});
+  /** The live-update SSE subscription only connects once ([configured]), so
+   * it must read these through refs rather than closing over accountInfo/
+   * activeFolder directly — otherwise it would always compare against
+   * whichever account was active at mount/subscribe time. */
+  const accountInfoRef = useRef(accountInfo);
+  const activeFolderRef = useRef(activeFolder);
   const searchInputRef = useRef<HTMLInputElement>(null);
   /**
    * Snapshot of the auto-populated reply-context fields (To/Cc/Bcc/Subject/
@@ -2103,6 +2109,8 @@ export function MailClient({
   // over whichever mailbox was active at mount/subscribe time forever.
   // Read the latest closure through this ref instead, updated every render.
   reloadActiveViewRef.current = reloadActiveView;
+  accountInfoRef.current = accountInfo;
+  activeFolderRef.current = activeFolder;
 
   function selectSmartInbox() {
     haptic("tap");
@@ -3972,6 +3980,7 @@ export function MailClient({
         try {
           const data = JSON.parse(msg.data) as {
             type?: string;
+            accountId?: string;
             imported?: number;
             folderRole?: string;
           };
@@ -3979,7 +3988,15 @@ export function MailClient({
             setLiveConnected(true);
           }
           if (data.type === "mail:updated") {
-            scheduleRefresh();
+            // With IDLE running per mailbox, an update on some *other*
+            // mailbox than the one currently in view would otherwise
+            // trigger a pointless refetch of what's on screen — only
+            // refresh when it's relevant to what's actually being viewed.
+            const relevant =
+              !data.accountId ||
+              data.accountId === accountInfoRef.current?.id ||
+              activeFolderRef.current === ALL_INBOXES_ID;
+            if (relevant) scheduleRefresh();
             if (
               desktopNotifsRef.current &&
               (data.imported ?? 0) > 0 &&
