@@ -1173,3 +1173,42 @@ renders normally.
 
 [use-speech-to-text.ts](src/components/mail/use-speech-to-text.ts) —
 `fix/mail-voicebutton-hydration-mismatch`, merged to main.
+
+---
+
+## 2026-07-28 — AI draft lists attached documents
+
+Requested feature: attach files to a compose, then ask AI Draft to write
+the email (e.g. "write a mail to yogesh@sbi.co.in regarding loan") — the
+draft should actually mention and list what's attached instead of writing
+as if nothing were enclosed. `composeAttachments` in
+[mail-client.tsx](src/components/mail/mail-client.tsx) was already tracked
+client-side but never passed to the AI draft call. `draftNewMailAction`/
+`draftReplyAction` ([actions/mail.ts](src/actions/mail.ts)) and
+`draftNewMail`/`draftReply` ([ai/draft.ts](src/lib/mail/ai/draft.ts)) now
+take an optional `attachments: string[]` of filenames, fenced into
+mail_data as `attachedDocuments`. The shared prompt rule
+(`attachmentPromptRule`) tells the model: if non-empty, add an "Attached:"
+line plus a sibling `<ul>` naming each file (explicitly not nested inside
+a `<p>`, since the model's first attempt did that and it's invalid HTML);
+if empty, don't claim anything is attached.
+
+Verified: tsc, eslint, vitest (118 passed) all clean. Ran `draftNewMail`
+directly against the real Claude API (bypassing the UI, since this
+browser pane can't drive a native file-picker dialog — programmatically
+setting a `<input type="file">`'s value is blocked by the browser itself)
+with 3 attached filenames and a "loan application to yogesh@sbi.co.in"
+brief — correctly listed all three in a clean, properly-nested `<ul>`.
+Also verified live in the running dev server with no attachments (regular
+AI Draft flow through the actual UI) — correctly made no attachment claim,
+confirming the empty-list branch doesn't regress the existing behavior.
+
+Noticed in passing (unrelated, not fixed here — flagged separately): a
+fresh AI-drafted new email can end with "Best regards," twice — once from
+the model's own sign-off, once from the signature block, which itself
+opens with "Best regards,".
+
+[actions/mail.ts](src/actions/mail.ts),
+[mail-client.tsx](src/components/mail/mail-client.tsx),
+[ai/draft.ts](src/lib/mail/ai/draft.ts) —
+`feature/mail-ai-draft-attachment-list`, merged to main.
