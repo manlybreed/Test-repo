@@ -925,3 +925,76 @@ compose-from already unambiguous.
   server's side for a freshly created mailbox, but if a future mailbox
   addition hangs the same way, it's worth checking the mail server itself
   rather than assuming it's this app's connection code.
+
+---
+
+## 2026-07-28 — Multi-mailbox support, Phase 4: unified "All Inboxes" view
+
+`queryThreadsForView` now accepts `accountIds` (plural) alongside the
+existing single `accountId`. The tricky part: single-account views resolve
+one real folder id for "the Inbox" and scope everything to it (exact
+preview/unread semantics); the unified view has no single folder id to
+point at across three separate mailboxes, so it resolves each account's
+own INBOX-role folder id and scopes by `folderId: { in: [...] }` instead —
+kept the same exactness as the single-account path rather than falling
+back to a looser "any folder with this role" match, which would have let a
+more-recent Sent-folder copy of a thread win the preview over its actual
+Inbox message. `ThreadListRow` now carries `accountId` so the client can
+badge each row without an extra join. New `listAllInboxesThreadsAction`
+resolves the mailbox list from the session directly (every account the
+user owns) — never from a client-supplied id list, so there's nothing to
+verify ownership of. New `ALL_INBOXES_ID` pseudo-folder in the sidebar
+(hidden until a second mailbox exists), following the same pattern as the
+existing Smart Inbox/Outbox entries.
+
+**Two real bugs found and fixed while verifying this against all three
+mailboxes**:
+1. Replying to a thread from the unified view sent from whichever account
+   was last "active" in the sidebar, not the thread's own account — e.g.
+   opening a pmkusum@ thread from All Inboxes while akshay@ was the
+   last-switched-to account would reply *as* akshay@. Root cause:
+   `sendMailAction`/`saveDraftAction`/`uploadComposeAttachmentAction` and
+   the To/Cc/Bcc autocomplete were all wired to `accountInfo?.id` (the
+   sidebar's notion of "active"), which has no relationship to which
+   mailbox a given open thread actually belongs to once more than one
+   mailbox's threads can appear in the same list. Fixed with a derived
+   (not stored, so it can't go stale) `composeAccountId` — looks up the
+   currently open thread's own `accountId` from the already-loaded
+   `threads` list, falling back to `accountInfo` only for a brand-new,
+   non-reply compose where there's no thread to derive it from.
+2. `switchAccount()`'s same-account early-return guard didn't account for
+   being in the unified view: "All Inboxes" never touches `accountInfo`,
+   so after switching to it, clicking the account that was active
+   *beforehand* compared equal to `accountInfo.id` and silently no-opped
+   instead of switching back to a single-account view. Fixed by also
+   requiring `activeFolder !== ALL_INBOXES_ID` in that guard.
+
+**Also fixed a pre-existing display bug the new badges made obvious**: the
+primary (`ceo_env`) mailbox's `displayName` is stored as a full RFC822
+`"Name <email>"` string (built for the SMTP From header, not for UI
+display), so the sidebar switcher (shipped in Phase 3) and the new account
+badges were both rendering that whole string instead of just "Akshay".
+Added `accountShortName()` to parse out just the name part when
+`displayName` is in that shape, used consistently everywhere an account's
+short label is shown.
+
+Verified live against all three real mailboxes: All Inboxes correctly
+merges and badges threads from akshay@/accounts@/pmkusum@ (initially
+mis-verified against a thread whose *smart label* happens to also be named
+"PM KUSUM" — coincidental naming collision with the account, not a bug —
+caught and re-verified against a genuine cross-account thread instead);
+opening and replying to one of pmkusum@'s threads from within the merged
+view correctly showed "From pmkusum@thebluridge.com" and used that
+mailbox's own default signature; switching between a single account and
+All Inboxes in both directions, repeatedly, works correctly post-fix; no
+stray draft rows were left behind by the verification session. tsc,
+eslint, vitest (118 passed), null-byte scan — all clean.
+
+**Deferred to Phase 5**: non-primary mailboxes' threads in the unified
+view only refresh on manual sync or when switching to that account —
+real-time IMAP IDLE is still primary-mailbox-only, per the plan.
+
+[threads-query.ts](src/lib/mail/threads-query.ts),
+[mail.ts](src/actions/mail.ts),
+[mail-client.tsx](src/components/mail/mail-client.tsx) —
+`feature/mail-multi-account-unified-inbox`, merged to main.
