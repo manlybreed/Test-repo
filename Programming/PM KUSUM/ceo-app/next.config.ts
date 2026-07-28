@@ -22,6 +22,16 @@ const nextConfig: NextConfig = {
     serverActions: {
       bodySizeLimit: "20mb",
     },
+    // Runs middleware.ts on the Node.js runtime instead of Edge — a real,
+    // working experimental flag in Next 15.5 (confirmed at runtime: build
+    // output lists "✓ nodeMiddleware" under Experiments), just not in this
+    // version's shipped next.config types yet. Without it, Next needed an
+    // Edge-compiled bundle of instrumentation.ts too (Edge always needs a
+    // middleware bundle), and Edge fundamentally cannot have fs/crypto/
+    // net/stream under any config — that's what was actually breaking
+    // `next build`, not a missing serverExternalPackages entry.
+    // @ts-expect-error — not yet in NextConfig's experimental type in this version
+    nodeMiddleware: true,
   },
 };
 

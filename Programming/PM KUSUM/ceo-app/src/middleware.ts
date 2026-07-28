@@ -2,6 +2,16 @@ import { auth } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { isFinanceOwnerEmail } from "@/lib/access";
 
+// Node.js runtime, not the Edge default — this app's instrumentation.ts
+// bootstraps IMAP IDLE via a Node-only dependency chain (imapflow, fs,
+// crypto, net), and Next needs an Edge-compiled instrumentation bundle
+// for any Edge middleware, which fundamentally cannot include those
+// regardless of serverExternalPackages. That's what was actually
+// breaking `next build`/`npm run desktop:build`, not a missing
+// serverExternalPackages entry — this middleware doesn't need Edge's
+// low-latency characteristics anyway (a single auth check).
+export const runtime = "nodejs";
+
 export default auth((req) => {
   const isCeo = req.nextUrl.pathname.startsWith("/ceo");
   const isLogin = req.nextUrl.pathname.startsWith("/login");
