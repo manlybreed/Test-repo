@@ -1062,3 +1062,46 @@ of akshay@, accounts@, or pmkusum@ today.
 [mail-accounts.ts](src/actions/mail-accounts.ts),
 [mail-client.tsx](src/components/mail/mail-client.tsx) —
 `feature/mail-multi-account-idle-per-mailbox`, merged to main.
+
+---
+
+## 2026-07-28 — Fix: removing a mailbox left behind a zombie IDLE loop and 8+ GB of orphaned files
+
+The user removed accounts@ and pmkusum@ via the Mailboxes settings panel to
+test the remove flow, then asked for a check before re-adding them. The DB
+side was clean — `MailAccountCredential`, `MailFolder`, `MailThread`,
+`MailMessage`, etc. all correctly cascaded away (verified via a fresh
+`groupBy` query: only akshay@'s 564 threads remained). Two things weren't,
+though:
+
+1. **The removed account's IMAP IDLE loop kept running.**
+   `removeMailAccountAction` deleted the `MailAccount` row but never told
+   `idle-watcher.ts` to stop that account's loop. Since the credentials
+   are gone (cascaded with the row), every reconnect attempt would fail
+   and the loop would just retry forever on exponential backoff — quietly,
+   since IDLE errors publish through the live-bus, not console output.
+   Added `stopIdleClientFor(accountId)` (logs out any live connections,
+   marks the loop stopping, drops the per-account state entry) and wired
+   it into `removeMailAccountAction`.
+2. **Orphaned files on disk.** Raw `.eml` messages and received
+   attachments live under `storage/mail/<accountId>`, and compose-time
+   uploaded attachments under `storage/mail/outgoing/<accountId>` —
+   cascading the DB row never touches the filesystem. Confirmed the hard
+   way: accounts@ left 57MB behind, pmkusum@ left **8.3GB**.
+   `removeMailAccountAction` now removes both directories on removal.
+   Deleted the two existing orphaned directories after re-confirming via
+   a fresh DB query that neither `MailAccount` row existed anymore, and
+   after the user explicitly confirmed deleting ~8.4GB was fine.
+
+Verified live: restarted the dev server (clears any zombie IDLE state left
+over from before this fix existed), confirmed the sidebar switcher and "All
+Inboxes" entry correctly disappear with only akshay@ configured (both are
+gated on `mailAccounts.length > 1`), confirmed the Mailboxes settings panel
+shows just the primary account with a clean "+ Add mailbox" ready, and
+confirmed core mail (thread list, All Inbox, live sync) works normally in
+single-account mode. tsc, eslint, vitest (118 passed), null-byte scan — all
+clean.
+
+[idle-watcher.ts](src/lib/mail/idle-watcher.ts),
+[mail-accounts.ts](src/actions/mail-accounts.ts) —
+`fix/mail-remove-account-cleanup`, merged to main.
