@@ -6852,6 +6852,21 @@ export function MailClient({
                   from: to: has:attachment is:unread is:starred label: before:YYYY-MM-DD after:YYYY-MM-DD
                 </p>
               </div>
+              <div
+                className="mt-3 pt-3 text-[0.7rem]"
+                style={{ borderTop: "1px solid var(--border)", color: "var(--text-dim)" }}
+              >
+                <p className="mb-1 font-semibold" style={{ color: "var(--text-muted)" }}>
+                  Voice & ⌘K commands
+                </p>
+                <p>
+                  The mic button and ⌘K (top bar, every page) run all of
+                  these — say or type them naturally: “compose new email”,
+                  “search invoices from BSS”, “archive this”, “trash this”,
+                  “reply all”, “open drafts”. Works from any page, not just
+                  Mail.
+                </p>
+              </div>
             </motion.div>
           </motion.div>
         )}
