@@ -998,3 +998,67 @@ real-time IMAP IDLE is still primary-mailbox-only, per the plan.
 [mail.ts](src/actions/mail.ts),
 [mail-client.tsx](src/components/mail/mail-client.tsx) —
 `feature/mail-multi-account-unified-inbox`, merged to main.
+
+---
+
+## 2026-07-28 — Multi-mailbox support, Phase 5: IMAP IDLE per mailbox (plan complete)
+
+Last phase of the original multi-mailbox plan. `idle-watcher.ts` previously
+ran exactly one global INBOX+SENT IDLE pair, hardcoded to the primary
+account via `ensureCeoMailAccount(null)` called *inside* `watchRole()`
+itself — and `pullDelta()`'s `syncCeoMail()` call never passed an
+`accountId` either, so even a naive attempt to thread a second account
+through would have synced the wrong mailbox on every IDLE-triggered
+update. Restructured the global state from one flat `{started, stopping,
+clients}` object to a `Map<accountId, ...>`, so every function
+(`watchRole`, `runWatcherLoop`, `pullDelta`, `applyFlagUpdate`,
+`applyExpunge`) takes the account explicitly. New `ensureIdleClientFor
+(account)` starts (or no-ops if already running) one mailbox's loop —
+called both by `startMailIdleWatcher()` for every configured mailbox at
+boot, and by `addMailAccountAction` right after creating a new mailbox, so
+a freshly added mailbox goes live immediately without an app restart.
+
+**Also fixed a real inefficiency this exposed**: the client's SSE handler
+refetched whatever view was on screen on *any* `mail:updated` event,
+regardless of which mailbox it was about — harmless when only the primary
+account ever had IDLE running, but with three independent loops now, mail
+arriving on any one of them would make every open tab refetch its current
+view whether or not that was the account being looked at. Added
+`accountInfoRef`/`activeFolderRef` (the SSE subscription only connects
+once per `[configured]`, so it needs refs rather than closing over state
+directly — same pattern the codebase already uses for
+`reloadActiveViewRef`) and skip the refetch unless the event's account
+matches what's active, or the active view is the unified "All Inboxes"
+list. Desktop notifications still fire regardless of account — you want
+to know about new mail anywhere, just not have every tab thrash refreshing
+for a mailbox you're not looking at.
+
+Verified live via a full dev-server restart from a cold boot — necessary
+here specifically because the global-state shape changed (object → Map)
+and `instrumentation.ts`'s `register()` only runs once per process, so a
+hot-reloaded old state could have masked a real problem. Temporarily
+instrumented every step with console logging: confirmed all three real
+mailboxes' watchers connected, resolved their INBOX/Sent folder paths, and
+reached "watching" within seconds of boot — seed sync, IMAP connect, and
+`mail:idle` publish all succeeded independently for akshay@, accounts@,
+and pmkusum@. (One false alarm along the way: a first check via a fresh
+browser-side `EventSource` saw only `hello`/`ping`, no `mail:idle` —
+turned out the listener simply attached a few seconds *after* the events
+had already fired, and SSE has no replay for late subscribers; the
+server-log evidence settled it.) Removed the debug logging afterward,
+confirmed the app still boots clean and shows "live". tsc, eslint, vitest
+(118 passed), null-byte scan — all clean.
+
+**This closes out the multi-mailbox plan** (`witty-finding-tiger.md`):
+schema + encrypted credentials (Phase 1), action-layer account resolution
+(Phase 2), sidebar switcher + client wiring (Phase 3), unified "All
+Inboxes" view (Phase 4), per-mailbox IDLE (Phase 5). Known open items are
+tracked in the "Known gaps after Phase 3" entry above (blocked-senders UI,
+settings-panel account labels) plus the unified-view bulk-multi-select
+limitation noted in Phase 4 — none of these block normal day-to-day use
+of akshay@, accounts@, or pmkusum@ today.
+
+[idle-watcher.ts](src/lib/mail/idle-watcher.ts),
+[mail-accounts.ts](src/actions/mail-accounts.ts),
+[mail-client.tsx](src/components/mail/mail-client.tsx) —
+`feature/mail-multi-account-idle-per-mailbox`, merged to main.
