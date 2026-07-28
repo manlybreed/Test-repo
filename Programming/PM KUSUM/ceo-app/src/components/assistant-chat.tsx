@@ -4,11 +4,13 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { ConfirmationCard, type PendingAction } from "@/components/confirmation-card";
 
 type Msg = {
   role: "user" | "assistant";
   content: string;
   downloads?: { label: string; href: string }[];
+  pendingConfirmation?: PendingAction;
 };
 
 const SUGGESTIONS = [
@@ -30,6 +32,7 @@ export function AssistantChat() {
   const [threadId, setThreadId] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [confirmingIndex, setConfirmingIndex] = useState<number | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -53,12 +56,67 @@ export function AssistantChat() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Request failed");
       setThreadId(data.threadId);
-      setMessages((m) => [...m, { role: "assistant", content: data.reply, downloads: data.downloads }]);
+      setMessages((m) => [
+        ...m,
+        {
+          role: "assistant",
+          content: data.reply,
+          downloads: data.downloads,
+          pendingConfirmation: data.pendingConfirmation || undefined,
+        },
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed");
     } finally {
       setLoading(false);
     }
+  }
+
+  /** Only fires on a real click — this is the one place an irreversible
+   * tool call actually executes, via /api/ai/confirm-tool. */
+  async function handleConfirm(index: number) {
+    const action = messages[index]?.pendingConfirmation;
+    if (!action || action.resolved) return;
+    setConfirmingIndex(index);
+    setError("");
+    try {
+      const res = await fetch("/api/ai/confirm-tool", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          toolName: action.toolName,
+          toolInput: action.toolInput,
+          threadId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Confirm failed");
+      setMessages((m) => {
+        const next = [...m];
+        next[index] = {
+          ...next[index]!,
+          pendingConfirmation: { ...action, resolved: "confirmed" },
+        };
+        return [...next, { role: "assistant", content: data.reply, downloads: data.downloads }];
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to confirm");
+    } finally {
+      setConfirmingIndex(null);
+    }
+  }
+
+  function handleCancel(index: number) {
+    const action = messages[index]?.pendingConfirmation;
+    if (!action || action.resolved) return;
+    setMessages((m) => {
+      const next = [...m];
+      next[index] = {
+        ...next[index]!,
+        pendingConfirmation: { ...action, resolved: "cancelled" },
+      };
+      return next;
+    });
   }
 
   function onSubmit(e: FormEvent) {
@@ -182,6 +240,14 @@ export function AssistantChat() {
                       </a>
                     ))}
                   </div>
+                )}
+                {m.pendingConfirmation && (
+                  <ConfirmationCard
+                    action={m.pendingConfirmation}
+                    pending={confirmingIndex === i}
+                    onConfirm={() => void handleConfirm(i)}
+                    onCancel={() => handleCancel(i)}
+                  />
                 )}
               </div>
             </motion.div>
