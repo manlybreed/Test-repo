@@ -1429,3 +1429,69 @@ Phase 1 is now fully verified end-to-end, not just code-complete.
 
 [calendar/google.ts](src/lib/calendar/google.ts) —
 `fix/calendar-oauth-userinfo-scope`, merged to main.
+
+---
+
+## 2026-07-29 — Phase 2: AI assist checks availability and schedules meetings
+
+Second half of the meetings/calendar plan (`~/.claude/plans/witty-finding-tiger.md`),
+committed alongside Phase 1 up front, not an afterthought. Two new tools
+in the existing assistant registry
+([tools.ts](src/lib/ai/tools.ts)): `check_calendar_availability` (real
+open slots for the next N days) and `schedule_meeting` (creates the
+actual event, gated behind the same `assertAutonomy("calendar_invite",
+...)` every other irreversible action already requires). New
+[propose-times.ts](src/lib/calendar/propose-times.ts): a pure
+`generateCandidateSlots` function that walks a time range and returns
+only weekday/work-hour slots that don't overlap a real busy block —
+deliberately code, not model output. `draftReply` in
+[ai/draft.ts](src/lib/mail/ai/draft.ts) now also fetches these
+(best-effort) so the Mail UI's own AI-draft reply flow can ground
+scheduling suggestions in real availability too, not just the assistant
+chat. Along the way, closed a real gap: `createMeetingAction`'s
+confirmation gate previously only fired on the ICS fallback, not the real
+Google Calendar path — meant nothing when it was UI-only, but matters now
+that an AI tool can call it directly.
+
+**A live test caught a real, meaningful bug on the first attempt** (exactly
+the kind of thing this session's discipline of verifying against the real
+service, not just the code, exists to catch): the first version of
+`check_calendar_availability` returned only raw busy/free blocks and left
+the model to work out "3 open slots" itself from that data. Asked it to
+check availability and schedule a meeting — it proposed 3 plausible-looking
+slots, and scheduling one produced a REAL Google Calendar event, with a
+real Meet link, a real invite sent to akshayroyal678@gmail.com... dated a
+full year in the past (2025 instead of 2026). The token exchange/booking
+itself worked perfectly; the model had simply miscalculated the year when
+constructing the ISO datetime from scratch. Root-caused and fixed by
+having the tool return pre-computed candidate slots (via
+`getCandidateMeetingSlots`) instead of raw data — the model now has exact
+`startIso`/`endIso` strings to copy verbatim, nothing left to compute.
+Added a cheap backstop too: `createMeetingAction` now rejects any
+`startIso` already in the past, regardless of where it came from. Deleted
+the erroneous 2025-dated event (real cancellation notice sent to the
+attendee, since it was a genuine mistake, not a valid test artifact) and
+re-ran the identical conversation after the fix: `check_calendar_availability`
+correctly listed real open slots (correctly skipping the existing busy
+block from the Phase 1 test event), and scheduling one produced a real
+event — verified independently via the Google Calendar API directly, not
+just the chat UI — with the correct 2026 date, correct Meet link, and the
+attendee registered with a real pending invite.
+
+Verified: tsc, eslint, vitest (137 passed, 16 new across
+[propose-times.test.ts](src/lib/calendar/propose-times.test.ts) and
+[tools.calendar.test.ts](src/lib/ai/tools.calendar.test.ts)) all clean.
+Note: no unit test exists for `createMeetingAction`/`actions/calendar.ts`
+directly — importing any "use server" actions file pulls in NextAuth,
+which needs the Next.js server runtime and breaks under plain vitest
+(confirmed by trying; no other actions file in this codebase has a direct
+unit test either, for the same reason) — the autonomy-gate behavior is
+covered generically by the pre-existing
+[policy.test.ts](src/lib/mail/ai/policy.test.ts), and the actual
+integration was verified live instead.
+
+[actions/calendar.ts](src/actions/calendar.ts),
+[calendar/propose-times.ts](src/lib/calendar/propose-times.ts),
+[ai/tools.ts](src/lib/ai/tools.ts),
+[ai/draft.ts](src/lib/mail/ai/draft.ts) —
+`feature/calendar-ai-scheduling-tools`, merged to main.
