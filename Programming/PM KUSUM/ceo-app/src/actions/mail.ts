@@ -219,9 +219,9 @@ export async function listMailFolders(accountId?: string) {
   }));
 }
 
-export async function trashThreadAction(threadId: string) {
+export async function trashThreadAction(threadId: string, confirmed: boolean) {
   const { account } = await requireAccountForThread(threadId);
-  assertAutonomy("delete", { confirmed: true });
+  assertAutonomy("delete", { confirmed });
   if (threadId.startsWith("outbox:") || threadId.startsWith("outbox-item:")) {
     throw new Error("Use Drafts/Outbox controls for local items");
   }
@@ -297,9 +297,9 @@ export async function archiveThreadsAction(threadIds: string[]) {
   return result;
 }
 
-export async function trashThreadsAction(threadIds: string[]) {
+export async function trashThreadsAction(threadIds: string[], confirmed: boolean) {
   await requireCeo();
-  assertAutonomy("delete", { confirmed: true });
+  assertAutonomy("delete", { confirmed });
   const ids = realThreadIds(threadIds);
   if (!ids.length) return { ok: true as const, trashPath: null };
   const { account, userId } = await requireAccountForThread(ids[0]!);

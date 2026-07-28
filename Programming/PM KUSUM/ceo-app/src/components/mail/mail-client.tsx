@@ -2761,7 +2761,7 @@ export function MailClient({
     setStatus("Moving to Trash…");
     startNavTransition(async () => {
       try {
-        await trashThreadAction(id);
+        await trashThreadAction(id, true);
         setStatus("Moved to Trash");
         haptic("success");
       } catch (e) {
@@ -2822,7 +2822,7 @@ export function MailClient({
     setStatus("Moving to Trash…");
     startNavTransition(async () => {
       try {
-        await trashThreadsAction(ids);
+        await trashThreadsAction(ids, true);
         setStatus(`Moved ${ids.length} to Trash`);
         haptic("success");
       } catch (e) {
@@ -4698,7 +4698,7 @@ export function MailClient({
                       const ok = window.confirm(`Trash “${b.subject}”?`);
                       if (!ok) return;
                       startTransition(async () => {
-                        await trashThreadAction(b.threadId);
+                        await trashThreadAction(b.threadId, true);
                         setBulkSuggestions((prev) =>
                           prev.filter((x) => x.threadId !== b.threadId),
                         );

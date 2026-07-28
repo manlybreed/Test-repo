@@ -29,8 +29,10 @@ You help the CEO with:
 - Salary slips (PDF) for employees — use list_employees first
 - Tasks and Pomodoro / time tracking
 - Expense records — use list_expenses or get_expense_summary to answer expense questions
-- CEO Mail (akshay@) — use search_mail / ask_mail / digest_inbox / summarize_thread / draft_reply / propose_tasks_from_mail / recall_person. Never send mail from tools; user confirms send in Mail UI.
-- Calendar & meetings — use check_calendar_availability before proposing or discussing any time; it returns ready-made slots with an exact startIso/endIso already confirmed against real availability. When scheduling, copy that startIso/endIso verbatim into schedule_meeting — never recompute or retype a date/time yourself, even one that looks equivalent to a slot you saw. schedule_meeting creates a real Calendar event with a Meet link and sends real invites (or falls back to a downloadable .ics if Calendar isn't connected) — this is irreversible, so only call it with confirmed:true after the CEO has explicitly agreed on the specific time and attendees in this conversation; never schedule proactively on an assumption.
+- CEO Mail (akshay@) — use search_mail / ask_mail / digest_inbox / summarize_thread / draft_reply / propose_tasks_from_mail / recall_person to read and draft. archive_mail_thread / move_mail_thread_to_folder / set_mail_priority / mark_mail_important / mark_mail_read / snooze_mail_thread are reversible mail actions you can call directly once you have a threadId (get it from search_mail). trash_mail_thread / bulk_trash_mail_threads / send_mail are irreversible — calling them never executes anything by itself, the CEO sees a confirmation card with the exact details and must click Confirm; call them as soon as you have the required details, do not withhold the call to ask permission first. send_mail is for a brand-new email only, never a reply to an existing thread — resolve the recipient address via search_mail/list_clients/recall_person first, never guess one.
+- Calendar & meetings — use check_calendar_availability before proposing or discussing any time; it returns ready-made slots with an exact startIso/endIso already confirmed against real availability. When scheduling, copy that startIso/endIso verbatim into schedule_meeting — never recompute or retype a date/time yourself, even one that looks equivalent to a slot you saw. schedule_meeting creates a real Calendar event with a Meet link and sends real invites (or falls back to a downloadable .ics if Calendar isn't connected). It is irreversible, so calling it never executes it directly — the CEO always sees a confirmation card with the exact details and must click Confirm themselves before anything is actually created. Call schedule_meeting as soon as you have a specific time and attendee list; you do not need to ask "shall I confirm?" first — the card handles that.
+
+Irreversible tools (schedule_meeting, and any mail send/delete tool) never execute on your tool call alone — a confirmation card with the exact details is shown to the CEO, and only a real click by them triggers the action. Call these tools freely once you have the required details; do not withhold the call to ask permission first, and do not claim an action is done until you see its actual tool result.
 
 Rules:
 - NEVER answer questions about counts, statuses, or amounts from memory — always call the relevant list/summary tool first.
@@ -363,6 +365,109 @@ export const ceoTools: Anthropic.Tool[] = [
     },
   },
   {
+    name: "archive_mail_thread",
+    description:
+      "Archive a mail thread (resolve threadId via search_mail first). Reversible — moves it to Archive, doesn't delete anything.",
+    input_schema: {
+      type: "object",
+      properties: { threadId: { type: "string" } },
+      required: ["threadId"],
+    },
+  },
+  {
+    name: "move_mail_thread_to_folder",
+    description:
+      "Move a mail thread to a folder or label by name (e.g. 'Invoices', 'Archive', 'Inbox'). Reversible.",
+    input_schema: {
+      type: "object",
+      properties: {
+        threadId: { type: "string" },
+        folderName: { type: "string" },
+      },
+      required: ["threadId", "folderName"],
+    },
+  },
+  {
+    name: "set_mail_priority",
+    description: "Set a mail thread's priority label. Reversible.",
+    input_schema: {
+      type: "object",
+      properties: {
+        threadId: { type: "string" },
+        priority: { type: "string", enum: ["P1", "P2", "P3", "P4", "NONE"] },
+      },
+      required: ["threadId", "priority"],
+    },
+  },
+  {
+    name: "mark_mail_important",
+    description: "Star/unstar a mail thread as important. Reversible.",
+    input_schema: {
+      type: "object",
+      properties: {
+        threadId: { type: "string" },
+        important: { type: "boolean" },
+      },
+      required: ["threadId", "important"],
+    },
+  },
+  {
+    name: "mark_mail_read",
+    description: "Mark a mail thread's inbox messages as read. Reversible.",
+    input_schema: {
+      type: "object",
+      properties: { threadId: { type: "string" } },
+      required: ["threadId"],
+    },
+  },
+  {
+    name: "snooze_mail_thread",
+    description: "Snooze a mail thread until a given ISO datetime. Reversible.",
+    input_schema: {
+      type: "object",
+      properties: {
+        threadId: { type: "string" },
+        untilIso: { type: "string", description: "ISO 8601 datetime to resurface the thread" },
+      },
+      required: ["threadId", "untilIso"],
+    },
+  },
+  {
+    name: "trash_mail_thread",
+    description:
+      "Move a single mail thread to Trash. Irreversible from here — the CEO sees a confirmation card and must click Confirm before anything is actually trashed.",
+    input_schema: {
+      type: "object",
+      properties: { threadId: { type: "string" } },
+      required: ["threadId"],
+    },
+  },
+  {
+    name: "bulk_trash_mail_threads",
+    description:
+      "Move multiple mail threads to Trash at once. Irreversible from here — the CEO sees a confirmation card and must click Confirm before anything is actually trashed.",
+    input_schema: {
+      type: "object",
+      properties: { threadIds: { type: "array", items: { type: "string" } } },
+      required: ["threadIds"],
+    },
+  },
+  {
+    name: "send_mail",
+    description:
+      "Send a brand-new email from the CEO mailbox (akshay@) — not for replying to an existing thread (use draft_reply + the Mail UI for that). Resolve recipient addresses via search_mail/list_clients/recall_person first — never guess an email address. Irreversible — sending never happens from your tool call alone; the CEO sees a confirmation card with the exact recipient, subject, and body and must click Confirm before anything is actually sent.",
+    input_schema: {
+      type: "object",
+      properties: {
+        to: { type: "array", items: { type: "string" } },
+        cc: { type: "array", items: { type: "string" } },
+        subject: { type: "string" },
+        bodyHtml: { type: "string", description: "Email body as HTML" },
+      },
+      required: ["to", "subject", "bodyHtml"],
+    },
+  },
+  {
     name: "check_calendar_availability",
     description:
       "Get real, ready-to-use open meeting slots for the next N days (default 7) — each returned slot already has an exact startIso/endIso confirmed against actual Google Calendar availability, plus a human-readable label. Call this before proposing or discussing any meeting time. When presenting or scheduling a slot, copy its startIso/endIso EXACTLY as returned — never recompute, retype, or guess a date/time yourself, even one that looks equivalent; that is how a real meeting once got scheduled a year in the wrong direction.",
@@ -379,7 +484,7 @@ export const ceoTools: Anthropic.Tool[] = [
   {
     name: "schedule_meeting",
     description:
-      "Schedule a real meeting: creates a Google Calendar event with a Meet link and sends invites to attendees (falls back to a downloadable .ics if Calendar isn't connected). startIso/endIso MUST be copied verbatim from a slot check_calendar_availability already returned — never computed or retyped. Irreversible — call with confirmed:true ONLY after the CEO has explicitly agreed to this exact time and attendee list in the conversation; otherwise the call is rejected.",
+      "Propose scheduling a real meeting: creates a Google Calendar event with a Meet link and sends invites to attendees (falls back to a downloadable .ics if Calendar isn't connected). startIso/endIso MUST be copied verbatim from a slot check_calendar_availability already returned — never computed or retyped. Irreversible — calling this never schedules anything by itself; the CEO sees a confirmation card with these exact details and must click Confirm before the event is actually created.",
     input_schema: {
       type: "object",
       properties: {
@@ -388,16 +493,13 @@ export const ceoTools: Anthropic.Tool[] = [
         startIso: { type: "string", description: "ISO 8601 start datetime" },
         endIso: { type: "string", description: "ISO 8601 end datetime" },
         attendeeEmails: { type: "array", items: { type: "string" } },
-        confirmed: {
-          type: "boolean",
-          description:
-            "Must be true, and only after the CEO has explicitly confirmed this exact meeting.",
-        },
       },
-      required: ["title", "startIso", "endIso", "attendeeEmails", "confirmed"],
+      required: ["title", "startIso", "endIso", "attendeeEmails"],
     },
   },
 ];
+
+export { CONFIRMATION_REQUIRED_TOOLS, describePendingAction } from "./tool-confirmation";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function runCeoTool(name: string, input: any): Promise<string> {
@@ -670,6 +772,94 @@ export async function runCeoTool(name: string, input: any): Promise<string> {
       case "recall_person": {
         const { recallPersonAction } = await import("@/actions/mail");
         return JSON.stringify(await recallPersonAction(input.person));
+      }
+      case "archive_mail_thread": {
+        const { archiveThreadAction } = await import("@/actions/mail");
+        await archiveThreadAction(input.threadId);
+        return JSON.stringify({ ok: true });
+      }
+      case "move_mail_thread_to_folder": {
+        const { listMailFolders, moveThreadToFolderAction } = await import(
+          "@/actions/mail"
+        );
+        const folders = await listMailFolders();
+        const target = String(input.folderName || "").trim().toLowerCase();
+        const folder = folders.find(
+          (f) =>
+            f.name.toLowerCase() === target ||
+            (f.role || "").toLowerCase() === target,
+        );
+        if (!folder) {
+          return JSON.stringify({
+            ok: false,
+            error: `No folder named "${input.folderName}"`,
+          });
+        }
+        await moveThreadToFolderAction(input.threadId, folder.id);
+        return JSON.stringify({ ok: true, folder: folder.name });
+      }
+      case "set_mail_priority": {
+        const { setThreadPriority } = await import("@/actions/mail");
+        await setThreadPriority(input.threadId, input.priority);
+        return JSON.stringify({ ok: true });
+      }
+      case "mark_mail_important": {
+        const { setThreadImportant } = await import("@/actions/mail");
+        await setThreadImportant(input.threadId, Boolean(input.important));
+        return JSON.stringify({ ok: true });
+      }
+      case "mark_mail_read": {
+        const { markThreadRead } = await import("@/actions/mail");
+        await markThreadRead(input.threadId);
+        return JSON.stringify({ ok: true });
+      }
+      case "snooze_mail_thread": {
+        const { snoozeThread } = await import("@/actions/mail");
+        await snoozeThread(input.threadId, input.untilIso);
+        return JSON.stringify({ ok: true });
+      }
+      case "trash_mail_thread": {
+        const { trashThreadAction } = await import("@/actions/mail");
+        await trashThreadAction(input.threadId, Boolean(input.confirmed));
+        return JSON.stringify({ ok: true });
+      }
+      case "bulk_trash_mail_threads": {
+        const { trashThreadsAction } = await import("@/actions/mail");
+        const ids: string[] = Array.isArray(input.threadIds) ? input.threadIds : [];
+        await trashThreadsAction(ids, Boolean(input.confirmed));
+        return JSON.stringify({ ok: true, count: ids.length });
+      }
+      case "send_mail": {
+        const { sendMailAction, flushQueuedSendAction } = await import(
+          "@/actions/mail"
+        );
+        const row = await sendMailAction({
+          to: input.to || [],
+          cc: input.cc,
+          subject: input.subject,
+          bodyHtml: input.bodyHtml,
+          confirmed: Boolean(input.confirmed),
+          undoWindowSeconds: 3,
+        });
+        // No client-side undo-window timer exists for an AI-initiated send
+        // (that timer lives in mail-client.tsx's own component state) — so
+        // this dispatches the queued send immediately server-side instead
+        // of leaving it stuck QUEUED forever waiting for a timer that will
+        // never fire.
+        if (row.status !== "QUEUED") {
+          return JSON.stringify({
+            ok: false,
+            error: `Unexpected send status: ${row.status}`,
+          });
+        }
+        const flushed = await flushQueuedSendAction(row.id);
+        return JSON.stringify({
+          ok: flushed.status === "SENT",
+          status: flushed.status,
+          to: input.to,
+          subject: input.subject,
+          error: flushed.status === "FAILED" ? flushed.error : undefined,
+        });
       }
       case "check_calendar_availability": {
         const { getCalendarAvailabilityAction } = await import("@/actions/calendar");

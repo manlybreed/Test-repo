@@ -5,12 +5,13 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useRouter, usePathname } from "next/navigation";
 import { matchCommand, type CommandContext } from "@/lib/commands/registry";
 import { invokeCommand } from "@/lib/commands/use-register-commands";
+import { ConfirmationCard, type PendingAction } from "@/components/confirmation-card";
 
 type ResultState =
   | { type: "idle" }
   | { type: "thinking" }
-  | { type: "text"; content: string }
-  | { type: "action"; label: string; href?: string; content?: string }
+  | { type: "text"; content: string; downloads?: { label: string; href: string }[] }
+  | { type: "confirm"; content: string; action: PendingAction }
   | { type: "error"; message: string };
 
 const QUICK_CMDS = [
@@ -37,6 +38,7 @@ export function CommandBar({
 }) {
   const [query, setQuery] = useState("");
   const [result, setResult] = useState<ResultState>({ type: "idle" });
+  const [confirmBusy, setConfirmBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
   const pathname = usePathname();
@@ -96,25 +98,66 @@ export function CommandBar({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: trimmed }),
       });
-      const data = await res.json() as { type: string; content?: string; label?: string; href?: string; error?: string };
+      const data = await res.json() as {
+        type: string;
+        content?: string;
+        href?: string;
+        error?: string;
+        downloads?: { label: string; href: string }[];
+        pendingConfirmation?: { toolName: string; toolInput: Record<string, unknown>; summary: string };
+      };
 
       if (data.type === "navigate" && data.href) {
         onClose();
         router.push(data.href);
         return;
       }
-      if (data.type === "action") {
-        setResult({ type: "action", label: data.label || "", href: data.href, content: data.content });
+      if (data.type === "confirm" && data.pendingConfirmation) {
+        setResult({
+          type: "confirm",
+          content: data.content || "",
+          action: { ...data.pendingConfirmation },
+        });
         return;
       }
       if (data.type === "error") {
         setResult({ type: "error", message: data.error || "Something went wrong" });
         return;
       }
-      setResult({ type: "text", content: data.content || "" });
+      setResult({ type: "text", content: data.content || "", downloads: data.downloads });
     } catch {
       setResult({ type: "error", message: "Network error — is the server running?" });
     }
+  }
+
+  /** Only fires on a real click — the one place an irreversible tool call
+   * from the ⌘K bar actually executes (mirrors assistant-chat.tsx). */
+  async function handleConfirm() {
+    if (result.type !== "confirm" || result.action.resolved) return;
+    const action = result.action;
+    setConfirmBusy(true);
+    try {
+      const res = await fetch("/api/ai/confirm-tool", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toolName: action.toolName, toolInput: action.toolInput }),
+      });
+      const data = await res.json();
+      setResult({
+        type: "text",
+        content: res.ok ? data.reply : data.error || "Confirm failed",
+        downloads: data.downloads,
+      });
+    } catch {
+      setResult({ type: "error", message: "Network error — is the server running?" });
+    } finally {
+      setConfirmBusy(false);
+    }
+  }
+
+  function handleCancel() {
+    if (result.type !== "confirm") return;
+    setResult({ type: "text", content: "Cancelled." });
   }
 
   function detectNavIntent(q: string): string | null {
@@ -234,20 +277,35 @@ export function CommandBar({
                   transition={{ duration: 0.15 }}
                 >
                   {result.type === "text" && (
-                    <p style={{ color: "var(--text)", whiteSpace: "pre-wrap" }}>{result.content}</p>
-                  )}
-                  {result.type === "action" && (
-                    <div className="flex flex-col gap-3">
-                      <p style={{ color: "var(--text)" }}>{result.content}</p>
-                      {result.href && (
-                        <a
-                          href={result.href}
-                          onClick={onClose}
-                          className="btn btn-primary w-fit"
-                        >
-                          {result.label} →
-                        </a>
+                    <div>
+                      <p style={{ color: "var(--text)", whiteSpace: "pre-wrap" }}>{result.content}</p>
+                      {result.downloads && result.downloads.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {result.downloads.map((d) => (
+                            <a
+                              key={d.href}
+                              href={d.href}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="btn btn-ghost text-xs"
+                              style={{ fontSize: "0.7rem", padding: "0.3rem 0.75rem" }}
+                            >
+                              ↓ {d.label}
+                            </a>
+                          ))}
+                        </div>
                       )}
+                    </div>
+                  )}
+                  {result.type === "confirm" && (
+                    <div>
+                      <p style={{ color: "var(--text)" }}>{result.content}</p>
+                      <ConfirmationCard
+                        action={result.action}
+                        pending={confirmBusy}
+                        onConfirm={() => void handleConfirm()}
+                        onCancel={handleCancel}
+                      />
                     </div>
                   )}
                   {result.type === "error" && (

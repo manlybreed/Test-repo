@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { SYSTEM_PROMPT, ceoTools, runCeoTool } from "@/lib/ai/tools";
+import { runToolLoop } from "@/lib/ai/run-tool-loop";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -71,73 +71,15 @@ export async function POST(req: NextRequest) {
     }));
 
   let finalText = "";
-  const downloads: { label: string; href: string }[] = [];
+  let downloads: { label: string; href: string }[] = [];
+  let pendingConfirmation: Awaited<ReturnType<typeof runToolLoop>>["pendingConfirmation"] =
+    null;
 
   try {
-    let guard = 0;
-
-    while (guard < 6) {
-      guard += 1;
-      const response = await anthropic.messages.create({
-        model: "claude-sonnet-4-6",
-        max_tokens: 4096,
-        system: SYSTEM_PROMPT,
-        tools: ceoTools,
-        messages,
-      });
-
-      const toolUses = response.content.filter(
-        (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
-      );
-      const texts = response.content
-        .filter((b): b is Anthropic.TextBlock => b.type === "text")
-        .map((b) => b.text);
-
-      if (toolUses.length === 0) {
-        finalText = texts.join("\n") || "Done.";
-        break;
-      }
-
-      messages.push({ role: "assistant", content: response.content });
-
-      const toolResults: Anthropic.ToolResultBlockParam[] = [];
-      for (const tool of toolUses) {
-        const result = await runCeoTool(tool.name, tool.input);
-        try {
-          const parsed = JSON.parse(result);
-          if (parsed.download) {
-            downloads.push({
-              label:
-                parsed.number ||
-                parsed.clientName ||
-                parsed.employeeName ||
-                tool.name,
-              href: parsed.download,
-            });
-          }
-        } catch {
-          /* ignore */
-        }
-        toolResults.push({
-          type: "tool_result",
-          tool_use_id: tool.id,
-          content: result,
-        });
-      }
-
-      messages.push({ role: "user", content: toolResults });
-
-      if (response.stop_reason === "end_turn" && texts.length) {
-        finalText = texts.join("\n");
-      }
-    }
-
-    if (!finalText) {
-      finalText =
-        downloads.length > 0
-          ? "Completed. Documents are ready to download."
-          : "Completed.";
-    }
+    const result = await runToolLoop(anthropic, messages);
+    finalText = result.finalText;
+    downloads = result.downloads;
+    pendingConfirmation = result.pendingConfirmation;
   } catch (err) {
     console.error("[/api/ai/chat] Anthropic error:", err);
     const errMsg =
@@ -168,5 +110,6 @@ export async function POST(req: NextRequest) {
     threadId,
     reply: finalText,
     downloads,
+    pendingConfirmation,
   });
 }
