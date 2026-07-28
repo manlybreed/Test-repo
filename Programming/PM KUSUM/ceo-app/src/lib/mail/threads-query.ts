@@ -18,6 +18,10 @@ const PREVIEW_EXCLUDE_ROLES = ["DRAFTS", "TRASH"] as const;
 
 export type ThreadListRow = {
   id: string;
+  /** Which mailbox this thread belongs to — lets the unified "All Inboxes"
+   * view badge each row by account (client resolves this id to an address
+   * via its already-loaded mailbox list; no join needed here). */
+  accountId: string;
   subject: string;
   snippet: string | null;
   lastMessageAt: Date;
@@ -127,6 +131,7 @@ function firstAddress(raw: string | null | undefined): string | null {
 function toRow(
   t: {
     id: string;
+    accountId: string;
     subject: string;
     snippet: string | null;
     lastMessageAt: Date;
@@ -147,6 +152,7 @@ function toRow(
 
   return {
     id: t.id,
+    accountId: t.accountId,
     subject: preview?.subject || t.subject,
     snippet: preview?.snippet ?? t.snippet,
     lastMessageAt: preview?.date || t.lastMessageAt,
@@ -193,7 +199,13 @@ export async function reconcileThreadFlagLabels(accountId: string) {
  * - Global/search: preview from latest non-draft/non-trash message
  */
 export async function queryThreadsForView(opts: {
-  accountId: string;
+  /** Single-mailbox view. Exactly one of accountId / accountIds is required. */
+  accountId?: string;
+  /** Unified "All Inboxes" view — spans every listed mailbox. There's no
+   * single "the INBOX folder" once more than one account is in play, so a
+   * folderId can't be resolved the way the single-account path does;
+   * folder scoping falls back to matching folder ROLE across all of them. */
+  accountIds?: string[];
   folderId?: string;
   folderRole?: string | null;
   label?: string;
@@ -214,16 +226,38 @@ export async function queryThreadsForView(opts: {
   const q = opts.query?.trim();
   const searchPlan = opts.searchPlan ?? null;
   const smartInbox = Boolean(opts.smartInbox);
+  const unified = Boolean(opts.accountIds?.length);
+  if (!unified && !opts.accountId) {
+    throw new Error("queryThreadsForView requires accountId or accountIds");
+  }
+  const accountFilter: string | { in: string[] } = unified
+    ? { in: opts.accountIds! }
+    : opts.accountId!;
 
   let folderId = opts.folderId;
+  /** Unified-view equivalent of folderId: one real folder id per account
+   * sharing the resolved role, so preview/scoping stays exact (each
+   * thread's preview comes from *that* folder, not just "some folder with
+   * a matching role") instead of falling back to a looser role-only match. */
+  let folderIds: string[] | null = null;
   let folderRole = opts.folderRole ?? null;
 
-  if (smartInbox) {
-    const inbox = await resolveSystemFolder(opts.accountId, "INBOX");
+  if (unified) {
+    if (smartInbox) folderRole = "INBOX";
+    else if (opts.folderRole) folderRole = opts.folderRole;
+    if (folderRole) {
+      const rows = await prisma.mailFolder.findMany({
+        where: { accountId: { in: opts.accountIds! }, role: folderRole },
+        select: { id: true },
+      });
+      folderIds = rows.map((r) => r.id);
+    }
+  } else if (smartInbox) {
+    const inbox = await resolveSystemFolder(opts.accountId!, "INBOX");
     folderId = inbox?.id;
     folderRole = "INBOX";
   } else if (!folderId && opts.folderRole) {
-    const folder = await resolveSystemFolder(opts.accountId, opts.folderRole);
+    const folder = await resolveSystemFolder(opts.accountId!, opts.folderRole);
     folderId = folder?.id;
     folderRole = folder?.role || opts.folderRole;
   } else if (folderId) {
@@ -282,11 +316,17 @@ export async function queryThreadsForView(opts: {
 
   const searchAnd = q ? buildThreadSearchAnd(q, searchPlan) : [];
 
+  const folderScope = folderId
+    ? { messages: { some: { folderId } } }
+    : folderIds
+      ? { messages: { some: { folderId: { in: folderIds } } } }
+      : null;
+
   const whereClause = {
-    accountId: opts.accountId,
+    accountId: accountFilter,
     AND: [
       { OR: [{ snoozedUntil: null }, { snoozedUntil: { lt: new Date() } }] },
-      ...(folderId ? [{ messages: { some: { folderId } } }] : []),
+      ...(folderScope ? [folderScope] : []),
       ...(label ? [{ labelsJson: { contains: label } }] : []),
       ...excludeSmartInbox,
       ...smartInboxBulkGuard,
@@ -313,6 +353,7 @@ export async function queryThreadsForView(opts: {
       take: q ? Math.min(take * 4, 320) : take,
       select: {
         id: true,
+        accountId: true,
         subject: true,
         snippet: true,
         lastMessageAt: true,
@@ -332,10 +373,12 @@ export async function queryThreadsForView(opts: {
 
   const previewWhere = folderId
     ? { threadId: { in: ids }, folderId }
-    : {
-        threadId: { in: ids },
-        folder: { role: { notIn: [...PREVIEW_EXCLUDE_ROLES] } },
-      };
+    : folderIds
+      ? { threadId: { in: ids }, folderId: { in: folderIds } }
+      : {
+          threadId: { in: ids },
+          folder: { role: { notIn: [...PREVIEW_EXCLUDE_ROLES] } },
+        };
 
   const previewCandidates = await prisma.mailMessage.findMany({
     where: previewWhere,
@@ -361,7 +404,7 @@ export async function queryThreadsForView(opts: {
   const mapped = threads
     .map((t) => {
       const p = byThread.get(t.id) || null;
-      if (folderId && !p) return null;
+      if ((folderId || folderIds) && !p) return null;
       return toRow(t, p, folderRole);
     })
     .filter((r): r is ThreadListRow => Boolean(r));
