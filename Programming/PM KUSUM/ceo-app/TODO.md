@@ -1734,3 +1734,70 @@ work.
 [tools.ts](src/lib/ai/tools.ts),
 [actions/mail.ts](src/actions/mail.ts) —
 `feature/mail-mutation-tools-and-confirmation-ui`, merged to main.
+
+---
+
+## 2026-07-29 — Phase 3: client_action tool for cross-page voice/text control
+
+Third phase of the voice/command plan
+(`~/.claude/plans/witty-finding-tiger.md`): a new `client_action` virtual
+tool in [run-tool-loop.ts](src/lib/ai/run-tool-loop.ts) lets the LLM (Tier
+2) trigger any command already registered with the shared client-side
+registry ([registry.ts](src/lib/commands/registry.ts)) — the fallback for
+whatever Tier 1's fuzzy matcher (`command-score`) missed on an odd
+phrasing. Loop-terminal, same reasoning as the confirmation gate: the
+model's turn is discarded, and `{commandId, args}` goes back to the
+browser, which resolves it through the exact same `invokeCommand` handler
+map Tier 1 already uses.
+
+The tool schema is built dynamically per request — `command-bar.tsx` sends
+whatever commands are actually registered right now (`listCommands(ctx)`)
+alongside the query, and `/api/command` turns that into a `client_action`
+tool with `commandId` constrained to a real string enum, so the model can
+never invent one. `runToolLoop` gained a new `extraTools` option to carry
+this request-specific tool alongside the fixed `ceoTools` array.
+
+Registered the first non-mail commands to prove registry coverage
+genuinely extends across the whole app, not just Mail:
+`nav.collapse-sidebar` / `nav.expand-sidebar` in
+[ceo-shell.tsx](src/components/ceo-shell.tsx) (which wraps every page) —
+deliberately two separate commands rather than one blind toggle, each
+checking current state first, so saying "collapse" while already
+collapsed is a no-op instead of a confusing re-expand.
+
+**Investigated and deliberately skipped** one plan sub-bullet: "fold in
+the two unrelated local keydown listeners." The two non-mail keydown
+listeners in the codebase
+([plant-registry-panel.tsx](src/components/plant-registry-panel.tsx),
+[checklist-template-editor.tsx](src/components/checklist-template-editor.tsx))
+turned out to both be plain Escape-to-close handlers for modal/panel UI —
+the same pattern `command-bar.tsx`'s own Escape handler already uses, not
+duplicate "commands" competing with the registry. Converting them into
+registry entries would add complexity (voice/⌘K plausibly saying
+"escape"?) with no real user-facing benefit, so left as-is rather than
+forcing a low-value refactor to match the plan's original wording written
+before this specific detail had been inspected.
+
+Verified live on `/ceo/invoices` (a non-mail page, proving cross-page
+coverage): the exact registered phrase "collapse the sidebar" resolved via
+Tier 1 with zero network calls (confirmed via the network panel); a
+paraphrase nowhere near any registered phrase ("the nav panel is too
+narrow, widen it back up") correctly fell through to Tier 2 — confirmed
+via the network panel that `/api/command` returned
+`{type:"client_action", commandId:"nav.expand-sidebar"}`, and the sidebar
+visibly re-expanded.
+
+Verified: tsc, eslint, vitest (190 passed across 37 suites, no
+regressions) all clean. Every touched file scanned with `grep -a` (not
+`-I`) before merging, per the discipline established after the Phase 1
+null-byte incident.
+
+Phase 4 (voice availability messaging for Safari/Firefox; the macOS
+desktop wrapper's missing `NSMicrophoneUsageDescription`; expanding the
+shortcut-help modal) is still ahead.
+
+[run-tool-loop.ts](src/lib/ai/run-tool-loop.ts),
+[api/command/route.ts](src/app/api/command/route.ts),
+[command-bar.tsx](src/components/command-bar.tsx),
+[ceo-shell.tsx](src/components/ceo-shell.tsx) —
+`feature/client-action-dispatch-and-page-primitives`, merged to main.
