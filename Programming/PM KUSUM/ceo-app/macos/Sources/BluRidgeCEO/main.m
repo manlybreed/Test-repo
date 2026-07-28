@@ -223,7 +223,7 @@
 }
 @end
 
-@interface AppDelegate : NSObject <NSApplicationDelegate, WKNavigationDelegate>
+@interface AppDelegate : NSObject <NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate>
 @end
 
 @implementation AppDelegate {
@@ -337,6 +337,7 @@
     _webView.allowsBackForwardNavigationGestures = YES;
     _webView.allowsMagnification = YES;
     _webView.navigationDelegate = self;
+    _webView.UIDelegate = self;
     if (@available(macOS 12.0, *)) {
       _webView.underPageBackgroundColor =
           [NSColor colorWithRed:0.06 green:0.07 blue:0.10 alpha:1];
@@ -366,6 +367,20 @@
   _status.hidden = NO;
   _status.stringValue = [NSString
       stringWithFormat:@"Page error.\n%@", error.localizedDescription ?: @"Unknown error"];
+}
+
+// Without this, WKWebView silently denies every getUserMedia() call —
+// no system mic prompt, no error the page can see, voice just never
+// works in the packaged .app. The webView only ever loads our own
+// embedded local server (never third-party content), so granting
+// unconditionally is safe here — this isn't a general-purpose browser.
+- (void)webView:(WKWebView *)webView
+    requestMediaCapturePermissionForOrigin:(WKSecurityOrigin *)origin
+                          initiatedByFrame:(WKFrameInfo *)frame
+                                      type:(WKMediaCaptureType)type
+                           decisionHandler:(void (^)(WKPermissionDecision decision))decisionHandler
+    API_AVAILABLE(macos(12.0)) {
+  decisionHandler(WKPermissionDecisionGrant);
 }
 
 - (void)applicationWillTerminate:(NSNotification *)n {

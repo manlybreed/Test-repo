@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { motion } from "framer-motion";
-import { Mic, Square } from "lucide-react";
+import { Mic, MicOff, Square } from "lucide-react";
 
 import { haptic } from "@/components/mail/haptics";
 import { useSpeechToText } from "@/components/voice/use-speech-to-text";
@@ -28,14 +28,34 @@ export function VoiceButton({
   disabled?: boolean;
 }) {
   const { supported, listening, error, toggle } = useSpeechToText(onText);
+  const dim = size === "lg" ? "h-9 w-9" : "h-8 w-8";
 
   useEffect(() => {
     if (error) haptic("warn");
   }, [error]);
 
-  if (!supported) return null;
+  // Web Speech API is Chrome/Edge-only — unfixable from here, so this
+  // stays a visible, clearly-labeled disabled state (real tooltip on
+  // hover) rather than the mic silently vanishing with no explanation.
+  if (!supported) {
+    return (
+      <button
+        type="button"
+        title="Voice commands need Chrome or Edge — not supported in this browser"
+        aria-label="Voice commands unavailable in this browser"
+        disabled
+        className={`flex ${dim} shrink-0 cursor-not-allowed items-center justify-center rounded-full opacity-40`}
+        style={{
+          background: "var(--bg-elevated)",
+          color: "var(--text-dim)",
+          border: "1px solid var(--border-strong)",
+        }}
+      >
+        <MicOff size={14} />
+      </button>
+    );
+  }
 
-  const dim = size === "lg" ? "h-9 w-9" : "h-8 w-8";
   const title = listening ? "Stop voice command" : "Voice command";
 
   return (
