@@ -1282,6 +1282,8 @@ export async function draftReplyAction(input: {
   threadId: string;
   intent?: string;
   tone?: string;
+  /** Filenames already attached to this compose, so the draft can list them. */
+  attachments?: string[];
 }) {
   const { account } = await requireAccountForThread(input.threadId);
   return draftReply({
@@ -1289,6 +1291,7 @@ export async function draftReplyAction(input: {
     threadId: input.threadId,
     intent: input.intent,
     tone: input.tone || DEFAULT_DRAFT_TONE,
+    attachments: input.attachments,
   });
 }
 
@@ -1304,6 +1307,8 @@ export async function draftNewMailAction(input: {
    * through as a fallback for the greeting. */
   recipientNameHint?: string;
   accountId?: string;
+  /** Filenames already attached to this compose, so the draft can list them. */
+  attachments?: string[];
 }) {
   const { account } = await requireAccount(input.accountId);
   return draftNewMail({
@@ -1313,6 +1318,7 @@ export async function draftNewMailAction(input: {
     subject: input.subject,
     tone: input.tone || DEFAULT_DRAFT_TONE,
     recipientNameHint: input.recipientNameHint,
+    attachments: input.attachments,
   });
 }
 

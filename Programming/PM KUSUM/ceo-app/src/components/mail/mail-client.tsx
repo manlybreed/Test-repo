@@ -2950,6 +2950,7 @@ export function MailClient({
             threadId: selectedId,
             intent: (overrideBrief ?? composeBrief).trim() || undefined,
             tone: DEFAULT_DRAFT_TONE,
+            attachments: composeAttachments.map((a) => a.filename),
           });
           if (d?.html) {
             setComposeHtml(d.html);
@@ -3003,6 +3004,7 @@ export function MailClient({
           tone: DEFAULT_DRAFT_TONE,
           recipientNameHint,
           accountId: accountInfo?.id,
+          attachments: composeAttachments.map((a) => a.filename),
         });
         if (d?.html) {
           setComposeHtml(d.html);
