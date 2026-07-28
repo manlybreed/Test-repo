@@ -1395,3 +1395,37 @@ extending `draftReply`. See the plan file for full design.
 [calendar-panel.tsx](src/components/mail/calendar-panel.tsx),
 [schedule-meeting-panel.tsx](src/components/mail/schedule-meeting-panel.tsx) —
 `feature/calendar-google-connect-and-schedule`, merged to main.
+
+---
+
+## 2026-07-28 — Fix Calendar OAuth: missing userinfo.email scope; full live verification
+
+The user supplied a real Google Cloud OAuth Client ID/Secret and completed
+the consent flow, surfacing a real bug on the first attempt: the callback
+got a valid code back from Google and exchanged it for tokens
+successfully, but the follow-up call to learn which account had connected
+(`oauth2.userinfo.get()`) failed with "Request is missing required
+authentication credential." Root cause: `SCOPES` in
+[calendar/google.ts](src/lib/calendar/google.ts) only requested
+`calendar.events`/`calendar.freebusy` — never the profile/email scope
+that endpoint needs. Fixed by adding
+`https://www.googleapis.com/auth/userinfo.email`.
+
+After the user reconnected, verified the entire Phase 1 flow end-to-end
+against the real Google API (not mocked, not just the UI):
+- Calendar settings correctly shows "Connected as akshay@thebluridge.com".
+- Scheduled a real meeting ("BluRidge Calendar Integration Test") from an
+  open thread with akshayroyal678@gmail.com as attendee — UI showed a
+  real `meet.google.com` link and "invites sent."
+- Independently confirmed server-side, querying the real Google Calendar
+  API directly rather than trusting the UI: the event genuinely exists,
+  with the correct title/start/end, `hangoutLink` matching the UI's Meet
+  link, `htmlLink` matching "View on Google Calendar", `status:
+  "confirmed"`, and akshayroyal678@gmail.com listed as an attendee with
+  `responseStatus: "needsAction"` — confirming Google actually issued the
+  invite to that address.
+
+Phase 1 is now fully verified end-to-end, not just code-complete.
+
+[calendar/google.ts](src/lib/calendar/google.ts) —
+`fix/calendar-oauth-userinfo-scope`, merged to main.
