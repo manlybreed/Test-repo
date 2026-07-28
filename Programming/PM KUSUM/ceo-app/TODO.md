@@ -1324,3 +1324,74 @@ eslint, vitest (121 passed, 3 new) all clean.
 [contacts.test.ts](src/lib/mail/contacts.test.ts),
 [ai/draft.ts](src/lib/mail/ai/draft.ts) —
 `feature/mail-smart-contact-names`, merged to main.
+
+---
+
+## 2026-07-28 — Phase 1: connect Google Calendar + real "Schedule meeting"
+
+Requested: create meeting links/appointments, connect to a calendar,
+create real Google Meet meetings — akshay@thebluridge.com has real Google
+Calendar/Meet/Drive access. Planned via `/plan` (industry-standard
+research: Google's own `conferenceData.createRequest` pattern for
+Meet-linked events, OAuth scope tradeoffs, the standalone Meet API,
+2026 scheduling-tool market direction) into
+`~/.claude/plans/witty-finding-tiger.md` — a 2-phase plan, both phases
+committed up front, not "phase 1 then maybe more."
+
+This is Phase 1: a brand-new OAuth integration. The mailbox's own IMAP/
+SMTP mail lives on a self-hosted mailserver
+([ceo-config.ts](src/lib/mail/ceo-config.ts)) — completely separate from
+this, which is real OAuth to a Google account for Calendar/Meet only.
+Added `GoogleCalendarConnection` (1:1 with `MailAccount`, mirrors
+`MailAccountCredential`'s shape/cascade; refresh token encrypted via the
+existing `credential-crypto.ts` AES-256-GCM helper, no new secret).
+[google.ts](src/lib/calendar/google.ts) builds the OAuth client/consent
+URL and `createMeetingEvent` (`calendar.events.insert` with a
+`conferenceData.createRequest` block — Google's documented pattern for a
+Meet link), plus `getFreeBusy` staged for Phase 2. New OAuth redirect
+routes (`/api/calendar/google/authorize`, `.../callback` — a real
+browser-navigable flow, not a server action, since OAuth needs one).
+`createMeetingAction` in
+[actions/calendar.ts](src/actions/calendar.ts) creates a real event when
+connected, otherwise falls back to the pre-existing `buildIcsInvite` path
+unchanged — an unconnected mailbox loses nothing. New Calendar settings
+panel (mirrors `mailboxes-panel.tsx`) and a real inline Schedule-meeting
+form (title/date/time/duration/attendees) replacing the old
+`window.prompt` + hardcoded-next-day-10am flow; removed the now-dead
+`buildMeetingInviteAction` wrapper.
+
+Verified: tsc, eslint, vitest (128 passed, 7 new in
+[google.test.ts](src/lib/calendar/google.test.ts) covering the
+request-body shape and OAuth URL construction as pure functions) all
+clean. Live in the running dev server: Calendar settings correctly shows
+"not connected" with a disabled Connect button and the missing-env-var
+warning (`GOOGLE_CALENDAR_CLIENT_ID`/`SECRET` aren't set yet); Schedule
+-meeting on a real thread with `akshayroyal678@gmail.com` as attendee
+correctly fell back to the exact pre-existing ICS-download behavior with
+no server errors — confirms the regression-free fallback path.
+
+**Not yet verified — blocked on the user, not on code:** the real
+Google-connect-and-create-a-meeting path. This needs a Google Cloud
+Console OAuth 2.0 Client ID/Secret (Calendar API enabled, redirect URI
+`<app-url>/api/calendar/google/callback`), which only the user can create
+(their own Google login), plus their own one-time consent-screen click —
+same boundary as never typing mailbox passwords. Once supplied as
+`GOOGLE_CALENDAR_CLIENT_ID`/`GOOGLE_CALENDAR_CLIENT_SECRET` in
+`.env.local`, remaining verification is: connect from Calendar settings,
+schedule a real meeting, confirm the event + Meet link exist on the
+actual Google Calendar, and confirm `akshayroyal678@gmail.com` receives
+Google's own invite email.
+
+**Phase 2 (committed, not yet started):** give the AI assist itself the
+capability to check calendar availability and schedule meetings — two new
+tools (`check_calendar_availability`, `schedule_meeting`) in the existing
+assistant tool registry
+([tools.ts](src/lib/ai/tools.ts)), plus thread-embedded time proposals
+extending `draftReply`. See the plan file for full design.
+
+[prisma/schema.prisma](prisma/schema.prisma),
+[calendar/google.ts](src/lib/calendar/google.ts),
+[actions/calendar.ts](src/actions/calendar.ts),
+[calendar-panel.tsx](src/components/mail/calendar-panel.tsx),
+[schedule-meeting-panel.tsx](src/components/mail/schedule-meeting-panel.tsx) —
+`feature/calendar-google-connect-and-schedule`, merged to main.
