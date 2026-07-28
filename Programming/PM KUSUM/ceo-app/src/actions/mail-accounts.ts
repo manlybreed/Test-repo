@@ -13,7 +13,7 @@ import {
 } from "@/lib/mail/account";
 import { encryptSecret } from "@/lib/mail/credential-crypto";
 import { syncCeoMail } from "@/lib/mail/sync";
-import { ensureIdleClientFor } from "@/lib/mail/idle-watcher";
+import { ensureIdleClientFor, stopIdleClientFor } from "@/lib/mail/idle-watcher";
 
 function revalidateMail() {
   revalidatePath("/ceo/mail");
@@ -230,6 +230,26 @@ export async function removeMailAccountAction(accountId: string): Promise<{ ok: 
   }
 
   await prisma.mailAccount.delete({ where: { id: account.id } });
+
+  // Otherwise this mailbox's IDLE loop would keep retrying forever with a
+  // now-deleted account id and no credentials (cascaded away with it).
+  stopIdleClientFor(account.id);
+
+  // Cascading the DB row doesn't touch the filesystem — raw .eml messages,
+  // received attachments, and any compose-time uploaded attachments all
+  // live under storage/mail/<accountId>, orphaned otherwise (confirmed
+  // this the hard way: a previously removed mailbox left 8+ GB behind).
+  const { default: path } = await import("path");
+  const { promises: fs } = await import("fs");
+  const storageRoot = process.env.STORAGE_ROOT || "./storage";
+  await Promise.all([
+    fs.rm(path.join(storageRoot, "mail", account.id), { recursive: true, force: true }),
+    fs.rm(path.join(storageRoot, "mail", "outgoing", account.id), {
+      recursive: true,
+      force: true,
+    }),
+  ]).catch(() => undefined);
+
   revalidateMail();
   return { ok: true };
 }

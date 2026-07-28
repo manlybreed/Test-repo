@@ -311,6 +311,26 @@ export function ensureIdleClientFor(account: AccountRef): void {
   void runWatcherLoop(account);
 }
 
+/**
+ * Stop one mailbox's IDLE loop and log out its live connections — called
+ * when a mailbox is removed. Without this, the loop would keep retrying
+ * forever with a now-deleted account id (its credentials are gone too,
+ * cascaded away with the MailAccount row), failing to connect on every
+ * backoff cycle indefinitely instead of just stopping.
+ */
+export function stopIdleClientFor(accountId: string): void {
+  const states = idleStates();
+  const state = states.get(accountId);
+  if (!state) return;
+  state.stopping = true;
+  for (const c of state.clients) {
+    void c.logout().catch(() => undefined);
+  }
+  state.clients = [];
+  state.started = false;
+  states.delete(accountId);
+}
+
 /** Start IMAP IDLE watchers for every configured mailbox, once per process (Next instrumentation). */
 export async function startMailIdleWatcher(): Promise<void> {
   if (process.env.CEO_MAIL_IDLE === "0") return;
