@@ -64,7 +64,15 @@ export function useSpeechToText(onResult: (text: string) => void) {
   const onResultRef = useRef(onResult);
   onResultRef.current = onResult;
 
-  const supported = isSpeechToTextSupported();
+  // Start false (matches the server, which has no `window`) and only flip
+  // to the real value after mount — computing this inline instead would
+  // give the client's first (hydration) render a different value than SSR
+  // did in browsers that do support it, shifting every sibling after this
+  // button and causing a hydration mismatch there instead of here.
+  const [supported, setSupported] = useState(false);
+  useEffect(() => {
+    setSupported(isSpeechToTextSupported());
+  }, []);
 
   const start = useCallback(() => {
     if (!supported || recognitionRef.current) return;
