@@ -13,6 +13,11 @@ import { encryptSecret, decryptSecret } from "@/lib/mail/credential-crypto";
 const SCOPES = [
   "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/calendar.freebusy",
+  // Needed for exchangeCodeForTokens' oauth2.userinfo.get() call below —
+  // without it the granted token has no permission to read the connected
+  // account's own email, and that call fails with "missing required
+  // authentication credential" despite the token exchange itself succeeding.
+  "https://www.googleapis.com/auth/userinfo.email",
 ];
 
 export function googleCalendarConfigured(): boolean {
