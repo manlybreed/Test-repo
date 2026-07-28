@@ -125,10 +125,18 @@ export function CommandBar({
     }
     if (/\b(project|projects|plant|kusum)\b/.test(lower) && /\b(go|open|show|list|view|nav|add)\b/.test(lower))
       return "/ceo/projects";
+    if (/\b(financing|finance|funding)\b/.test(lower) && /\b(go|open|show|list|view|nav)\b/.test(lower))
+      return "/ceo/financing";
     if (/\b(invoice|invoices)\b/.test(lower) && /\b(go|open|show|list|view|nav)\b/.test(lower))
       return "/ceo/invoices";
-    if (/\b(payroll|salary|employee)\b/.test(lower) && /\b(go|open|show|list|view|nav)\b/.test(lower))
+    if (/\b(ledger|ledgers)\b/.test(lower) && /\b(go|open|show|list|view|nav)\b/.test(lower))
+      return "/ceo/ledgers";
+    if (/\b(payroll|salary)\b/.test(lower) && /\b(go|open|show|list|view|nav)\b/.test(lower))
       return "/ceo/payroll";
+    if (/\b(employee|employees|staff)\b/.test(lower) && /\b(go|open|show|list|view|nav)\b/.test(lower))
+      return "/ceo/employees";
+    if (/\b(client|clients|buyer|buyers)\b/.test(lower) && /\b(go|open|show|list|view|nav)\b/.test(lower))
+      return "/ceo/clients";
     if (/\b(time|timer|pomodoro|tasks?)\b/.test(lower) && /\b(go|open|show|list|view|nav)\b/.test(lower))
       return "/ceo/time";
     if (/\b(assistant|chat|ai)\b/.test(lower) && /\b(go|open|show|nav)\b/.test(lower))

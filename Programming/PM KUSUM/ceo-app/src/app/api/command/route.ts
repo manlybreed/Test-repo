@@ -25,10 +25,14 @@ Navigation URLs:
 - /ceo — overview dashboard
 - /ceo/assistant — AI chat (has full database access, use for all data questions)
 - /ceo/mail — email inbox, compose, calendar/meeting scheduling
+- /ceo/clients — clients / buyers
 - /ceo/projects — PM KUSUM plants / disclosure forms
+- /ceo/financing — PM KUSUM financing
 - /ceo/agreements — agreements
 - /ceo/invoices — invoices
+- /ceo/ledgers — ledgers
 - /ceo/payroll — payroll & salary slips
+- /ceo/employees — employee directory
 - /ceo/time — time tracker & Pomodoro
 - /ceo/expenses — expense manager
 
