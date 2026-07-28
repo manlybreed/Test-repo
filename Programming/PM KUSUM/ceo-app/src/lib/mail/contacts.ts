@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { claudeJson, getAnthropic } from "@/lib/mail/ai/claude";
 
 /**
  * Phase R2 — people/contact index.
@@ -21,6 +22,63 @@ function parseJsonArray(raw: string | null | undefined): string[] {
 function normAddress(address: string | null | undefined): string | null {
   const a = (address || "").trim().toLowerCase();
   return a && a.includes("@") ? a : null;
+}
+
+/**
+ * Some senders' mail clients set their own From-header display name to
+ * their own address ("himanshu@thebluridge.com" <himanshu@thebluridge.com>)
+ * — real data, but it carries no identity beyond the address, so it
+ * shouldn't count as a "known name" anywhere a real name is expected (e.g.
+ * an AI draft's greeting). Exported so callers resolving "who is this" can
+ * apply the same guard instead of trusting displayName blindly.
+ */
+export function isRealName(
+  name: string | null | undefined,
+  address: string,
+): boolean {
+  const n = name?.trim().toLowerCase();
+  return Boolean(n) && n !== address.trim().toLowerCase();
+}
+
+// Local-parts that identify a role/mailbox, not a person — a match here
+// means "no name", not a fabricated one (e.g. accounts@thebluridge.com is
+// one of this account's own configured mailboxes, not a person named
+// "Accounts").
+const ROLE_LOCAL_PARTS = new Set([
+  "info", "noreply", "no-reply", "donotreply", "do-not-reply", "support",
+  "admin", "administrator", "accounts", "account", "sales", "contact",
+  "billing", "hello", "hi", "team", "help", "office", "mail", "postmaster",
+  "webmaster", "hostmaster", "marketing", "newsletter", "notifications",
+  "notification", "alert", "alerts", "bot", "system", "security", "hr",
+  "careers", "jobs", "press", "media", "feedback", "service", "services",
+  "enquiry", "enquiries", "inquiry", "inquiries", "general", "reply",
+  "mailer", "daemon", "root", "test", "subscriptions", "subscribe",
+  "unsubscribe", "orders", "order", "shipping", "returns", "legal",
+  "privacy", "abuse", "postbox", "inbox", "list", "lists", "digest",
+]);
+
+/**
+ * Deterministic fallback for "what's this person's name" when no display
+ * name was ever observed in a header: derive a plausible one straight from
+ * the local-part of the address (himanshu@… -> "Himanshu", john.doe@… ->
+ * "John Doe"). Returns null rather than guessing when the local-part looks
+ * like a role/shared mailbox or has no letters at all — a missing name
+ * fallback beats a confidently-wrong one. Pure and exported for testing.
+ */
+export function nameFromLocalPart(address: string): string | null {
+  const at = address.indexOf("@");
+  const local = (at >= 0 ? address.slice(0, at) : address).trim().toLowerCase();
+  if (!local || ROLE_LOCAL_PARTS.has(local)) return null;
+
+  const tokens = local
+    .split(/[^a-z]+/)
+    .filter((t) => t.length >= 2 && !ROLE_LOCAL_PARTS.has(t));
+  if (!tokens.length) return null;
+
+  return tokens
+    .slice(0, 3)
+    .map((t) => t[0]!.toUpperCase() + t.slice(1))
+    .join(" ");
 }
 
 export type ContactRow = {
@@ -247,12 +305,107 @@ export async function findContacts(
 
   return rankContacts(rows, needles, limit).map((r) => ({
     address: r.address,
-    displayName: r.displayName,
+    // A stored displayName that's just the address restated (see
+    // isRealName) carries no identity — fall back to a name guessed from
+    // the local-part instead of handing every caller the bare address.
+    displayName: isRealName(r.displayName, r.address)
+      ? r.displayName
+      : nameFromLocalPart(r.address),
     names: parseJsonArray(r.namesJson),
     messageCount: r.messageCount,
     lastMessageAt: r.lastMessageAt,
     sampleSubjects: parseJsonArray(r.sampleSubjectsJson),
   }));
+}
+
+/**
+ * Last-resort name discovery for when a contact has neither a real header-
+ * observed display name nor a confident emailid-derived guess (e.g. a role-
+ * looking local-part): read an actual message involving this address —
+ * their own sign-off if they've sent mail, otherwise how someone else
+ * greeted them — and ask Claude to pull out a name, only if one is
+ * genuinely stated in the text. Persists a hit onto MailContact so this
+ * (comparatively expensive) lookup only ever runs once per address; a
+ * future real header name still overwrites it via bumpContact's normal
+ * upsert, same as any other display-name update.
+ */
+export async function discoverContactName(
+  accountId: string,
+  address: string,
+): Promise<string | null> {
+  const addr = normAddress(address);
+  if (!addr) return null;
+
+  const existing = await prisma.mailContact.findUnique({
+    where: { accountId_address: { accountId, address: addr } },
+  });
+  if (isRealName(existing?.displayName, addr)) return existing!.displayName!;
+  if (!getAnthropic()) return null;
+
+  const sent = await prisma.mailMessage.findFirst({
+    where: { accountId, fromAddress: addr, bodyText: { not: null } },
+    orderBy: { date: "desc" },
+    select: { bodyText: true },
+  });
+  const received = sent
+    ? null
+    : await prisma.mailMessage.findFirst({
+        where: {
+          accountId,
+          toAddresses: { contains: addr, mode: "insensitive" },
+          bodyText: { not: null },
+        },
+        orderBy: { date: "desc" },
+        select: { bodyText: true },
+      });
+
+  const body = sent?.bodyText || received?.bodyText;
+  if (!body) return null;
+
+  // Sign-offs live at the tail, greetings at the head — grab both ends
+  // rather than guessing which applies to this message.
+  const snippet = `${body.slice(0, 400)}\n...\n${body.slice(-400)}`;
+
+  const raw = await claudeJson<{ name: string | null }>({
+    model: "haiku",
+    system: `This is an excerpt (start and end) of a real email ${sent ? "sent by" : "sent to"} ${addr}. Return JSON {name}.
+- If ${
+      sent
+        ? `the sender signs off with their own name (e.g. a closing line like "Regards, X")`
+        : `the greeting names this specific recipient (e.g. "Dear X,")`
+    }, return that name, stripped of honorifics (ji, sir, madam, Mr., Mrs., Dr., etc.).
+- Never guess a name from the email address itself — only from text that actually names the person.
+- Return null if no such name is clearly present.`,
+    user: snippet,
+    maxTokens: 60,
+  });
+
+  const name = raw?.name?.trim() || null;
+  if (!name || !isRealName(name, addr)) return null;
+
+  // Persist regardless of whether a row already existed — a brand-new
+  // recipient (never before a sender or an upserted "to") has no
+  // MailContact row yet at all, and skipping creation here would silently
+  // re-run this same AI lookup on every future draft to them.
+  if (existing) {
+    await prisma.mailContact
+      .update({ where: { id: existing.id }, data: { displayName: name } })
+      .catch(() => undefined);
+  } else {
+    await prisma.mailContact
+      .create({
+        data: {
+          accountId,
+          address: addr,
+          displayName: name,
+          namesJson: JSON.stringify([name]),
+          messageCount: sent ? 1 : 0,
+        },
+      })
+      .catch(() => undefined);
+  }
+
+  return name;
 }
 
 /** Resolve a free-text person reference to the single best address, if any. */
