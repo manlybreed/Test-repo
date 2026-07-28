@@ -1623,3 +1623,114 @@ keyword split. tsc/eslint clean, full vitest suite (162 tests) unaffected
 [command-bar.tsx](src/components/command-bar.tsx),
 [api/command/route.ts](src/app/api/command/route.ts) —
 `fix/command-bar-missing-nav-routes`, merged to main.
+
+---
+
+## 2026-07-29 — Phase 2: confirmation-card gate + mail-mutation tools for AI/voice
+
+Second phase of the voice/command plan (`~/.claude/plans/witty-finding-tiger.md`):
+closes the gap Phase 1 explicitly deferred — mail send/delete and any
+other irreversible action still had no real confirmation gate, only the
+model's own self-reported `confirmed:true`. This phase makes a real
+human click the only thing that ever executes one.
+
+**The mechanism**: `CONFIRMATION_REQUIRED_TOOLS` in new
+[tool-confirmation.ts](src/lib/ai/tool-confirmation.ts) names every
+irreversible tool (`schedule_meeting`, `trash_mail_thread`,
+`bulk_trash_mail_threads`, `send_mail`). The shared tool-loop — extracted
+into new [run-tool-loop.ts](src/lib/ai/run-tool-loop.ts) out of
+`api/ai/chat/route.ts` — pauses the instant the model calls one of these,
+discards that turn, and returns a `pendingConfirmation` (tool name, input,
+and a human-readable summary from `describePendingAction`) instead of
+executing anything. A new
+[ConfirmationCard](src/components/confirmation-card.tsx) component renders
+that inline (Confirm/Cancel, not a blocking modal) in both
+[assistant-chat.tsx](src/components/assistant-chat.tsx) and the ⌘K result
+panel. Only a real click on Confirm calls the new
+[POST /api/ai/confirm-tool](src/app/api/ai/confirm-tool/route.ts), which
+sets `confirmed: true` itself — the client only echoes back which pending
+action it's confirming, never asserts that it was confirmed. Cancel is
+pure client-side state, no server call at all.
+
+**A real, independently-confirmed pre-existing bug got fixed along the
+way**: `trashThreadAction`/`trashThreadsAction` in
+[actions/mail.ts](src/actions/mail.ts) hardcoded
+`assertAutonomy("delete", { confirmed: true })` — the literal boolean
+`true`, regardless of what the caller actually confirmed. There was no
+real server-side gate on trashing mail at all; the only protection was
+the client's own `window.confirm()` popup. Both functions now take a real
+`confirmed: boolean` parameter, made a required (not optional) argument
+specifically so the compiler forces every call site to be updated —
+confirmed via `tsc` that all 3 real call sites in
+[mail-client.tsx](src/components/mail/mail-client.tsx) were caught, no
+`grep` needed to find them.
+
+**New reversible mail-mutation tools** (direct execution, no card):
+`archive_mail_thread`, `move_mail_thread_to_folder`, `set_mail_priority`,
+`mark_mail_important`, `mark_mail_read`, `snooze_mail_thread` — all thin
+wrappers over already-working `actions/mail.ts` functions. **New
+irreversible tools gated behind the card**: `trash_mail_thread`,
+`bulk_trash_mail_threads`, `send_mail`. `send_mail` surfaced a real
+architectural gap during design (not just implementation): the existing
+Undo-Send window is driven entirely by a client-side `setTimeout` in
+`mail-client.tsx`'s own component state — an AI-initiated send from
+`/ceo/assistant` or ⌘K never mounts that component, so nothing would ever
+call `flushQueuedSendAction` and the email would sit `QUEUED` forever.
+Fixed by having the `send_mail` tool call `flushQueuedSendAction`
+synchronously itself right after queuing, with a minimal 3s window,
+instead of relying on a timer that would never fire.
+
+**`/api/command` rebuilt on the shared loop** with the full `ceoTools`
+array — every tool ever built for `/ceo/assistant` (invoices, payroll,
+agreements, mail, calendar) is now reachable from ⌘K and voice too, not
+just navigation, with zero new tool code. Since "navigate" isn't a real
+business tool, the ⌘K-specific system-prompt addition asks the model to
+reply with a literal `[[navigate:/ceo/xyz]]` marker for pure-navigation
+requests. First attempt under-specified this and the model refused to
+navigate to pages it has no tool for ("I don't have a Ledgers section",
+for a page that very much exists) — fixed by explicitly telling the model
+to trust the path list over its own tool inventory, prepending the
+instruction before the main prompt instead of appending it (so it's read
+as the dominant framing, not an afterthought), and adding worked examples;
+re-verified live afterward.
+
+**Verified live against real services, not just code** (the same
+discipline that caught the Phase 2 calendar bugs earlier in this project):
+a `schedule_meeting` proposal was Cancelled and independently confirmed
+via the Google Calendar API to have created nothing, then a second
+proposal was Confirmed and confirmed via the API to have created a real
+event; a `send_mail` proposal was Cancelled and confirmed via the database
+to have queued zero outbox rows — the single most safety-critical check
+in this whole phase — then a second proposal was Confirmed and confirmed
+via the database to be `SENT` with a real SMTP message id (the CEO's
+original ask: a real test email to akshayroyal678@gmail.com, now sent
+safely through the new gated path); a `trash_mail_thread` proposal via ⌘K
+was Confirmed and confirmed via the database to have set the thread's
+`trashedAt`; `archive_mail_thread` was called directly (reversible, no
+card) and confirmed via the database to have moved a thread to the
+Archive folder; the rebuilt ⌘K nav marker was verified for a phrase the
+client-side regex can't catch ("take me to the ledgers section").
+
+Verified: tsc, eslint, vitest (180 passed across 35 suites, no
+regressions) all clean. Learned from the Phase 1 null-byte incident —
+every touched file was scanned with `grep -a` (not `-I`, which had
+silently let the earlier corruption through) before merging.
+
+Phases 3-4 (the `client_action` virtual tool for pure browser-side
+primitives like scroll/next-row; extending registry coverage to non-mail
+pages; voice availability polish; the macOS desktop wrapper's missing
+`NSMicrophoneUsageDescription`) are still ahead. Also noted but out of
+scope for this phase: `send_mail` only supports composing a brand-new
+email, not replying-and-sending into an existing thread — that needs
+`mail-client.tsx`'s client-only `replyContext` threading-header logic
+extracted into something server-callable, a real but separate piece of
+work.
+
+[tool-confirmation.ts](src/lib/ai/tool-confirmation.ts),
+[run-tool-loop.ts](src/lib/ai/run-tool-loop.ts),
+[confirmation-card.tsx](src/components/confirmation-card.tsx),
+[api/ai/confirm-tool/route.ts](src/app/api/ai/confirm-tool/route.ts),
+[api/command/route.ts](src/app/api/command/route.ts),
+[tools.ts](src/lib/ai/tools.ts),
+[actions/mail.ts](src/actions/mail.ts) —
+`feature/mail-mutation-tools-and-confirmation-ui`, merged to main.
