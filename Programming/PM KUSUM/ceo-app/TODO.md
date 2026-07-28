@@ -881,3 +881,47 @@ compose-from already unambiguous.
 [signatures-panel.tsx](src/components/mail/signatures-panel.tsx),
 [vacation-panel.tsx](src/components/mail/vacation-panel.tsx) —
 `feature/mail-multi-account-switcher-ui-client`, merged to main.
+
+---
+
+## Known gaps after Phase 3 (not fixed — flagged for a deliberate follow-up)
+
+- **Blocked-senders has no UI at all.** `listBlockedSendersAction` and
+  `unblockSenderAction` exist server-side (and now accept `accountId`
+  correctly), but grepping the whole `src/components` and `src/app` trees
+  turns up zero call sites for either — `blockSenderAction` (block +
+  trash the current thread) is reachable from a thread's "More" menu, but
+  there's no screen that lists who's blocked or lets you undo it. This
+  predates multi-mailbox work; just surfaced while sweeping every
+  mailbox-level action for an `accountId` parameter. Needs a small panel
+  (same modal pattern as Signatures/Vacation) — not attempted here since
+  it's a pre-existing gap, not something this phase touched.
+- **Bulk multi-select (archive/trash/move-to-folder) derives the account
+  from only the first selected thread.** Harmless today — nothing lets you
+  select threads from two different mailboxes at once yet — but this will
+  need real handling once Phase 4's unified "All Inboxes" view makes
+  cross-account multi-select possible. Flagged in the Phase 2 TODO entry
+  already; repeating here since Phase 4 is where it actually starts to
+  matter.
+- **Settings panels (Signatures, Out of office, Label rules) don't show
+  which mailbox they're editing.** They correctly operate on the active
+  account now (Phase 3's accountId wiring), but a user who switches to
+  accounts@ and opens Signatures sees the same "Mail settings ›
+  Signatures" header as on the primary mailbox — no on-screen mailbox
+  address to confirm which one they're about to change. Minor, but worth
+  a one-line address label in each modal header before this trips someone
+  up.
+- **Secondary mailboxes don't get real-time IMAP IDLE updates.** Only the
+  primary mailbox has a live IDLE connection; accounts@ and pmkusum@ only
+  refresh on manual sync or when you switch to them. By design — this is
+  exactly what Phase 5 (IDLE per mailbox) is for — but worth naming
+  explicitly so it isn't mistaken for a bug: switching to a secondary
+  mailbox shows its state as of the last sync, not a live feed.
+- **pmkusum@'s initial IMAP connection was unusually slow** (multiple
+  minutes, `Socket timeout`/`ECONNRESET` before eventually succeeding)
+  during Phase 3 verification — real enough that it's what surfaced the
+  duplicate-key sync crash (now fixed). The slowness itself was never
+  root-caused; it may just be first-connection latency on the mail
+  server's side for a freshly created mailbox, but if a future mailbox
+  addition hangs the same way, it's worth checking the mail server itself
+  rather than assuming it's this app's connection code.
