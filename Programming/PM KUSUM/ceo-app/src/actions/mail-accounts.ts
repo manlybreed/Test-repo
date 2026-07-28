@@ -13,6 +13,7 @@ import {
 } from "@/lib/mail/account";
 import { encryptSecret } from "@/lib/mail/credential-crypto";
 import { syncCeoMail } from "@/lib/mail/sync";
+import { ensureIdleClientFor } from "@/lib/mail/idle-watcher";
 
 function revalidateMail() {
   revalidatePath("/ceo/mail");
@@ -147,6 +148,10 @@ export async function addMailAccountAction(
   // failure here doesn't undo the mailbox, it just stays empty until the
   // user retries (same as a transient sync failure on any other mailbox).
   void syncCeoMail({ accountId: account.id, maxTriageNew: 8 }).catch(() => undefined);
+
+  // Go live immediately — otherwise this mailbox wouldn't get real-time
+  // IMAP IDLE updates until the whole app process restarts.
+  ensureIdleClientFor(account);
 
   revalidateMail();
   return toSummary(account);
