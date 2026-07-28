@@ -13,11 +13,28 @@ export type PendingConfirmation = {
   summary: string;
 };
 
+export type ClientAction = {
+  commandId: string;
+  args: Record<string, unknown> | null;
+};
+
 export type ToolLoopResult = {
   finalText: string;
   downloads: { label: string; href: string }[];
   pendingConfirmation: PendingConfirmation | null;
+  clientAction: ClientAction | null;
 };
+
+/**
+ * Virtual tool name for triggering an already-registered client-side
+ * command (src/lib/commands/registry.ts) from the model — the LLM
+ * fallback tier for whatever the client's own fuzzy matcher (Tier 1)
+ * missed. Not a real business action: this name is never passed to
+ * runCeoTool, and callers must supply it via `opts.extraTools` (built
+ * from the client's own currently-registered commands) for the model to
+ * even see it as an option — there is no fixed schema for it here.
+ */
+export const CLIENT_ACTION_TOOL_NAME = "client_action";
 
 /**
  * The shared Claude tool-calling loop — extracted out of api/ai/chat's
@@ -34,7 +51,7 @@ export type ToolLoopResult = {
 export async function runToolLoop(
   anthropic: Anthropic,
   messages: Anthropic.MessageParam[],
-  opts?: { maxTurns?: number; systemPromptPreamble?: string },
+  opts?: { maxTurns?: number; systemPromptPreamble?: string; extraTools?: Anthropic.Tool[] },
 ): Promise<ToolLoopResult> {
   const maxTurns = opts?.maxTurns ?? 6;
   // Prepended, not appended — a caller-specific instruction (e.g. the ⌘K
@@ -44,9 +61,11 @@ export async function runToolLoop(
   const system = opts?.systemPromptPreamble
     ? `${opts.systemPromptPreamble}\n\n${SYSTEM_PROMPT}`
     : SYSTEM_PROMPT;
+  const tools = opts?.extraTools?.length ? [...ceoTools, ...opts.extraTools] : ceoTools;
   let finalText = "";
   const downloads: { label: string; href: string }[] = [];
   let pendingConfirmation: PendingConfirmation | null = null;
+  let clientAction: ClientAction | null = null;
 
   let guard = 0;
   while (guard < maxTurns) {
@@ -55,7 +74,7 @@ export async function runToolLoop(
       model: "claude-sonnet-4-6",
       max_tokens: 4096,
       system,
-      tools: ceoTools,
+      tools,
       messages,
     });
 
@@ -67,6 +86,25 @@ export async function runToolLoop(
       .map((b) => b.text);
 
     if (toolUses.length === 0) {
+      finalText = texts.join("\n") || "Done.";
+      break;
+    }
+
+    // A client-side command is resolved by the browser, not this server —
+    // loop-terminal, same reasoning as the confirmation gate below: this
+    // turn is discarded, not pushed onto `messages`. The caller (e.g.
+    // /api/command) hands {commandId, args} back to the client, which
+    // looks it up in the same handler map Tier 1's fuzzy matcher uses
+    // (src/lib/commands/use-register-commands.ts's invokeCommand).
+    const clientActionTool = toolUses.find(
+      (t) => t.name === CLIENT_ACTION_TOOL_NAME,
+    );
+    if (clientActionTool) {
+      const input = clientActionTool.input as { commandId?: string; args?: Record<string, unknown> };
+      clientAction = {
+        commandId: String(input.commandId || ""),
+        args: input.args || null,
+      };
       finalText = texts.join("\n") || "Done.";
       break;
     }
@@ -127,5 +165,5 @@ export async function runToolLoop(
         : "Completed.";
   }
 
-  return { finalText, downloads, pendingConfirmation };
+  return { finalText, downloads, pendingConfirmation, clientAction };
 }

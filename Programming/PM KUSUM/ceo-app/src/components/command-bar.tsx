@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useRouter, usePathname } from "next/navigation";
-import { matchCommand, type CommandContext } from "@/lib/commands/registry";
+import { listCommands, matchCommand, type CommandContext } from "@/lib/commands/registry";
 import { invokeCommand } from "@/lib/commands/use-register-commands";
 import { ConfirmationCard, type PendingAction } from "@/components/confirmation-card";
 
@@ -93,10 +93,17 @@ export function CommandBar({
     setResult({ type: "thinking" });
 
     try {
+      // Tier 2 fallback: hand the model the same commands Tier 1 just
+      // failed to fuzzy-match, so it can catch an odd phrasing Tier 1
+      // missed via a real client_action tool call instead of guessing.
+      const availableCommands = listCommands(ctx).map((c) => ({
+        id: c.id,
+        description: c.description,
+      }));
       const res = await fetch("/api/command", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: trimmed }),
+        body: JSON.stringify({ query: trimmed, availableCommands }),
       });
       const data = await res.json() as {
         type: string;
@@ -105,11 +112,18 @@ export function CommandBar({
         error?: string;
         downloads?: { label: string; href: string }[];
         pendingConfirmation?: { toolName: string; toolInput: Record<string, unknown>; summary: string };
+        commandId?: string;
+        args?: Record<string, unknown> | null;
       };
 
       if (data.type === "navigate" && data.href) {
         onClose();
         router.push(data.href);
+        return;
+      }
+      if (data.type === "client_action" && data.commandId) {
+        onClose();
+        invokeCommand(data.commandId, data.args ?? null);
         return;
       }
       if (data.type === "confirm" && data.pendingConfirmation) {

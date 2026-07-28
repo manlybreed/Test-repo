@@ -36,3 +36,28 @@ describe("run-tool-loop pauses on confirmation-required tools", () => {
     expect(src).toContain("systemPromptPreamble");
   });
 });
+
+describe("run-tool-loop client_action (Phase 3)", () => {
+  const src = readFileSync(join(process.cwd(), "src/lib/ai/run-tool-loop.ts"), "utf8");
+
+  it("checks for the client_action tool before the confirmation gate and before executing anything", () => {
+    const clientActionIdx = src.indexOf("t.name === CLIENT_ACTION_TOOL_NAME");
+    const confirmIdx = src.indexOf("const confirmTool = toolUses.find");
+    const pushIdx = src.indexOf("messages.push({ role: \"assistant\"");
+    expect(clientActionIdx).toBeGreaterThan(-1);
+    expect(confirmIdx).toBeGreaterThan(clientActionIdx);
+    expect(pushIdx).toBeGreaterThan(clientActionIdx);
+  });
+
+  it("supports caller-supplied extraTools merged into the fixed ceoTools array", () => {
+    expect(src).toContain("opts?.extraTools?.length");
+    expect(src).toContain("[...ceoTools, ...opts.extraTools]");
+  });
+
+  it("never routes client_action through runCeoTool — it's resolved by the browser, not this server", () => {
+    const start = src.indexOf("if (clientActionTool) {");
+    const end = src.indexOf("}", src.indexOf("finalText = texts.join", start));
+    const block = src.slice(start, end);
+    expect(block).not.toContain("runCeoTool");
+  });
+});

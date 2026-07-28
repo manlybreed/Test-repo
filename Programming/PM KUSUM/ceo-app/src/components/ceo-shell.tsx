@@ -11,7 +11,11 @@ import { BluRidgeLogo } from "./bluridge-logo";
 import { LiveClock } from "./live-clock";
 import { VoiceButton } from "@/components/voice/voice-button";
 import { matchCommand, type CommandContext } from "@/lib/commands/registry";
-import { invokeCommand } from "@/lib/commands/use-register-commands";
+import {
+  invokeCommand,
+  useRegisterCommands,
+  type RegisteredCommand,
+} from "@/lib/commands/use-register-commands";
 
 // ── SVG Icons ────────────────────────────────────────────────────────
 const FILL_ICONS = new Set(["home", "assistant", "agreement"]);
@@ -188,6 +192,34 @@ export function CeoShell({
       return next;
     });
   }
+
+  /** Registered globally (this component wraps every page), so it's the
+   * first non-mail proof that the shared registry — and Tier 2's
+   * client_action fallback — genuinely covers more than one page. Two
+   * separate commands rather than one "toggle", so saying "collapse the
+   * sidebar" when it's already collapsed is a no-op, not a confusing
+   * re-expand. */
+  const globalCommands: RegisteredCommand[] = [
+    {
+      id: "nav.collapse-sidebar",
+      label: "Collapse sidebar",
+      description: "Collapse the left navigation sidebar to icons only",
+      phrases: ["collapse the sidebar", "collapse sidebar", "hide sidebar", "minimize sidebar"],
+      handler: () => {
+        if (!navCollapsed) toggleNavCollapsed();
+      },
+    },
+    {
+      id: "nav.expand-sidebar",
+      label: "Expand sidebar",
+      description: "Expand the left navigation sidebar to show full labels",
+      phrases: ["expand the sidebar", "expand sidebar", "show sidebar", "open the sidebar"],
+      handler: () => {
+        if (navCollapsed) toggleNavCollapsed();
+      },
+    },
+  ];
+  useRegisterCommands(globalCommands);
 
   const sidebarW = navCollapsed ? 72 : 220;
 
