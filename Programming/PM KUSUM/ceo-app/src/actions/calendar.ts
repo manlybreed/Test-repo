@@ -5,11 +5,13 @@ import { auth } from "@/lib/auth";
 import { requireCeoAction as requireCeo } from "@/lib/session";
 import { ensureCeoMailAccount, requireOwnedAccount } from "@/lib/mail/account";
 import { buildIcsInvite } from "@/lib/mail/ai/meeting";
+import { assertAutonomy } from "@/lib/mail/ai/policy";
 import {
   createMeetingEvent,
   disconnectGoogleCalendar,
   googleCalendarConfigured,
 } from "@/lib/calendar/google";
+import { getCandidateMeetingSlots, type MeetingSlotOption } from "@/lib/calendar/propose-times";
 import { prisma } from "@/lib/prisma";
 
 async function requireAccount(accountId?: string) {
@@ -41,6 +43,42 @@ export async function getCalendarConnectionStatusAction(
     connected: Boolean(conn),
     googleEmail: conn?.googleEmail ?? null,
     configured: googleCalendarConfigured(),
+  };
+}
+
+/**
+ * Real, ready-to-use candidate meeting slots for the assistant's
+ * check_calendar_availability tool — deliberately returns pre-computed
+ * {startIso, endIso, label} options (via getCandidateMeetingSlots), NOT
+ * raw busy blocks. A first version returned raw busy/free data and left
+ * the model to work out open slots itself; live testing caught it
+ * inventing a plausible-looking slot with the wrong year (silently
+ * scheduling a real meeting in the past) — exactly the hallucination
+ * class this function now closes off by construction: the model has
+ * nothing left to compute, only exact ISO strings to reuse verbatim in
+ * schedule_meeting.
+ */
+export async function getCalendarAvailabilityAction(
+  withinDays = 7,
+  accountId?: string,
+): Promise<{ connected: boolean; timeMin: string; timeMax: string; slots: MeetingSlotOption[] }> {
+  const { account } = await requireAccount(accountId);
+  const timeMin = new Date();
+  const timeMax = new Date(timeMin.getTime() + withinDays * 24 * 60 * 60 * 1000);
+
+  const conn = await prisma.googleCalendarConnection.findUnique({
+    where: { accountId: account.id },
+    select: { accountId: true },
+  });
+  const slots = conn
+    ? await getCandidateMeetingSlots(account.id, { withinDays, maxCandidates: 5 })
+    : [];
+
+  return {
+    connected: Boolean(conn),
+    timeMin: timeMin.toISOString(),
+    timeMax: timeMax.toISOString(),
+    slots,
   };
 }
 
@@ -79,6 +117,25 @@ export async function createMeetingAction(input: {
   confirmed: boolean;
   accountId?: string;
 }): Promise<MeetingResult> {
+  // Creating a real Calendar event with real invites is exactly as
+  // irreversible as the ICS path already treats it — this gate used to
+  // only run inside buildIcsInvite below, so a connected mailbox's real
+  // Google path had no confirmation check at all. Matters now that
+  // schedule_meeting is a callable AI tool, not just a UI form submit.
+  assertAutonomy("calendar_invite", { confirmed: input.confirmed });
+
+  // Defense in depth against a caller (AI tool call or otherwise)
+  // constructing a wrong startIso — caught live: the assistant once
+  // computed a real-looking slot a full year in the past. Grounding the
+  // slot options themselves in real code (getCandidateMeetingSlots) is
+  // the real fix; this is a cheap backstop against any other path
+  // producing a bad date, not a substitute for that.
+  if (new Date(input.startIso).getTime() < Date.now()) {
+    throw new Error(
+      `Refusing to schedule a meeting in the past (startIso ${input.startIso}) — check the date.`,
+    );
+  }
+
   const { account } = await requireAccount(input.accountId);
 
   const created = await createMeetingEvent(account.id, {

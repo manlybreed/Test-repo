@@ -30,6 +30,7 @@ You help the CEO with:
 - Tasks and Pomodoro / time tracking
 - Expense records — use list_expenses or get_expense_summary to answer expense questions
 - CEO Mail (akshay@) — use search_mail / ask_mail / digest_inbox / summarize_thread / draft_reply / propose_tasks_from_mail / recall_person. Never send mail from tools; user confirms send in Mail UI.
+- Calendar & meetings — use check_calendar_availability before proposing or discussing any time; it returns ready-made slots with an exact startIso/endIso already confirmed against real availability. When scheduling, copy that startIso/endIso verbatim into schedule_meeting — never recompute or retype a date/time yourself, even one that looks equivalent to a slot you saw. schedule_meeting creates a real Calendar event with a Meet link and sends real invites (or falls back to a downloadable .ics if Calendar isn't connected) — this is irreversible, so only call it with confirmed:true after the CEO has explicitly agreed on the specific time and attendees in this conversation; never schedule proactively on an assumption.
 
 Rules:
 - NEVER answer questions about counts, statuses, or amounts from memory — always call the relevant list/summary tool first.
@@ -361,6 +362,41 @@ export const ceoTools: Anthropic.Tool[] = [
       required: ["person"],
     },
   },
+  {
+    name: "check_calendar_availability",
+    description:
+      "Get real, ready-to-use open meeting slots for the next N days (default 7) — each returned slot already has an exact startIso/endIso confirmed against actual Google Calendar availability, plus a human-readable label. Call this before proposing or discussing any meeting time. When presenting or scheduling a slot, copy its startIso/endIso EXACTLY as returned — never recompute, retype, or guess a date/time yourself, even one that looks equivalent; that is how a real meeting once got scheduled a year in the wrong direction.",
+    input_schema: {
+      type: "object",
+      properties: {
+        withinDays: {
+          type: "number",
+          description: "How many days ahead to check. Defaults to 7.",
+        },
+      },
+    },
+  },
+  {
+    name: "schedule_meeting",
+    description:
+      "Schedule a real meeting: creates a Google Calendar event with a Meet link and sends invites to attendees (falls back to a downloadable .ics if Calendar isn't connected). startIso/endIso MUST be copied verbatim from a slot check_calendar_availability already returned — never computed or retyped. Irreversible — call with confirmed:true ONLY after the CEO has explicitly agreed to this exact time and attendee list in the conversation; otherwise the call is rejected.",
+    input_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        description: { type: "string" },
+        startIso: { type: "string", description: "ISO 8601 start datetime" },
+        endIso: { type: "string", description: "ISO 8601 end datetime" },
+        attendeeEmails: { type: "array", items: { type: "string" } },
+        confirmed: {
+          type: "boolean",
+          description:
+            "Must be true, and only after the CEO has explicitly confirmed this exact meeting.",
+        },
+      },
+      required: ["title", "startIso", "endIso", "attendeeEmails", "confirmed"],
+    },
+  },
 ];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -634,6 +670,22 @@ export async function runCeoTool(name: string, input: any): Promise<string> {
       case "recall_person": {
         const { recallPersonAction } = await import("@/actions/mail");
         return JSON.stringify(await recallPersonAction(input.person));
+      }
+      case "check_calendar_availability": {
+        const { getCalendarAvailabilityAction } = await import("@/actions/calendar");
+        return JSON.stringify(await getCalendarAvailabilityAction(input.withinDays));
+      }
+      case "schedule_meeting": {
+        const { createMeetingAction } = await import("@/actions/calendar");
+        const result = await createMeetingAction({
+          title: input.title,
+          description: input.description,
+          startIso: input.startIso,
+          endIso: input.endIso,
+          attendeeEmails: input.attendeeEmails || [],
+          confirmed: Boolean(input.confirmed),
+        });
+        return JSON.stringify(result);
       }
       default:
         return JSON.stringify({ ok: false, error: `Unknown tool ${name}` });
