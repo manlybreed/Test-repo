@@ -1239,3 +1239,38 @@ tsc, eslint, vitest (118 passed) all clean.
 
 [ai/draft.ts](src/lib/mail/ai/draft.ts) —
 `fix/mail-ai-draft-double-signoff`, merged to main.
+
+---
+
+## 2026-07-28 — Fix AI draft greeting a contact by its own address
+
+Reported live with a screenshot: "write a mail to Himanshu@thebluridge.com
+and tell him to forward these documents to Yogesh Ji" opened "Hi," instead
+of "Hi Himanshu,". Root cause wasn't the recipient-name extraction (Claude
+correctly returned `recipientName: "Himanshu"` from the brief every time
+this was tested directly) — it was that `MailContact.displayName` for
+himanshu@thebluridge.com is literally the string
+`"himanshu@thebluridge.com"`, because that mailbox's own mail client sets
+its From-header display name to its own address. Real data, but it carries
+no identity beyond the address, and both `resolveDraftRecipients` and
+`draftNewMail` in [ai/draft.ts](src/lib/mail/ai/draft.ts) treated it as an
+authoritative "known name," letting it silently outrank the correct name
+already extracted from the user's own instruction.
+
+Added `isRealName(name, address)` (true only when non-empty and not
+identical, case-insensitively, to the address) and applied it wherever a
+contact/client name is checked, so an address-echoing "name" now falls
+through to the next candidate instead of winning by default.
+
+Verified against the real Claude API: the exact reported brief now
+resolves `knownName` to `"Himanshu"` and drafts "Dear Himanshu,". Checked
+for regressions with a recipient that has a genuine contact name
+(aarti@thinkbeyonds.com → "Aarti sharma") — still correctly drafts "Dear
+Aarti Sharma,". Also reproduced the exact UI steps from the bug report
+live in the running dev server: To filled with himanshu@thebluridge.com,
+the exact reported brief typed into AI assist, Draft clicked — now opens
+"Hi Himanshu," instead of "Hi,". tsc, eslint, vitest (118 passed) all
+clean.
+
+[ai/draft.ts](src/lib/mail/ai/draft.ts) —
+`fix/mail-ai-draft-address-as-displayname`, merged to main.
