@@ -1886,3 +1886,74 @@ broader production-build breakage found here.
 [next.config.ts](next.config.ts),
 [mail-client.tsx](src/components/mail/mail-client.tsx) —
 `feature/voice-global-availability-and-safety-polish`, merged to main.
+
+---
+
+## 2026-07-29 — Fix: production build (npm run desktop:build / next build) was broken
+
+Follow-up to the production-build bug flagged during Phase 4's mic-fix
+verification above, picked up as its own task per the user's request to
+root-cause and fix it properly rather than leave it a whack-a-mole.
+
+**Actual root cause, not the one it first looked like**: [middleware.ts](src/middleware.ts)
+had no explicit `runtime`, so it defaulted to the Edge runtime. Next
+compiles an Edge-runtime bundle of [instrumentation.ts](src/instrumentation.ts)
+for any app with Edge middleware (its `register()` hook can fire in
+either runtime). `instrumentation.ts` dynamically imports
+[idle-watcher.ts](src/lib/mail/idle-watcher.ts) — guarded by
+`if (NEXT_RUNTIME === "edge") return`, but that guard only prevents the
+IMAP IDLE bootstrap from *running* at Edge; it doesn't stop webpack from
+*statically bundling* that whole dependency chain for the Edge target
+too, where Node builtins (`fs`, `crypto`, `net`, `stream`) are fundamentally
+unavailable under **any** `serverExternalPackages` config — that
+mechanism only affects how the Node.js bundle externalizes real
+`node_modules` packages; it has no equivalent for local project files
+compiled into an Edge V8 isolate, and Edge simply cannot have those
+Node builtins at all. This is why adding packages to
+`serverExternalPackages` one at a time (the earlier partial fix) could
+never fully work — `attachments.ts`/`credential-crypto.ts` are local
+files, not npm packages, so there was no config knob that could exempt
+them.
+
+Confirmed via `git log` that both `instrumentation.ts` and
+`idle-watcher.ts` predate this whole session's voice-command work
+(traces to the earlier IMAP IDLE feature) — this had been silently
+blocking any production or desktop build since then.
+
+**Fix**: added `export const runtime = "nodejs"` to `middleware.ts` (a
+single auth-redirect check with no need for Edge's latency profile) and
+enabled Next 15.5's `experimental.nodeMiddleware` flag — confirmed at
+runtime via the build output's "✓ nodeMiddleware" experiments line, even
+though this Next version's shipped `next.config` types don't know about
+it yet (hence the `// @ts-expect-error`). This removes the need for an
+Edge-compiled `instrumentation.ts` entirely, closing the whole class of
+"Node builtin not found" errors at the root instead of chasing
+individual packages. Also fixed two incidental `prefer-const` errors in
+[disclosure-form.ts](src/lib/docgen/disclosure-form.ts) that `next build`'s
+own lint pass caught (this session's usual `npx eslint <file>` checks
+never had reason to touch that file).
+
+**Verified thoroughly, not just "no red text"**: `npx next build` and
+`npm run desktop:build` both complete cleanly end to end (Next build →
+native macOS shell compile → `.app` bundle assembly → DMG packaging);
+inspected `dist/macos/BluRidge CEO.app/Contents/Info.plist` directly and
+confirmed `NSMicrophoneUsageDescription` (from the Phase 4 mic fix)
+actually made it into the packaged artifact; confirmed the assembled
+standalone server directory has `server.js`, populated
+`.next/static/chunks`, and the Prisma client. Then **actually launched
+the packaged `.app`** via `open` and confirmed its embedded Next server
+responds over real HTTP (`200` on `/login`) before quitting it — the
+genuine end-to-end proof this was building a working app, not just
+producing files that looked right. tsc, eslint, vitest (190 passed
+across 37 suites, no regressions) all clean.
+
+This was the last open item from the 4-phase voice/command plan — both
+follow-ups flagged along the way (the missing Clients/Financing/Ledgers/
+Employees ⌘K nav routes, fixed earlier in this same session, and this
+production-build bug) are now resolved; nothing outstanding remains from
+that plan.
+
+[middleware.ts](src/middleware.ts),
+[next.config.ts](next.config.ts),
+[disclosure-form.ts](src/lib/docgen/disclosure-form.ts) —
+`fix/production-build-edge-middleware-node-runtime`, merged to main.
