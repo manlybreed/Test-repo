@@ -23,6 +23,16 @@ const DraftSchema = z.object({
 // extracted — this is a format check, not a parsing/understanding step.
 const EMAIL_SHAPE_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/**
+ * Shared instruction for the <!--SIGNATURE--> marker — the signature
+ * itself already opens with its own sign-off ("Best regards, Akshay,
+ * ..."), so without this the model would routinely add its own "Best
+ * regards," right before the marker too, producing a double sign-off.
+ * Confirmed live: a real draft ended with "Best regards,</p><p>Best
+ * regards,<br>Akshay<br>BluRidge Consulting" before this was added.
+ */
+const SIGNATURE_MARKER_RULE = `Leave a <!--SIGNATURE--> marker where the signature should go. Do not write your own closing/sign-off line (e.g. "Best regards," "Sincerely," "Thanks,") before it — the signature already includes one. End the body with your last substantive sentence, then the marker, with nothing in between.`;
+
 /** Shared system-prompt rule for referencing already-attached files (or their absence). */
 function attachmentPromptRule(attachedDocuments: string[]): string {
   return attachedDocuments.length
@@ -112,7 +122,7 @@ export async function draftReply(opts: {
   const raw = await claudeJson<{ html: string; subject?: string }>({
     model: "sonnet",
     system: `Draft an HTML email reply (body only, no outer html/body tags). Return JSON {html, subject?}.
-Ground facts only in mail_data. Do not invent commitments. Leave a <!--SIGNATURE--> marker where signature should go.
+Ground facts only in mail_data. Do not invent commitments. ${SIGNATURE_MARKER_RULE}
 Default voice: ${DEFAULT_DRAFT_TONE}
 Style hints: ${styleInPrompt(account?.styleJson) || "professional concise"}
 ${attachmentPromptRule(attachedDocuments)}`,
@@ -207,7 +217,7 @@ Recipient identity — resolve this first, before writing anything: mail_data.re
 mail_data.topicReference is unrelated background material retrieved by keyword match for tone/topic/fact grounding only — it is other people's past correspondence, not a conversation with this email's recipient. It will often contain its own greetings and names ("Dear X," from some unrelated thread); none of those identify who you are writing to now, and recipientName above always overrides anything you see in topicReference.
 
 Ground any factual claims (dates, figures, commitments) only in topicReference or knownClient — never invent them.
-Leave a <!--SIGNATURE--> marker where the signature should go.
+${SIGNATURE_MARKER_RULE}
 Default voice: ${DEFAULT_DRAFT_TONE}
 Style hints: ${styleInPrompt(account?.styleJson) || "professional concise"}
 ${attachmentPromptRule(attachedDocuments)}`,
