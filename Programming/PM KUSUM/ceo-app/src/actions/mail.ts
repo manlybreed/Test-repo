@@ -426,6 +426,41 @@ export async function listMailThreads(opts?: {
 }
 
 /**
+ * Unified "All Inboxes" view — merges every mailbox the session user owns
+ * into one list, sorted by lastMessageAt like a single mailbox would be.
+ * Always resolves the account list itself from the session (never trusts
+ * a client-supplied id list), so there's nothing to verify ownership of.
+ */
+export async function listAllInboxesThreadsAction(opts?: {
+  /** Curated Inbox — excludes newsletters, receipts, list-unsubscribe bulk */
+  smartInbox?: boolean;
+  page?: number;
+  pageSize?: number;
+}) {
+  await requireCeo();
+  const session = await auth();
+  const userId = session?.user?.id as string;
+  const accounts = await prisma.mailAccount.findMany({
+    where: { userId },
+    select: { id: true },
+  });
+  const accountIds = accounts.map((a) => a.id);
+  const pageSize = opts?.pageSize ?? THREADS_PAGE_SIZE;
+  const page = Math.max(1, opts?.page ?? 1);
+  if (!accountIds.length) {
+    return { rows: [], total: 0, page, pageSize };
+  }
+  const { rows, total } = await queryThreadsForView({
+    accountIds,
+    folderRole: "INBOX",
+    smartInbox: opts?.smartInbox,
+    take: pageSize,
+    skip: (page - 1) * pageSize,
+  });
+  return { rows, total, page, pageSize };
+}
+
+/**
  * Full-mailbox smart search:
  * 1) AI expands the query into concept groups (SBI POS → State Bank + e-statement…)
  * 2) Lexical match across subject / body / sender user@domain / attachments
