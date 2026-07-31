@@ -72,6 +72,33 @@ function stripMailThemeStyles(html: string) {
     });
 }
 
+/** Whether a message's HTML has any remote (http/https) `<img>` — the
+ * condition for showing the "Display images" affordance at all. Inline
+ * `data:`/`cid:` images (already embedded, no network fetch) don't count. */
+export function hasRemoteImages(html: string | null): boolean {
+  if (!html) return false;
+  return /<img\b[^>]*\ssrc\s*=\s*["']https?:\/\//i.test(html);
+}
+
+/**
+ * Replace remote `<img src="http(s)://...">` with a transparent 1x1
+ * placeholder, stashing the real URL in `data-blocked-src` — the standard
+ * "don't load images by default" behavior (Gmail, Outlook) that stops a
+ * remote image URL from doubling as an open/read tracking pixel or a
+ * fingerprint of the viewer's IP before the user has chosen to trust the
+ * sender. Width/height/other attributes are preserved so layout doesn't
+ * jump when images are later displayed.
+ */
+function blockRemoteImages(html: string): string {
+  const TRANSPARENT_PX =
+    "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBTAA7";
+  return html.replace(
+    /<img\b([^>]*)\ssrc\s*=\s*(["'])(https?:\/\/[^"'>]+)\2([^>]*)>/gi,
+    (_full, pre: string, _q: string, url: string, post: string) =>
+      `<img${pre} data-blocked-src="${url.replace(/"/g, "&quot;")}" src="${TRANSPARENT_PX}"${post}>`,
+  );
+}
+
 /**
  * Light HTML hygiene for untrusted mail bodies.
  * Critical: strip <style>/<link>/<base> — marketing mail (e.g. Claude)
@@ -81,6 +108,7 @@ export function prepareMailHtml(
   html: string | null,
   text: string | null,
   mode: "dark" | "original" = "dark",
+  allowRemoteImages = true,
 ) {
   if (!html?.trim()) {
     const escaped = (text || "")
@@ -141,6 +169,7 @@ export function prepareMailHtml(
     .replace(/\sheight\s*=\s*["']?\d{4,}["']?/gi, "");
 
   if (mode === "dark") out = stripMailThemeStyles(out);
+  if (!allowRemoteImages) out = blockRemoteImages(out);
   return out;
 }
 
@@ -189,11 +218,21 @@ export function MessageReader({
   const [showQuote, setShowQuote] = useState(false);
   const branded = looksLikeBrandedHtml(message.bodyHtml);
   const [viewMode, setViewMode] = useState<"dark" | "original">("dark");
+  // Remote images are blocked by default (Gmail/Outlook convention — a
+  // remote image URL can double as an open/read tracking pixel before the
+  // user has chosen to trust the sender). Resets to blocked whenever this
+  // component mounts for a genuinely different message (new `key`), stays
+  // as the user left it across re-renders of the same message.
+  const [imagesAllowed, setImagesAllowed] = useState(false);
+  const remoteImages = useMemo(
+    () => hasRemoteImages(message.bodyHtml),
+    [message.bodyHtml],
+  );
   const to = useMemo(() => parseAddrs(message.toAddresses), [message.toAddresses]);
   const cc = useMemo(() => parseAddrs(message.ccAddresses), [message.ccAddresses]);
   const prepared = useMemo(
-    () => prepareMailHtml(message.bodyHtml, message.bodyText, viewMode),
-    [message.bodyHtml, message.bodyText, viewMode],
+    () => prepareMailHtml(message.bodyHtml, message.bodyText, viewMode, imagesAllowed),
+    [message.bodyHtml, message.bodyText, viewMode, imagesAllowed],
   );
   const { main, quote } = useMemo(() => splitQuoted(prepared), [prepared]);
   const displayName = message.fromName || message.fromAddress;
@@ -441,6 +480,30 @@ export function MessageReader({
               </button>
             </div>
           </div>
+
+          {remoteImages && !imagesAllowed && (
+            <div
+              className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-2 text-xs"
+              style={{
+                background: "rgba(255,255,255,0.05)",
+                border: "1px solid var(--border)",
+                color: "var(--text-dim)",
+              }}
+            >
+              <span>Images are hidden to protect your privacy.</span>
+              <button
+                type="button"
+                className="cursor-pointer rounded-md px-2 py-1 font-semibold"
+                style={{ color: "var(--accent-bright)" }}
+                onClick={() => {
+                  setImagesAllowed(true);
+                  haptic("tap");
+                }}
+              >
+                Display images
+              </button>
+            </div>
+          )}
 
           <div
             className={
