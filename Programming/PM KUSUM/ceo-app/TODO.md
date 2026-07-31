@@ -2216,3 +2216,83 @@ legitimate newsletter sender.
 [actions/mail.ts](src/actions/mail.ts),
 [mail-client.tsx](src/components/mail/mail-client.tsx) —
 `feature/mail-spam-campaign-clustering`, merged to main.
+
+## 2026-07-31 — Self-learning spam triage, Phase 3 (final): SPF/DKIM/DMARC signal
+
+Last piece of this plan. Recent literature (Springer LLM-header
+-features paper, ~99.7% F1 with header features vs. content alone;
+KnowBe4's Phishing Threat Trends, 57.9% of real phishing riding on
+compromised/registered domains) flags authentication headers as a
+high-leverage, cheap, deterministic signal — and this codebase already
+parses full raw MIME at sync time (mailparser's `simpleParser`) without
+ever looking at `Authentication-Results`/`Received-SPF`.
+
+**New `MailMessage.authSummary`** (nullable, additive column) — a
+compact `"spf=... dkim=... dmarc=..."` string parsed by new
+[auth-headers.ts](src/lib/mail/auth-headers.ts) and wired into
+`sync.ts`'s ingestion right next to the existing list-unsubscribe
+extraction. Fed into `triageThread`'s prompt as one more piece of
+context, same tier as `senderHistory` — never a hard override in
+either direction; missing/passing auth is neutral, not exculpatory.
+
+**Two real mailparser gotchas found and handled correctly, not
+assumed** — both verified directly against
+`node_modules/mailparser/lib/mail-parser.js`, not guessed: (1) a header
+repeated across relay hops (very common for `Authentication-Results`)
+comes back as a `string[]`, not a `string` — `normalizeHeaderValue`
+takes the topmost entry (closest to final delivery, i.e. this account's
+own provider's own check). (2) The *existing* list-unsubscribe line
+(`parsed.headers?.get("list-unsubscribe")`) has always been dead code —
+`mailparser` remaps every `list-*` header key to one merged `"list"` key
+before storage, so that `.get()` call was always `undefined`. Fixed
+alongside the new extraction since it directly affects the NEWSLETTER
+heuristic's `hasListUnsubscribe` signal quality and sits in the exact
+code being touched.
+
+**Verified live against real data, and reported honestly rather than
+oversold**: parsed the actual raw `.eml` files (via each message's
+saved `rawPath`) of both phishing emails already documented in this
+plan's Phase 1 entry above — the `techsupport.microsoft.com` spoof and
+the fake "Password Expiration Notice." Both real headers were genuinely
+messy multi-hop arrays and both parsed correctly (`spf=pass dmarc=none`
+and `spf=pass dmarc=pass` respectively) — but neither actually *failed*
+authentication, because both were sent from validly-configured (if
+suspicious/newly-registered) domains rather than literally forged
+headers, which matches the literature's own finding that most real
+-world phishing rides on compromised/registered infrastructure, not raw
+header spoofing. This signal genuinely adds coverage for the *other*
+large class of phishing (actual forgery/spoofing) that this account's
+own two historical examples don't happen to be — stated plainly rather
+than claiming a match that isn't there. 192 tests passing (14 new in
+[auth-headers.test.ts](src/lib/mail/auth-headers.test.ts)), no
+regressions.
+
+**Not built** (explicitly out of scope, not silently skipped): no
+backfill of `authSummary` for already-synced mail — inert on its own
+since already-triaged threads never automatically re-triage
+(`alreadyTriaged` short-circuits), and pairing a backfill with a forced
+re-triage of old, already-organized mail is a bigger, riskier action
+than this plan called for.
+
+### This closes the self-learning spam plan
+
+All three phases now shipped: (1) sender/domain reputation that
+accumulates from Report-spam/Not-spam and gets more confident with
+repeated signal on the same sender; (2) AI content-similarity clustering
+that catches the same campaign even from a rotating, never-seen-before
+sender; (3) authentication-header context for the model's own judgment.
+Smart-label classification was reviewed and found to already have an
+equivalent, adequate self-learning loop (`MailLabelRule` +
+label-correction.ts) — confirmed rather than silently left unexamined.
+Layered explicitly as: deterministic hard overrides (known client /
+PM_KUSUM / sender-reputation never-spam) → deterministic hard fast-path
+(repeat-reported sender) → Claude judgment enriched with sender-history
++ auth-header context → deterministic guardrail post-processing —
+mirroring how mature email-security stacks actually layer reputation +
+ML + human feedback, not a single bigger model call.
+
+[prisma/schema.prisma](prisma/schema.prisma),
+[auth-headers.ts](src/lib/mail/auth-headers.ts),
+[sync.ts](src/lib/mail/sync.ts),
+[triage.ts](src/lib/mail/ai/triage.ts) —
+`feature/mail-auth-header-signal`, merged to main.
