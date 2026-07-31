@@ -2722,3 +2722,57 @@ checked via live DOM/layout inspection, not just a screenshot.
 
 [mail-client.tsx](src/components/mail/mail-client.tsx) —
 `fix/focus-mode-thread-list-toggle`, merged to main.
+
+## 2026-07-31 — Feature: in:/folder: search scoping + search respects the folder being browsed
+
+Reported alongside the fixes above: no way to scope a search to just
+Drafts or just Sent from the search box — the only way to see one
+folder's content was to navigate to it and browse. Related nuance:
+Sent already showed up fine in general search, but Drafts/Trash
+content is intentionally excluded from general search (by design, to
+keep clutter out) — which meant there was no way to *find* that
+content via search at all, only by scrolling the folder itself.
+
+**Fix, in three parts**:
+- `parseSearchOperators()` (mail-search.ts) recognizes a new `in:`/
+  `folder:` operator — `drafts`/`sent`/`trash`/`archive`/`spam`/`inbox`
+  map to a canonical `MailFolder.role`; anything else is treated as a
+  custom folder name, resolved the same way `resolveSystemFolder`
+  already resolves roles elsewhere (there can be duplicate folders for
+  a role — e.g. a nested "Trash.Drafts" — so this reuses that same
+  canonical tie-break rather than reinventing one).
+- `searchThreadsAction()` resolves that scope — or, absent one,
+  whichever real folder the UI is currently browsing — to a folderId
+  and threads it through *every* tier: contacts, literal/lexical FTS,
+  literal/lexical ILIKE, and the AI/NL path. `retrieveMail()`
+  (retrieve.ts) gained a `folderId` filter on both its raw tsvector
+  query and its ILIKE fallback — it had no folder-filtering capability
+  at all before this, since nothing had ever needed to scope FTS to one
+  folder. An explicit `in:`/`folder:` scope that doesn't resolve to a
+  real folder returns empty results ("no matches") rather than silently
+  searching everywhere — the same "say so, don't guess" behavior
+  Gmail's own `in:`/`label:` operators have.
+- `mail-client.tsx` passes the currently active folder as the implicit
+  scope whenever it's a real folder (not Smart Inbox/All Inboxes/
+  Outbox, and no smart label active) — so browsing into Drafts/Sent/
+  Trash/a custom folder and typing a query now searches within it, the
+  same behavior browsing already had, just reachable from the search
+  box too. An explicit `in:`/`folder:` operator in the query always
+  overrides this.
+
+**Verified live**: searching "Regarding the Test" while browsing
+Drafts returned 6 results, all drafts; the identical query from Smart
+Inbox (unscoped) returned 10 different, non-draft results — proving
+the implicit scope changed real behavior, not just added an inert
+param. The same result set reappeared from Smart Inbox using
+`in:drafts Regarding the Test` explicitly. `in:sent test` correctly
+scoped through the contacts tier too (4 Sent-only results). A
+nonexistent `folder:NonexistentFolderXYZ` correctly returned "no
+matches" instead of searching the whole account. `npx vitest run`: 249
+passed | 1 skipped.
+
+[mail-search.ts](src/lib/mail/mail-search.ts),
+[retrieve.ts](src/lib/mail/ai/retrieve.ts),
+[mail.ts](src/actions/mail.ts),
+[mail-client.tsx](src/components/mail/mail-client.tsx) —
+`feature/mail-folder-scoped-search`, merged to main.
