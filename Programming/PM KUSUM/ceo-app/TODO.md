@@ -2894,3 +2894,75 @@ including 6 new tests for `hasRemoteImages`/image blocking.
 [message-reader.tsx](src/components/mail/message-reader.tsx),
 [mail-client.tsx](src/components/mail/mail-client.tsx) —
 `feature/mail-reader-images-and-focus-consistency`, merged to main.
+
+## 2026-07-31 — Calendar Phases 0-1: real visual calendar page (month/week/day)
+
+A full gap audit against industry-standard apps (Google Calendar, Notion
+Calendar, Calendly, Reclaim.ai, Motion, Superhuman) found Calendar's
+single biggest gap: **no calendar surface in the app at all** — only a
+Google OAuth connect/disconnect settings modal, plus a backend service
+consumed by a manual scheduling form and one AI tool. No month/week/day
+grid, no event list, no way to see "what's on my calendar" inside the
+product. Confirmed as the top priority for a multi-phase build (this
+entry covers the first two; a public Calendly-style booking link and
+full AI control of Calendar follow in later phases).
+
+**Phase 0 — backend primitives** (no UI): `google.ts` gained
+`listEvents`/`updateMeetingEvent`/`deleteMeetingEvent`, reusing the
+existing `getCalendarClientForAccount` auth-refresh helper and every
+existing convention (`calendarId: "primary"`, `sendUpdates: "all"`,
+`null`/`false` when disconnected) — the already-granted OAuth scope
+covers read/update/delete, so no already-connected mailbox needs to
+re-consent. `propose-times.ts`'s `generateCandidateSlots` gained
+optional `weeklyWindows`/`bufferBeforeMins`/`bufferAfterMins` params —
+omitted, it's byte-identical to the existing AI/manual-scheduling
+behavior (all 5 original tests pass unchanged) — plus
+`getPublicBookingSlots`/`parseWeeklyWindowsJson` for the future public
+booking page, sharing this exact conflict-avoidance logic rather than
+duplicating it. New `BookingPolicy` (the CEO's configurable public-
+booking availability, disabled by default) and `PublicBookingAttempt`
+(a Postgres-backed per-IP daily rate-limit counter — no rate-limiting
+existed anywhere in this app before) Prisma models. `policy.ts` gained
+`calendar_update`/`calendar_cancel`/`calendar_policy_update` as
+irreversible actions for later phases.
+
+**Phase 1 — the calendar page itself**: `/ceo/calendar`, added to
+`ceo-shell.tsx`'s nav next to Mail. `listCalendarEventsAction` fetches
+real events for whatever range is visible (no local mirror table —
+live-fetched per view, matching this app's stated "no new search/sync
+infra" philosophy for a single CEO's single calendar). `calendar-view.tsx`
+renders month/week/day views using `date-fns` (already a dependency,
+previously unused anywhere in `src/` — no new calendar-grid library
+needed) — month view shows event chips per day with an overflow count
+and jumps to day view on click; week/day views list events chronologically;
+clicking any event opens a detail card (title, time, attendees, Join
+Meet / Open in Google Calendar links) reusing the existing modal/spring/
+CSS-var conventions from `schedule-meeting-panel.tsx`/`calendar-panel.tsx`.
+A disconnected mailbox sees a "Connect Google Calendar" empty state
+instead of a broken grid.
+
+**Verified live** against the real, already-connected Google Calendar
+(not mocked): Month view showed real event chips on their correct
+days; Week view showed three real events with correct, non-overlapping
+time ranges at real desktop width (the browser tool's own viewport-
+resize preset silently returned a 401px-wide window at one point during
+testing — caught by checking `window.innerWidth` directly rather than
+trusting the preset, then setting an explicit 1280×800 size); Day view
+listed the same events with Meet badges; the event detail card showed
+real attendees and working Meet/Calendar links; Today/prev/next
+navigation all correct; zero console errors. `npx vitest run`: 266
+passed | 1 skipped, including 20 new tests (`weeklyWindows` weekend/
+per-day cases, buffer-before/after — note the buffer semantics initially
+had the test parameters swapped, `bufferBeforeMins` vs `bufferAfterMins`,
+caught and fixed by the test failures themselves, not a bug in the
+implementation; `parseWeeklyWindowsJson`; `buildUpdateEventPayload`
+payload shapes; the three new autonomy actions).
+
+[google.ts](src/lib/calendar/google.ts),
+[propose-times.ts](src/lib/calendar/propose-times.ts),
+[policy.ts](src/lib/mail/ai/policy.ts),
+[calendar.ts](src/actions/calendar.ts),
+[calendar-view.tsx](src/components/calendar/calendar-view.tsx),
+[ceo-shell.tsx](src/components/ceo-shell.tsx) —
+`feature/calendar-view-backend` + `feature/calendar-view-page`, merged
+to main.
