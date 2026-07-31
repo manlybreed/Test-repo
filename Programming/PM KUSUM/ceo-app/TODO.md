@@ -2520,3 +2520,78 @@ addressed in this fix.
 [retrieve.ts](src/lib/mail/ai/retrieve.ts) —
 `fix/eval-rag-account-selection` and `fix/fts-tsquery-and-of-or-groups`,
 merged to main.
+
+## 2026-07-31 — Fix: threads whose only message was trashed stayed visible everywhere, opening blank
+
+Reported: searching "london" showed 11 results; two of them
+("Verify your email address", "4 predictions | Living longer |
+Workplace kindness") opened to a completely blank reader — no body,
+not even the "Empty message" placeholder.
+
+**Root cause, confirmed via direct query**: both threads' sole message
+had been moved to the Trash folder at some point, but the *thread*
+record's own `trashedAt` was never set — so it kept showing up in
+Inbox/All Inbox/search with stale subject/snippet from before the
+trash, while `getMailThread` (correctly) excludes Trash-folder messages
+from the "full conversation" view for any non-Trash context, returning
+zero messages. Zero messages means zero `MessageReader` components get
+rendered — not even the empty-message fallback, which only triggers
+inside a rendered message.
+
+**This was not a two-thread fluke.** A direct query across the account
+found **73 threads** in this exact orphaned state (every message in
+Trash, thread's own `trashedAt` still null) — a real, current, and
+fairly widespread data-integrity gap, not an edge case.
+
+**The actual gap**:
+[recomputeThreadDenorm()](src/lib/mail/threads-query.ts) — called
+after every import/delete/trash/send — only set the thread deleted
+entirely when the LAST message vanished outright; when messages
+remained but every one of them was now in Trash, it just refreshed
+`unreadCount`/`labelsJson` and left `trashedAt` untouched. Separately,
+even where `trashedAt` WAS tracked, nothing in
+`queryThreadsForView`'s `whereClause` ever actually filtered on it —
+it was used only for Trash-view sort order, never as an exclusion
+filter for every OTHER view.
+
+**Fixed, two parts**:
+- `recomputeThreadDenorm()` now sets the thread's own `trashedAt` when
+  every remaining message is specifically Trash-folder (not just a
+  lingering Draft copy), and clears it back to `null` the moment a
+  real non-Draft/non-Trash message exists again.
+- `queryThreadsForView()` now adds `trashedAt: null` to every
+  non-Trash query — Inbox, All Inbox, labels, the "contacts" search
+  tier, and the keyword-tier ILIKE steps all query with no folder
+  scope tight enough to exclude Trash on their own, so this is the
+  only thing that was ever supposed to keep trashed threads out of
+  them.
+
+**A second, related bug found live during verification**: even after
+fixing the data, clicking a search result sometimes still failed to
+open — the reader stuck on "Select a thread" forever, for threads that
+DID open successfully. Root cause: `openThread()`
+([mail-client.tsx](src/components/mail/mail-client.tsx)) only
+synthesized a fallback row for the reader (`selectedThreadFallback`)
+when a `threads.some(...)` check — evaluated once, at click time,
+against whatever `threads` happened to hold then — said the thread
+wasn't already in the visible list. If `threads` got replaced between
+the click and the fetch resolving (the live-sync SSE handler firing a
+background folder-view refresh mid-search was the main way this
+happened — `threads` backs both the folder view and search results,
+and that refresh has zero awareness of an in-progress search),
+`selectedThread`'s lookup found nothing and had no fallback either.
+Fixed by always synthesizing the fallback from the thread just
+fetched, regardless of that stale check, and by guarding the SSE
+auto-refresh to skip firing entirely while a search is active.
+
+**Backfilled** all 73 already-orphaned threads by re-running the fixed
+`recomputeThreadDenorm()` against them directly; verified zero remain
+orphaned afterward. Verified live: the two reported threads dropped out
+of the "london" search (11 → 8 results) and now show correctly in
+Trash instead; a normal thread and a genuinely-sparse-but-not-broken
+one (a calendar-accept notification) both still open and render
+exactly as before.
+
+[threads-query.ts](src/lib/mail/threads-query.ts),
+[mail-client.tsx](src/components/mail/mail-client.tsx) —
+`fix/orphaned-trashed-threads`, merged to main.
