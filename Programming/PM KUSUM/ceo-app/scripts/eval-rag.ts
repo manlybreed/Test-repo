@@ -22,6 +22,14 @@ type ExpectClause = { fromContains?: string; subjectContains?: string };
 type GoldenEntry = {
   query: string;
   expect?: ExpectClause[];
+  /**
+   * Clauses that must NOT appear anywhere in the top-k — a precision
+   * assertion, distinct from (and checked independently of) the recall
+   * checks below. Catches the "SBI POS machine" class of bug: the right
+   * answer was never missing (recall was fine), a WRONG answer was also
+   * present and ranked in.
+   */
+  mustNotMatch?: ExpectClause[];
   expectEmpty?: boolean;
   expectEmptyOk?: boolean;
 };
@@ -63,18 +71,32 @@ async function main() {
 
   const perBucket: Record<
     string,
-    { hits: number; total: number; rrSum: number }
+    { hits: number; total: number; rrSum: number; precisionFailures: number }
   > = {};
   const failures: string[] = [];
 
   for (const [bucket, entries] of Object.entries(golden.buckets)) {
-    perBucket[bucket] = { hits: 0, total: 0, rrSum: 0 };
+    perBucket[bucket] = { hits: 0, total: 0, rrSum: 0, precisionFailures: 0 };
     for (const entry of entries) {
       const results = await retrieveMail({
         accountId: account.id,
         query: entry.query,
         limit: 10,
       });
+
+      // Precision check — independent of the recall checks below, and run
+      // regardless of which recall branch this entry takes. A match here
+      // means a specific, known-wrong result made it into the top-k even
+      // though the right one (if any) was also found.
+      const falsePositive = (entry.mustNotMatch || []).find((c) =>
+        results.some((r) => clauseMatches(c, r)),
+      );
+      if (falsePositive) {
+        perBucket[bucket]!.precisionFailures += 1;
+        failures.push(
+          `[${bucket}] "${entry.query}" — precision miss: matched excluded ${JSON.stringify(falsePositive)}`,
+        );
+      }
 
       // Edge entries assert emptiness / graceful handling.
       if (entry.expectEmpty) {
@@ -88,6 +110,13 @@ async function main() {
         // Just must not throw; always counts as handled.
         perBucket[bucket]!.total += 1;
         perBucket[bucket]!.hits += 1;
+        continue;
+      }
+      if (!entry.expect?.length) {
+        // Precision-only entry (mustNotMatch with no recall claim) — already
+        // scored above. Skipping the recall tally here means a query with no
+        // "right answer" to find can't drag recall/MRR down just because
+        // nothing in results.expect ever matches an empty array.
         continue;
       }
 
@@ -112,23 +141,30 @@ async function main() {
   let allHits = 0;
   let allTotal = 0;
   let allRr = 0;
-  console.log("bucket         recall@10   MRR     (hits/total)");
-  console.log("------         ---------   ---     -----------");
+  let allPrecisionFailures = 0;
+  console.log("bucket         recall@10   MRR     (hits/total)   precision-fails");
+  console.log("------         ---------   ---     -----------    ---------------");
   for (const [bucket, s] of Object.entries(perBucket)) {
     allHits += s.hits;
     allTotal += s.total;
     allRr += s.rrSum;
+    allPrecisionFailures += s.precisionFailures;
     const recall = s.total ? s.hits / s.total : 0;
     const mrr = s.total ? s.rrSum / s.total : 0;
     console.log(
-      `${bucket.padEnd(14)} ${recall.toFixed(2).padStart(6)}   ${mrr.toFixed(2).padStart(5)}     (${s.hits}/${s.total})`,
+      `${bucket.padEnd(14)} ${recall.toFixed(2).padStart(6)}   ${mrr.toFixed(2).padStart(5)}     (${s.hits}/${s.total})       ${s.precisionFailures}`,
     );
   }
   const overallRecall = allTotal ? allHits / allTotal : 0;
   const overallMrr = allTotal ? allRr / allTotal : 0;
-  console.log("------         ---------   ---     -----------");
+  console.log("------         ---------   ---     -----------    ---------------");
   console.log(
-    `${"OVERALL".padEnd(14)} ${overallRecall.toFixed(2).padStart(6)}   ${overallMrr.toFixed(2).padStart(5)}     (${allHits}/${allTotal})`,
+    `${"OVERALL".padEnd(14)} ${overallRecall.toFixed(2).padStart(6)}   ${overallMrr.toFixed(2).padStart(5)}     (${allHits}/${allTotal})       ${allPrecisionFailures}`,
+  );
+  console.log(
+    allPrecisionFailures === 0
+      ? "\nPrecision: 0 failures — no known-wrong result surfaced in any top-k."
+      : `\nPrecision: ${allPrecisionFailures} failure(s) — a known-wrong result surfaced in the top-k (see Misses below).`,
   );
 
   const para = perBucket["paraphrase"];

@@ -33,8 +33,8 @@ const STOP = new Set([
 ]);
 
 /** token → alternate spellings / related phrases to OR-match */
-const SYNONYMS: Record<string, string[]> = {
-  pos: ["pos", "point of sale", "e-statement", "estatement", "e statement"],
+export const SYNONYMS: Record<string, string[]> = {
+  pos: ["pos", "point of sale"],
   sbi: ["sbi", "state bank", "state bank of india"],
   hdfc: ["hdfc", "hdfc bank"],
   icici: ["icici", "icici bank"],
@@ -470,16 +470,36 @@ export function scoreSearchHit(opts: {
       ? opts.plan.mustGroups
       : tokens.map((t) => synonymVariants(t));
 
+  // A group satisfied only via a multi-word/hyphenated synonym variant
+  // ("point of sale", "e-statement") must never score like a literal,
+  // single-word match — mirrors Algolia's alternativesAsExact distinction
+  // (multi-word synonyms are "semantically farther"). Weight 1.0 for a
+  // literal/single-word hit, 0.4 for a multi-word-only hit, 0 for no hit —
+  // a second, independent defense layer beyond the literal-first waterfall:
+  // even a future bad multi-word synonym entry that slips past the
+  // SYNONYMS cross-concept test ranks low instead of winning outright.
+  const isMultiWord = (v: string) => v.includes(" ") || v.includes("-");
+  const bestMatchWeight = (haystack: string, variants: string[]): number => {
+    let weight = 0;
+    for (const v of variants) {
+      if (!textHasToken(haystack, v)) continue;
+      weight = Math.max(weight, isMultiWord(v) ? 0.4 : 1);
+    }
+    return weight;
+  };
+
+  const subjectWeights: number[] = [];
   for (const group of groups) {
     const variants = expandSenderVariants(group);
-    const inSubject = variants.some((v) => textHasToken(subject, v));
-    const inFrom = variants.some((v) => textHasToken(from, v));
-    const inSnippet = variants.some((v) => textHasToken(snippet, v));
-    const inBlob = variants.some((v) => textHasToken(blob, v));
-    if (inSubject) score += 28;
-    else if (inFrom) score += 22;
-    else if (inSnippet) score += 12;
-    else if (inBlob) score += 8;
+    const subjectW = bestMatchWeight(subject, variants);
+    const fromW = bestMatchWeight(from, variants);
+    const snippetW = bestMatchWeight(snippet, variants);
+    const blobW = bestMatchWeight(blob, variants);
+    subjectWeights.push(subjectW);
+    if (subjectW) score += 28 * subjectW;
+    else if (fromW) score += 22 * fromW;
+    else if (snippetW) score += 12 * snippetW;
+    else if (blobW) score += 8 * blobW;
   }
 
   for (const hint of opts.plan?.fromHints || []) {
@@ -489,10 +509,10 @@ export function scoreSearchHit(opts: {
     if (textHasToken(hay, term)) score += 6;
   }
 
-  const subjectHits = groups.filter((g) =>
-    expandSenderVariants(g).some((v) => textHasToken(subject, v)),
-  ).length;
-  if (groups.length && subjectHits === groups.length) score += 30;
+  const subjectHits = subjectWeights.filter((w) => w > 0).length;
+  if (groups.length && subjectHits === groups.length) {
+    score += 30 * Math.min(...subjectWeights);
+  }
 
   return score * recencyFactor(opts.date);
 }

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { claudeJson, getAnthropic } from "@/lib/mail/ai/claude";
 import {
+  requiredSearchTokens,
   synonymVariants,
   tokenizeSearchQuery,
 } from "@/lib/mail/mail-search";
@@ -32,6 +33,25 @@ function cacheGet(q: string): SearchPlan | null {
 
 function cacheSet(q: string, plan: SearchPlan) {
   expandCache.set(q.toLowerCase(), { at: Date.now(), plan });
+}
+
+/**
+ * Exact user tokens, no synonym expansion at all — the narrowest, safest
+ * reading of a query. Tried before lexicalSearchPlan/expandSearchQuery so a
+ * bad or overly-broad entry in the SYNONYMS table (or a future one) can
+ * never corrupt a query whose literal terms already resolve cleanly; only
+ * a genuine literal miss falls through to concept expansion.
+ */
+export function literalSearchPlan(query: string): SearchPlan {
+  const tokens = tokenizeSearchQuery(query);
+  const required = requiredSearchTokens(tokens);
+  const optional = tokens.filter((t) => !required.includes(t));
+  return {
+    mustGroups: (required.length ? required : tokens).map((t) => [t]),
+    should: optional,
+    fromHints: [],
+    intent: query.trim(),
+  };
 }
 
 /** Deterministic fallback when Claude is unavailable. */
@@ -96,9 +116,12 @@ Rules:
 - fromHints: domains/locals like "sbi", "statebank", "yono", "hdfcbank", "reportsmailer".
 - Keep variants short (1–4 words). No sentences.
 - Example: "SBI POS machine" →
-  mustGroups: [["sbi","state bank","state bank of india"],["pos","point of sale","e-statement","estatement","edc","terminal"]],
+  mustGroups: [["sbi","state bank","state bank of india"],["pos","point of sale","edc","terminal"]],
   should: ["machine","device","merchant","card"],
-  fromHints: ["sbi","statebank","yono","onlinesbi"]`,
+  fromHints: ["sbi","statebank","yono","onlinesbi"]
+- A POS/EDC card machine and a bank e-statement are different concepts —
+  "e-statement" only belongs with actual statement/document queries, never
+  as a variant of "pos".`,
     user: `Query: ${q}`,
   }).catch(() => null);
 

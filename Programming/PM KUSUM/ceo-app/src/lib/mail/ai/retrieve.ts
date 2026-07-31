@@ -7,7 +7,12 @@ import {
   synonymVariants,
   tokenizeSearchQuery,
 } from "@/lib/mail/mail-search";
-import { expandSearchQuery, lexicalSearchPlan, rerankSearchHits } from "@/lib/mail/ai/search-expand";
+import {
+  expandSearchQuery,
+  lexicalSearchPlan,
+  literalSearchPlan,
+  rerankSearchHits,
+} from "@/lib/mail/ai/search-expand";
 import { getAnthropic } from "@/lib/mail/ai/claude";
 import { bestChunkByMessage } from "@/lib/mail/chunking";
 
@@ -120,7 +125,7 @@ export async function retrieveMail(opts: {
    * - `none`: raw query string (tests / tight loops)
    *
    * `skipExpand: true` is treated as `lexical` so keyword search still gets
-   * SBI→state bank / POS→e-statement coverage without an LLM round-trip.
+   * SBI→state bank / HDFC→HDFC bank coverage without an LLM round-trip.
    */
   expand?: "ai" | "lexical" | "none";
   /** @deprecated Prefer `expand`. `true` ⇒ lexical (not none). */
@@ -146,7 +151,13 @@ export async function retrieveMail(opts: {
   const expandMode: "ai" | "lexical" | "none" =
     opts.expand ?? (opts.skipExpand ? "lexical" : "ai");
 
-  // AI-05 / lexical: rewrite into richer FTS terms when useful
+  // AI-05 / lexical / literal: rewrite into richer FTS terms when useful.
+  // "none" must ALSO go through a plan (literalSearchPlan), not the raw
+  // query string — otherwise optional boost words (e.g. "machine") become
+  // mandatory AND terms in the tsquery, that overly-strict query usually
+  // finds nothing, and the caller silently falls through to this
+  // function's own unindexed ILIKE fallback below (which then reaches
+  // into attachment text) while the outer waterfall still reports "fts".
   let ftsQuery = q;
   let plan = null as Awaited<ReturnType<typeof expandSearchQuery>> | null;
   if (q && expandMode === "ai" && q.length >= 4) {
@@ -155,6 +166,10 @@ export async function retrieveMail(opts: {
     if (fromPlan) ftsQuery = fromPlan;
   } else if (q && expandMode === "lexical") {
     plan = lexicalSearchPlan(q);
+    const fromPlan = searchPlanToFtsQuery(plan.mustGroups);
+    if (fromPlan) ftsQuery = fromPlan;
+  } else if (q && expandMode === "none") {
+    plan = literalSearchPlan(q);
     const fromPlan = searchPlanToFtsQuery(plan.mustGroups);
     if (fromPlan) ftsQuery = fromPlan;
   }
@@ -187,14 +202,19 @@ export async function retrieveMail(opts: {
     }
   }
 
-  // ILIKE fallback / merge when FTS empty or unavailable
+  // ILIKE fallback / merge when FTS empty or unavailable. Must respect the
+  // caller's expand mode the same way the primary FTS query above does —
+  // otherwise expand:"none" isn't actually literal end-to-end, it's only
+  // literal until the first miss, then silently reintroduces synonym
+  // expansion (and whatever bad entries might exist in SYNONYMS) anyway.
   if (!ids.length) {
     const tokens = requiredSearchTokens(tokenizeSearchQuery(q || ftsQuery));
+    const variantsFor = (t: string) => (expandMode === "none" ? [t] : synonymVariants(t));
     const andTerms =
       tokens.length > 1
-        ? tokens.map((t) => messageFieldMatchOr(synonymVariants(t)))
+        ? tokens.map((t) => messageFieldMatchOr(variantsFor(t)))
         : tokens.length === 1
-          ? [messageFieldMatchOr(synonymVariants(tokens[0]!))]
+          ? [messageFieldMatchOr(variantsFor(tokens[0]!))]
           : q
             ? [messageFieldMatchOr([q])]
             : [];

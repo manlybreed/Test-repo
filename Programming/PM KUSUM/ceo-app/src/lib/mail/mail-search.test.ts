@@ -5,10 +5,12 @@ import {
   needsWordBoundary,
   parseSearchOperators,
   scoreSearchHit,
+  SYNONYMS,
   synonymVariants,
   textHasToken,
   tokenizeSearchQuery,
 } from "@/lib/mail/mail-search";
+import { literalSearchPlan } from "@/lib/mail/ai/search-expand";
 
 describe("mail search", () => {
   it("tokenizes multi-word queries and drops stop words", () => {
@@ -56,6 +58,128 @@ describe("mail search", () => {
     expect(falsePos).toBeLessThan(40);
   });
 
+  it("scores a multi-word-synonym-only match lower than a literal-token match — a second, general defense layer beyond word-boundary matching and the SYNONYMS-table audit above, independent of which specific word is involved", () => {
+    // A deliberately synthetic, made-up concept group — not any real
+    // SYNONYMS entry — validating the scoring MECHANISM (a single-word
+    // literal match outscores a multi-word-only match) in the abstract,
+    // not for "pos"/"sbi" specifically. Query phrase deliberately never
+    // appears contiguously in either subject, so the top-level exact
+    // -phrase bonus can't be what's actually driving the result — only
+    // the per-group multi-word-vs-literal weighting can.
+    const plan = {
+      mustGroups: [
+        ["acme", "acme corp"],
+        ["widget", "small mechanical gadget"],
+      ],
+    };
+    const literalMatch = scoreSearchHit({
+      query: "acme widget",
+      subject: "Acme order: widget shipped confirmation",
+      plan,
+    });
+    const multiWordOnlyMatch = scoreSearchHit({
+      query: "acme widget",
+      subject: "Acme order: small mechanical gadget shipped confirmation",
+      plan,
+    });
+    expect(literalMatch).toBeGreaterThan(multiWordOnlyMatch);
+  });
+
+  it("no long synonym variant is silently shared between unrelated, non-cross-referencing concept keys", () => {
+    // General, mechanical audit of the SYNONYMS table itself — not about
+    // "pos" or "sbi" specifically, and it would catch the next accidental
+    // concept merge for any other keyword pair too.
+    //
+    // Two keys legitimately share vocabulary when they're aliases of the
+    // *same* real-world thing (machine/terminal are the same card device;
+    // kusum/pmkusum are the same project name spelled two ways) — and in
+    // every such legitimate case in this table, at least one of the two
+    // keys explicitly lists the other key's name as its own variant. A
+    // shared long (>4 char) phrase between two keys that DON'T reference
+    // each other at all is not a legitimate alias — it's one concept's
+    // vocabulary accidentally leaking into an unrelated concept's list
+    // (exactly how "e-statement"/"estatement" ended up inside "pos"
+    // without "pos" and "statement" ever naming each other).
+    const keys = Object.keys(SYNONYMS);
+    const lower = (arr: string[]) => arr.map((s) => s.trim().toLowerCase());
+    const violations: string[] = [];
+    for (let i = 0; i < keys.length; i++) {
+      for (let j = i + 1; j < keys.length; j++) {
+        const a = keys[i]!;
+        const b = keys[j]!;
+        const av = lower(SYNONYMS[a]!);
+        const bv = lower(SYNONYMS[b]!);
+        const shared = av.filter((v) => v.length > 4 && bv.includes(v));
+        if (!shared.length) continue;
+        const reciprocated = av.includes(b) || bv.includes(a);
+        if (!reciprocated) {
+          violations.push(
+            `"${a}" and "${b}" share ${JSON.stringify(shared)} but neither lists the other as a variant`,
+          );
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("literalSearchPlan resolves distinct jargon pairs to exact tokens with no synonym expansion — proves the fix generalizes across unrelated vocabularies, not just sbi/pos", () => {
+    // Four unrelated domains: the reported bank/POS pair, a different
+    // bank + product-jargon pair, non-banking tax jargon, and this
+    // project's own internal jargon.
+    expect(literalSearchPlan("SBI POS machine").mustGroups).toEqual([
+      ["sbi"],
+      ["pos"],
+    ]);
+    expect(literalSearchPlan("HDFC EDC device").mustGroups).toEqual([
+      ["hdfc"],
+      ["edc"],
+    ]);
+    expect(literalSearchPlan("invoice GST").mustGroups).toEqual([
+      ["invoice"],
+      ["gst"],
+    ]);
+    expect(literalSearchPlan("PM KUSUM proposal").mustGroups).toEqual([
+      ["pm"],
+      ["kusum"],
+      ["proposal"],
+    ]);
+  });
+
+  it("literalSearchPlan never expands ANY SYNONYMS key into its variant list — an architectural guarantee, not a per-keyword patch", () => {
+    // For every real key in the hand-curated table, a single-token query
+    // for that key must resolve to exactly [[key]] — never the expanded
+    // variant list. This means a future bad or overly-broad SYNONYMS entry,
+    // for ANY word, can never corrupt what step 1 of the search waterfall
+    // finds; only the deliberate lexical/AI fallback steps ever consult
+    // synonymVariants at all.
+    for (const key of Object.keys(SYNONYMS)) {
+      expect(literalSearchPlan(key).mustGroups).toEqual([[key]]);
+    }
+  });
+
+  it("a synthetic, made-up bad synonym mapping (independent of the real SYNONYMS table) cannot leak into a literal plan or corrupt matching against a literal-only document — the general blast-radius containment the waterfall relies on", () => {
+    // Deliberately fake, nonsensical pairing that would never appear in the
+    // real table — this is about the SHAPE of the guarantee, not about
+    // "pos"/"e-statement" specifically.
+    const fakeBadSynonyms: Record<string, string[]> = {
+      widget: ["widget", "unrelated concept that would never co-occur"],
+    };
+    expect(literalSearchPlan("widget").mustGroups).toEqual([["widget"]]);
+    expect(fakeBadSynonyms.widget).not.toEqual(
+      literalSearchPlan("widget").mustGroups[0],
+    );
+
+    // A document containing ONLY the literal tokens the user typed (no
+    // expanded synonym phrase anywhere, real or fake) already satisfies
+    // every mustGroup produced by literalSearchPlan — proving step 1 of the
+    // waterfall never needs a synonym group to resolve anything.
+    const plan = literalSearchPlan("SBI POS machine");
+    const literalOnlyDoc = "sbi pos maintenance ticket"; // no "state bank", no "point of sale"
+    for (const group of plan.mustGroups) {
+      expect(group.some((v) => textHasToken(literalOnlyDoc, v))).toBe(true);
+    }
+  });
+
   it("classifies bare names as person tier (no AI)", () => {
     expect(classifySearchTier("prachi")).toBe("person");
     expect(classifySearchTier("John Smith")).toBe("person");
@@ -76,7 +200,15 @@ describe("mail search", () => {
 
   it("expands POS / SBI synonyms", () => {
     expect(synonymVariants("pos")).toEqual(
-      expect.arrayContaining(["pos", "e-statement"]),
+      expect.arrayContaining(["pos", "point of sale"]),
+    );
+    // A POS card machine and a bank e-statement are different concepts —
+    // this was the actual root cause of the "SBI POS Machine" false
+    // positive (a financing-proposal email discussing e-statements
+    // satisfied the "pos" concept group even with nothing to do with a
+    // physical machine). Pin the fix down directly, not just its absence.
+    expect(synonymVariants("pos")).not.toEqual(
+      expect.arrayContaining(["e-statement"]),
     );
     expect(synonymVariants("sbi")).toEqual(
       expect.arrayContaining(["sbi", "state bank"]),
