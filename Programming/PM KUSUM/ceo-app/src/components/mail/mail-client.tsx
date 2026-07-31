@@ -1316,6 +1316,7 @@ export function MailClient({
    * whichever account was active at mount/subscribe time. */
   const accountInfoRef = useRef(accountInfo);
   const activeFolderRef = useRef(activeFolder);
+  const threadQueryRef = useRef("");
   const searchInputRef = useRef<HTMLInputElement>(null);
   /**
    * Snapshot of the auto-populated reply-context fields (To/Cc/Bcc/Subject/
@@ -1840,28 +1841,34 @@ export function MailClient({
         setMessages(msgs);
         setStatus("");
 
-        // If this thread isn't in the current list (e.g. opened from an Ask
-        // citation in another folder), synthesize a row so the reader renders.
-        if (!threads.some((x) => x.id === id)) {
-          const last = msgs[msgs.length - 1];
-          setSelectedThreadFallback({
-            id: t.id,
-            subject: t.subject,
-            snippet: t.snippet ?? null,
-            lastMessageAt: t.lastMessageAt,
-            trashedAt: t.trashedAt,
-            unreadCount: 0,
-            priority: t.priority,
-            important: t.important,
-            labelsJson: t.labelsJson,
-            fromName: last?.fromName ?? null,
-            fromAddress: last?.fromAddress ?? null,
-            hasAttachments: last?.hasAttachments ?? false,
-            answered: false,
-          });
-        } else {
-          setSelectedThreadFallback(null);
-        }
+        // Always synthesize a fallback row from the thread we just fetched,
+        // regardless of whether `id` was in `threads` at click time. That
+        // stale-closure check used to gate this: it only asked "was this
+        // thread in the list when the click happened," which can no longer
+        // be true by the time this async callback runs if `threads` was
+        // replaced in the meantime (e.g. a folder-view refresh firing mid
+        // -search, or opening from an Ask citation in another folder) —
+        // `selectedThread`'s lookup would then find nothing in `threads`
+        // AND have no fallback to fall back on, leaving the reader stuck on
+        // "Select a thread" even though the fetch itself succeeded. Setting
+        // this unconditionally costs nothing when the thread genuinely is
+        // still in `threads` — `selectedThread` tries `threads.find` first.
+        const last = msgs[msgs.length - 1];
+        setSelectedThreadFallback({
+          id: t.id,
+          subject: t.subject,
+          snippet: t.snippet ?? null,
+          lastMessageAt: t.lastMessageAt,
+          trashedAt: t.trashedAt,
+          unreadCount: 0,
+          priority: t.priority,
+          important: t.important,
+          labelsJson: t.labelsJson,
+          fromName: last?.fromName ?? null,
+          fromAddress: last?.fromAddress ?? null,
+          hasAttachments: last?.hasAttachments ?? false,
+          answered: false,
+        });
 
         if (folderRole === "INBOX" || inSmartInbox || !folder) {
           setThreads((prev) =>
@@ -1871,7 +1878,6 @@ export function MailClient({
           void markThreadRead(id).catch(() => undefined);
         }
 
-        const last = msgs[msgs.length - 1];
         const viewingDrafts = folderRole === "DRAFTS";
 
         if (viewingDrafts && last) {
@@ -2104,6 +2110,7 @@ export function MailClient({
   reloadActiveViewRef.current = reloadActiveView;
   accountInfoRef.current = accountInfo;
   activeFolderRef.current = activeFolder;
+  threadQueryRef.current = threadQuery;
 
   function selectSmartInbox() {
     haptic("tap");
@@ -4228,6 +4235,18 @@ export function MailClient({
       if (refreshTimer) clearTimeout(refreshTimer);
       refreshTimer = setTimeout(() => {
         if (document.visibilityState !== "visible") return;
+        // A background live-sync refresh must never clobber an active search:
+        // `threads` backs both the folder view and search results, and
+        // reloadActiveView() always repopulates it from the current FOLDER,
+        // with no awareness of an in-progress search. Firing it mid-search
+        // silently replaces the visible search results with the folder's
+        // default listing (same state, unrelated data) — any result not also
+        // in that default listing (e.g. an older thread) vanishes from
+        // `threads` entirely, and clicking it right as this races leaves the
+        // reader stuck on "Select a thread" forever, since openThread's
+        // fallback-synthesis check only ran once, at click time, against a
+        // `threads` snapshot that still contained it.
+        if (threadQueryRef.current.trim().length >= 2) return;
         void reloadActiveViewRef.current().then(() => {
           setAccountInfo((a) => (a ? { ...a, lastSyncedAt: new Date() } : a));
           setStatus((s) =>
