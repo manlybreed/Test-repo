@@ -8,10 +8,14 @@ import { buildIcsInvite } from "@/lib/mail/ai/meeting";
 import { assertAutonomy } from "@/lib/mail/ai/policy";
 import {
   createMeetingEvent,
+  deleteMeetingEvent,
   disconnectGoogleCalendar,
   googleCalendarConfigured,
   listEvents,
+  updateMeetingEvent,
   type CalendarEventSummary,
+  type CreatedMeeting,
+  type MeetingEventPatch,
 } from "@/lib/calendar/google";
 import { getCandidateMeetingSlots, type MeetingSlotOption } from "@/lib/calendar/propose-times";
 import { prisma } from "@/lib/prisma";
@@ -105,6 +109,55 @@ export async function listCalendarEventsAction(
   const { account } = await requireAccount(accountId);
   const events = await listEvents(account.id, timeMinIso, timeMaxIso);
   return { connected: events !== null, events: events ?? [] };
+}
+
+/**
+ * Reschedules/renames/re-invites a real Calendar event from the
+ * /ceo/calendar grid — Google emails the update to attendees itself.
+ * `confirmed` mirrors createMeetingAction's contract: the UI passes
+ * `true` because the button click that triggers this call *is* the
+ * human confirmation (no AI tool calls this directly — see
+ * update_calendar_event's own confirmation-card gate for that path).
+ */
+export async function updateMeetingAction(input: {
+  eventId: string;
+  patch: MeetingEventPatch;
+  confirmed: boolean;
+  accountId?: string;
+}): Promise<CreatedMeeting> {
+  assertAutonomy("calendar_update", { confirmed: input.confirmed });
+
+  if (input.patch.startIso && new Date(input.patch.startIso).getTime() < Date.now()) {
+    throw new Error(
+      `Refusing to move a meeting into the past (startIso ${input.patch.startIso}) — check the date.`,
+    );
+  }
+
+  const { account } = await requireAccount(input.accountId);
+  const updated = await updateMeetingEvent(account.id, input.eventId, input.patch);
+  if (!updated) {
+    throw new Error("This mailbox has no Google Calendar connection.");
+  }
+  return updated;
+}
+
+/**
+ * Cancels a real Calendar event from the /ceo/calendar grid — Google
+ * emails a cancellation to attendees itself. Same confirmed-means-a-
+ * real-click contract as updateMeetingAction above.
+ */
+export async function cancelMeetingAction(input: {
+  eventId: string;
+  confirmed: boolean;
+  accountId?: string;
+}): Promise<{ ok: true }> {
+  assertAutonomy("calendar_cancel", { confirmed: input.confirmed });
+  const { account } = await requireAccount(input.accountId);
+  const ok = await deleteMeetingEvent(account.id, input.eventId);
+  if (!ok) {
+    throw new Error("This mailbox has no Google Calendar connection.");
+  }
+  return { ok: true };
 }
 
 export async function disconnectGoogleCalendarAction(
