@@ -29,6 +29,7 @@ import {
   Minus,
   MoreHorizontal,
   Paperclip,
+  PanelLeftOpen,
   PenLine,
   Plane,
   Save,
@@ -1427,6 +1428,12 @@ export function MailClient({
     null,
   );
   const [foldersCollapsed, setFoldersCollapsed] = useState(false);
+  /** Escape hatch for "focus mode" (see composingDocked below) — docking a
+   * reply/draft normally hides the thread list entirely to give the reader
+   * more room, with no way back short of closing compose. Pinning brings
+   * the list back alongside a docked compose without leaving it. */
+  const [threadsPinnedWhileComposing, setThreadsPinnedWhileComposing] =
+    useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [showSnoozeMenu, setShowSnoozeMenu] = useState(false);
   const [mailboxesOpen, setMailboxesOpen] = useState(true);
@@ -1528,9 +1535,15 @@ export function MailClient({
   }, [askA, askSourcesMap]);
 
   // Focus mode: when a reply/compose is docked open, collapse the thread list
-  // and give the reader the freed columns (restores when the reply closes).
+  // and give the reader the freed columns (restores when the reply closes) —
+  // unless the user has pinned the list back via threadsPinnedWhileComposing,
+  // the only way to see other threads while a reply/draft stays open
+  // otherwise (previously there was none at all: docking any reply, or a
+  // draft opened from the Drafts folder, hid the thread list until compose
+  // fully closed, with no escape hatch).
   const composingDocked = showCompose && !composeFullscreen;
-  const readerSpanClass = composingDocked
+  const hideThreadsForFocus = composingDocked && !threadsPinnedWhileComposing;
+  const readerSpanClass = hideThreadsForFocus
     ? foldersCollapsed
       ? "lg:col-span-[23]"
       : "lg:col-span-[20]"
@@ -5298,16 +5311,17 @@ export function MailClient({
           )}
         </motion.aside>
 
-        {/* Thread list — collapses into focus mode while composing a reply */}
+        {/* Thread list — collapses into focus mode while composing a reply,
+            unless pinned back via threadsPinnedWhileComposing */}
         <AnimatePresence mode="popLayout">
-          {!composingDocked && (
+          {!hideThreadsForFocus && (
         <motion.section
           key="thread-list"
           layout
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.97 }}
-          transition={{ ...spring, delay: composingDocked ? 0 : 0.08 }}
+          transition={{ ...spring, delay: hideThreadsForFocus ? 0 : 0.08 }}
           className={`mail-panel flex min-h-0 flex-col overflow-hidden ${foldersCollapsed ? "lg:col-span-[9]" : "lg:col-span-[6]"}`}
         >
           <div
@@ -6025,6 +6039,20 @@ export function MailClient({
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
                     {/* Compact Gmail/Outlook-style icon toolbar. AI stays in the thread header for docked compose; fullscreen has its own bottom bar */}
+                    {composingDocked && (
+                      <IconBtn
+                        title={
+                          hideThreadsForFocus
+                            ? "Show thread list"
+                            : "Hide thread list"
+                        }
+                        active={threadsPinnedWhileComposing}
+                        icon={<PanelLeftOpen size={15} />}
+                        onClick={() =>
+                          setThreadsPinnedWhileComposing((v) => !v)
+                        }
+                      />
+                    )}
                     {!composeFullscreen && (
                       <>
                         <IconBtn
