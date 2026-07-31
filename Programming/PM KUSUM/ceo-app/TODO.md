@@ -3302,3 +3302,93 @@ booking policy, the public booking page itself, full AI tool control
 of all of it from both the Assistant chat and ⌘K/voice, and the
 "pick, don't type" quick-options layer on top. Nothing from the
 approved plan remains open.
+
+## 2026-08-01 — Calendar Phase 7: real hour grid, click-to-create, sidebar nav
+
+**Reported**: after Phases 0-6 shipped, comparing the live
+`/ceo/calendar` page against Notion Calendar and Google Calendar
+screenshots — "the navigation of calendar is not good … try scheduling
+meeting from here. ours is just blank."
+
+**Root cause**: Week and Day view were never real timelines. `WeekColumns`
+stacked event buttons in a fixed `min-h-[240px]` flex column per day;
+`DayList` was a flat sorted list rendering literally the text "Nothing
+scheduled." on an empty day. No hour lines, no current-time indicator,
+no way to click anywhere to create an event — which is exactly why the
+page read as blank and offered no path to schedule from it. The
+"navigation" half was the missing sidebar mini-calendar for date-jumping.
+
+**Fix**: `WeekColumns`/`DayList` both deleted, replaced by one new
+`time-grid.tsx` — 24 hour rows sharing a single scroll container (so
+hour lines and scroll position stay aligned across all 7 week columns,
+like Google Calendar's week view), events absolutely positioned by
+their real start/duration, all-day events in a separate fixed row above
+the scroll area, a live current-time line (red line + left dot, ticking
+every 60s) in whichever column is today, and auto-scroll to 8 AM on
+mount rather than opening at midnight. Day view is the same component
+with a one-element `days` array; Week passes seven.
+
+Overlapping events render side-by-side via new pure
+`event-layout.ts` — greedy interval-graph lane assignment (first lane
+whose last occupant has already ended), with `laneCount` computed from
+the lanes actually active during each event's own window so a lone
+event still takes the full column. Back-to-back events (one ending
+exactly as the next starts) correctly share a lane rather than
+splitting the column in half — touching isn't overlapping.
+
+Clicking empty grid space derives the exact date (which column) and
+time (vertical offset, rounded to the 30-min granularity
+`generateCandidateSlots` already uses) and opens the **existing**
+`ScheduleMeetingPanel` pre-filled, rather than building a second
+create-event form. That panel gained four optional props —
+`initialDate`/`initialTime`/`description`/`onScheduled` — all defaulted
+so Mail's existing call site is byte-identical in behavior; it also
+gained an `open`-keyed reset effect, because the panel stays mounted
+between opens and without it a second clicked slot would still show the
+first one's date/time. `onScheduled` fires only on the real-Google path
+(not the ICS fallback, which has nothing server-side to refetch) and
+bumps the grid's existing `refreshTick`.
+
+Navigation: new `mini-calendar.tsx` in a new left sidebar alongside a
+"+ New event" button. Month-browsing inside the mini-calendar is local
+state — paging ahead to peek doesn't move the main grid until a date is
+actually clicked — and selecting a date moves the anchor **without**
+changing Month/Week/Day mode, matching Google Calendar. Month-view day
+cells gained a hover "+" for quick-create without leaving the month.
+
+**Verified live** against the real, already-connected Google Calendar:
+Week view rendered all 24 hour labels, 7 day columns of exactly 1344px
+(24 × 56), and auto-scrolled to `scrollTop: 424` (8 × 56 − 24) as
+designed; the current-time line rendered at `top: 39.2px` at 00:42 IST
+(42/60 × 56 = 39.2 exactly). Clicked an empty slot in the Wednesday
+column at the 11:00 row → panel opened pre-filled `2026-08-05` /
+`11:00`, matching the clicked column and row precisely; completed it
+and a real Google event + Meet link was created, appearing in the grid
+immediately at `top: 616px` (11 × 56) with `height: 28px` (30 min ÷ 60
+× 56) — the auto-refresh working. Day view: 1 column, 24 hours, same
+8 AM scroll. Month view's hover "+" on Aug 12 pre-filled `2026-08-12` /
+`10:00`. Mini-calendar: clicked Aug 20 while in Week view → main grid
+jumped to "Aug 16 – 22, 2026" and stayed in Week mode with 7 columns,
+as intended. Test event cancelled afterward, leaving the real calendar
+clean.
+
+Two false alarms worth recording, both test-harness artifacts rather
+than product bugs: (1) reading an input's `value` in the *same*
+synchronous JS call as the click that opens the panel returns the
+pre-click value, since React hasn't re-rendered yet — the click and the
+assertion must be separate calls; (2) `document.querySelector('aside')`
+and a bare `'›'`-text button selector both match the app shell's own nav
+sidebar / the mini-calendar's month arrows before the calendar's, so
+live-check selectors need `.closest('aside')`/`aria-label` disambiguation.
+
+`npx tsc --noEmit`: clean. `npx eslint src`: zero errors. `npx vitest
+run`: 310 passed | 1 skipped, including 8 new `event-layout.test.ts`
+tests (non-overlapping, 2-way, 3-way, back-to-back-shares-a-lane,
+all-day-excluded, empty).
+
+[time-grid.tsx](src/components/calendar/time-grid.tsx),
+[event-layout.ts](src/components/calendar/event-layout.ts),
+[mini-calendar.tsx](src/components/calendar/mini-calendar.tsx),
+[calendar-view.tsx](src/components/calendar/calendar-view.tsx),
+[schedule-meeting-panel.tsx](src/components/mail/schedule-meeting-panel.tsx) —
+`feature/calendar-grid-redesign`, merged to main.
