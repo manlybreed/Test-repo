@@ -64,10 +64,10 @@ Grounding invariants (already enforced, keep them):
 - R4: `scripts/rag-golden.json` + `npm run eval:rag` (scaffolded; weekly automation pending)
 - No pgvector yet (R5 gated; paraphrase slice currently clears with AI-expand)
 
-**Threads search box** (`searchThreadsAction`) — **fixed (R6 / §3.2):**
+**Threads search box** (`searchThreadsAction`) — **fixed (R6 / §3.2), precision fix (§3.3):**
 
-- Tier router: person → `MailContact`; keyword → FTS (`retrieveMail` skipExpand); NL → expand + FTS + rerank
-- Status line shows mode: `(contacts)` / `(fts)` / `(ai)` / `(operators)`
+- Tier router: person → `MailContact`; keyword → literal-first FTS/ILIKE waterfall (see §3.3); NL → expand + FTS + rerank
+- Status line shows mode: `(contacts)` / `(fts)` / `(fts-expanded)` / `(ilike)` / `(ilike-expanded)` / `(ai)` / `(operators)` — see §3.3
 - Bare names like `prachi` no longer call Claude or scan bodies via ILIKE first
 
 ## 3. Known gaps
@@ -79,6 +79,7 @@ Grounding invariants (already enforced, keep them):
 | G7 | Semantic / paraphrase | **Conditional** — R4 paraphrase clears with expand; R5 pgvector deferred |
 | G8 | People index missing | **Done** as `MailContact` (R2); also wired to Threads search (R6) |
 | **G9** | **UI search ≠ Ask retrieval (split brain)** | **Fixed** — tiered Threads search (§3.2 / R6 P0) |
+| **G10–G14** | **Keyword tier bypassed the real FTS index; no literal-term fallback for synonym expansion; unindexed contact fuzzy lookup; eval harness measured recall only** | **Fixed** — see §3.3 addendum |
 
 ### 3.1 Issue: Threads search box was slow (observed Jul 2026) — fixed
 
@@ -104,6 +105,93 @@ Also:
 - Contact typeahead while typing remains available via compose/`findContactsAction` (Outlook-style people suggestions in the search box still optional polish)
 
 **Success:** `prachi` no longer multi-second; no Anthropic call on bare name queries.
+
+### 3.3 Addendum — 2026-07-31: precision regression in the "fixed" R6 tiered search
+
+R6 (§3.2) fixed *latency* (bare-name queries no longer hit Claude+ILIKE).
+It did not fix *precision*. A live query ("SBI POS Machine" returning
+unrelated "BluRidge <> SBI | Proposal for Financing" threads) surfaced a
+general defect: every required search token was unconditionally
+synonym-expanded as the *only* matching strategy, so any single bad or
+overly-broad entry in the hand-curated `SYNONYMS` table (here: `pos`
+wrongly listing `"e-statement"` as a variant, because a bank e-statement
+lists POS transactions as line items — a co-occurrence, not the same
+concept) silently corrupted precision for every query touching that
+token, with no fallback to what the user actually typed. The identical
+bad pairing was independently baked into `expandSearchQuery`'s Haiku
+few-shot example, so the NL tier could reproduce it on its own even with
+the table fixed.
+
+New gaps this doc's §3 table didn't previously flag:
+
+| Gap | Detail |
+|---|---|
+| G10 | Keyword tier never called `retrieveMail`/the FTS index — straight to `queryThreadsForView`'s Prisma `contains`/`startsWith` filters, which can't use a B-tree/GIN index. Status line labeled this `(fts)`; it was never real FTS. |
+| G11 | `MailContact.displayName`/`address` fuzzy lookup was unindexed Prisma `contains` — only exact-address lookup was actually indexed. |
+| G12 | Synonym expansion had no blast-radius containment and no literal-term fallback — a defect in the *architecture*, not one keyword; a new mechanical test now audits the `SYNONYMS` table itself for this class of mistake going forward. |
+| G13 | The R4 golden-set harness (`scripts/eval-rag.ts`/`rag-golden.json`) only ever measured *recall* (`expect`/`expectEmpty`) — there was no way to assert a specific wrong result must NOT appear, so the harness this project already runs periodically was structurally blind to this entire class of precision bug. |
+| G14 | Found live during verification, not in code review: `retrieveMail`'s own `expand:"none"` (literal) mode passed the *raw* query string straight to `websearch_to_tsquery`, making optional boost words (e.g. "machine") mandatory AND terms. That overly-strict query usually matched nothing, so the search silently fell through to `retrieveMail`'s own unindexed ILIKE fallback — which reaches into attachment text — while the outer waterfall still reported the result as `(fts)`. Confirmed against the real mailbox: a raw `'sbi' & 'pos' & 'machin'` tsquery matched zero messages, while twelve unrelated PM KUSUM solar-financing threads surfaced anyway via the attachment-scanning ILIKE fallback (one attached bank-statement PDF literally contained the transaction-type line "POS ATM PURCH"). |
+
+Fixed:
+
+- **G10/G12/G14** via a literal-FTS → lexical-FTS → literal-ILIKE →
+  lexical-ILIKE waterfall in the keyword tier (`literalSearchPlan` in
+  `search-expand.ts`, wired into both `retrieveMail`'s FTS-query
+  construction and `actions/mail.ts`'s `searchThreadsAction`), plus a
+  keyword-agnostic reciprocity-checked test that audits the whole
+  `SYNONYMS` table for accidental cross-concept sharing, and a per-field
+  scoring downgrade (0.4×) for matches satisfied only via a multi-word
+  synonym variant (mirrors Algolia's own documented `alternativesAsExact`
+  distinction between single- and multi-word synonyms).
+- **G11** via `pg_trgm` GIN trigram indexes on `MailContact.displayName`/
+  `address` (`ensureContactTrgmIndex()` in `contacts.ts`, same
+  idempotent pattern as `ensureMailFtsIndex()`). Confirmed via `EXPLAIN`
+  that the planner picks the trigram bitmap index scan for this query
+  shape once index usage isn't dominated by the current table's small
+  size (~260 rows) — at today's size a sequential scan is genuinely
+  cheaper, and that's correct planner behavior, not a gap; the index is
+  what lets the planner switch over automatically as the table grows.
+- **G13** via a new `mustNotMatch` clause type in the golden-set schema
+  (`scripts/eval-rag.ts`), scored independently of recall so a
+  precision-only entry (no `expect` claim) can't drag recall/MRR down.
+  The reported case plus a second angle on the same real thread (the
+  bare `"pos"` word-boundary case) were added as `adversarial`-bucket
+  entries — `npm run eval:rag` now reports "Precision: 0 failures"
+  against the real mailbox. Note: this run's *recall* numbers are
+  currently depressed by an unrelated, pre-existing issue —
+  `main()`'s `prisma.mailAccount.findFirst()` picks an arbitrary mailbox
+  account rather than the one the golden set was authored against
+  (predates this fix; tracked separately, not silently left broken).
+
+**Status line mode values** (§2/§3.2/§4.8 all referenced the old
+4-value set) are now `(contacts)` / `(fts)` / `(fts-expanded)` /
+`(ilike)` / `(ilike-expanded)` / `(ai)` / `(operators)` — `(fts)` now
+means what it says (a genuine indexed tsvector hit), and the two new
+`-expanded` suffixes make it visible in the UI itself when a query only
+resolved via synonym expansion rather than the user's literal words.
+
+**"R6 P0 ✅" (§3.2, §4) should be read as: latency fixed, precision was
+not — now addressed above.**
+
+**Validated with multiple, varied keyword pairs, not one hardcoded
+query** (an explicit requirement for this fix, since the reported bug
+is a symptom of a general defect, not a "sbi"/"pos"-specific one):
+`literalSearchPlan` tested against "SBI POS machine", "HDFC EDC
+device", "invoice GST", and "PM KUSUM proposal" — four unrelated
+jargon domains — plus a property test proving the mechanism holds for
+every key currently in `SYNONYMS`, not just the one that happened to be
+wrong, and a synthetic, made-up bad-mapping case independent of the
+real table entirely.
+
+**Not done** (called out, not silently skipped): a cc-only or
+label-name-only match that used to surface via the old single-shot
+ILIKE tier may now surface one step later in the waterfall (step 3/4
+instead of the only step) if nothing tsvector-indexed also matches;
+`from:`/`label:` already have first-class operator syntax for this.
+
+See [TODO.md](../TODO.md) 2026-07-31 entries ("Fix: mail search
+precision..." and "Indexed contact fuzzy lookup...") for the full
+implementation write-up.
 
 ## 4. Roadmap
 
@@ -203,7 +291,7 @@ Sources: [Building Hybrid Search for RAG (pgvector + FTS + RRF)](https://dev.to/
 | Tier | Target |
 |---|---|
 | Person / name (`prachi`) via `MailContact` | **&lt; 200ms**, **zero** Claude calls |
-| Keyword / operators via FTS | **&lt; 500ms**, expand skipped unless needed |
+| Keyword / operators via literal-first FTS/ILIKE waterfall (§3.3) | **&lt; 500ms** for the common literal-FTS hit; falls through to lexical/ILIKE tiers only on a genuine miss |
 | NL / paraphrase | AI allowed; prefer FTS over ILIKE; keep under ~5s |
 
 **Anti-goal:** bare name queries must never take multi-second expand + ILIKE + rerank (the Jul 2026 `6535ms` failure mode).
