@@ -3048,3 +3048,78 @@ planned unit-test coverage for this policy data).
 [booking-policy-panel.tsx](src/components/calendar/booking-policy-panel.tsx),
 [calendar-view.tsx](src/components/calendar/calendar-view.tsx) —
 `feature/booking-policy-settings`, merged to main.
+
+## 2026-07-31 — Calendar Phase 4: public booking page
+
+The Calendly-style piece the plan called for: an unauthenticated
+`/book/[slug]` page a CEO can share, reading the `BookingPolicy`
+Phase 3 lets them configure. Closes the loop — Phase 0-3 built the
+policy and its settings UI with nowhere for a visitor to actually use
+it.
+
+`src/app/book/[slug]/page.tsx` lives as a sibling of `src/app/ceo`, not
+a child — confirmed safe against `src/middleware.ts`'s
+`matcher: ["/ceo/:path*", "/login"]` before writing it, same as the
+plan's own verified-current-state notes said. New
+`src/actions/public-booking.ts` deliberately has no `requireCeoAction`/
+`auth` import anywhere, called out in its own top-of-file comment: a
+visitor is never signed in, so `createPublicBookingAction` never calls
+`assertAutonomy`/`createMeetingAction` (whose `confirmed` flag means "a
+real human just clicked a real button in our own UI" — there's no such
+human here). Its own chain instead: policy enabled → name/email shape →
+duration is one of the policy's own options → a per-IP daily attempt
+cap (`PublicBookingAttempt`, upserted on `(ip, day)`, `x-forwarded-for`
+via `headers()`) → a **fresh** call to `getPublicBookingSlots` right
+before booking (weekly windows + buffers + live free/busy all in one),
+checking the exact requested slot is still in that list. This single
+re-derivation — reusing the same function the visitor's own slot list
+came from, not a second implementation — is simultaneously the "never
+trust the client's chosen time" guard, the past/no-longer-open-slot
+guard, and the two-visitors-same-slot race guard; a failure at any of
+those looks the same to the visitor ("That slot was just taken").
+`parseDurationOptions` moved from this file into `propose-times.ts`
+(next to its sibling `parseWeeklyWindowsJson`) after Turbopack rejected
+it as a plain sync export from a `"use server"` file ("Server Actions
+must be async functions") — every export from such a file must be an
+async function, so a pure helper can't live there.
+
+New `public-booking.test.ts` (13 tests) — the first test file in this
+codebase to `vi.mock` `@/lib/prisma`/`@/lib/calendar/google`/
+`@/lib/calendar/propose-times`/`next/headers` rather than only testing
+extracted pure functions, since `createPublicBookingAction`'s own
+validation-chain logic (order of checks, identical not-found/disabled
+message, race rejection) was worth verifying directly rather than by
+proxy. Covers: not-found and disabled policies returning the exact same
+`{found:false}`/rejection message; invalid email and wrong-duration
+rejected before the rate limit or database are even touched; the daily
+attempt cap; a slot absent from a fresh re-derivation rejected
+identically whether that's because someone else just took it or
+because it fell into the past; and a genuinely-open slot successfully
+booking and returning the real event's links.
+
+**Verified live** end-to-end against the real, already-connected Google
+Calendar (not mocked): loaded `/book/akshay-consult` and saw real
+policy-derived slots (Mon–Fri 10:00 AM–3:30 PM IST last-start, 30 min,
+zero weekend slots); picked a time, filled in a real test visitor's
+name/email/note, confirmed — network response showed a genuine
+`{"ok":true, htmlLink, meetLink}` from Google; the event appeared on
+`/ceo/calendar` with the visitor's email as a real attendee; opened it
+and cancelled it from the grid (Phase 2's own edit/cancel UI, reused
+here for free). Race-condition guard verified live, not just in tests:
+booked the same slot again, then reloaded the booking page fresh (as a
+second visitor would) and confirmed that exact slot no longer appeared
+in the list at all — the fresh free/busy check excluding it before a
+visitor could even select it, the first of two layers the unit tests'
+mocked "slot vanished between page-load and submit" case covers as the
+second. A nonexistent slug showed the identical "This booking link
+isn't available." message the disabled-policy code path also returns.
+Also caught and fixed the `parseDurationOptions`/`"use server"` bug
+above via this same live check (a 500 on first load) before it shipped.
+`npx tsc --noEmit`: clean. `npx eslint`: clean. `npx vitest run`: 279
+passed | 1 skipped.
+
+[public-booking.ts](src/actions/public-booking.ts),
+[public-booking-flow.tsx](src/components/booking/public-booking-flow.tsx),
+[page.tsx](src/app/book/[slug]/page.tsx),
+[propose-times.ts](src/lib/calendar/propose-times.ts) —
+`feature/public-booking-page`, merged to main.
