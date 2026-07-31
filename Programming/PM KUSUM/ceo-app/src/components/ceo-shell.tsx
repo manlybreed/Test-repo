@@ -63,6 +63,12 @@ const ICONS = {
   search:     "M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z",
   signout:    "M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1",
   chevron:    "M19 9l-7 7-7-7",
+  calendar: [
+    "M8 2v4",
+    "M16 2v4",
+    "M3 10h18",
+    "M5 4h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z",
+  ] as const,
 };
 
 const NAV_SECTIONS = [
@@ -72,6 +78,7 @@ const NAV_SECTIONS = [
       { href: "/ceo",            label: "Overview",    icon: "home",      exact: true },
       { href: "/ceo/assistant",  label: "Assistant",   icon: "assistant" },
       { href: "/ceo/mail",       label: "Mail",        icon: "mail" },
+      { href: "/ceo/calendar",   label: "Calendar",    icon: "calendar" },
     ],
   },
   {

@@ -10,6 +10,8 @@ import {
   createMeetingEvent,
   disconnectGoogleCalendar,
   googleCalendarConfigured,
+  listEvents,
+  type CalendarEventSummary,
 } from "@/lib/calendar/google";
 import { getCandidateMeetingSlots, type MeetingSlotOption } from "@/lib/calendar/propose-times";
 import { prisma } from "@/lib/prisma";
@@ -80,6 +82,29 @@ export async function getCalendarAvailabilityAction(
     timeMax: timeMax.toISOString(),
     slots,
   };
+}
+
+export type CalendarEventListResult = {
+  connected: boolean;
+  events: CalendarEventSummary[];
+};
+
+/**
+ * Real events for the Calendar view page (/ceo/calendar) over a visible
+ * date range — the actual data source for the month/week/day grid, as
+ * opposed to getCalendarAvailabilityAction's free/busy-only candidate
+ * slots. Returns connected:false (not an error) when this mailbox has no
+ * Google Calendar connection, so the page can render a "Connect" empty
+ * state instead of a broken grid.
+ */
+export async function listCalendarEventsAction(
+  timeMinIso: string,
+  timeMaxIso: string,
+  accountId?: string,
+): Promise<CalendarEventListResult> {
+  const { account } = await requireAccount(accountId);
+  const events = await listEvents(account.id, timeMinIso, timeMaxIso);
+  return { connected: events !== null, events: events ?? [] };
 }
 
 export async function disconnectGoogleCalendarAction(
