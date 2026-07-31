@@ -3460,3 +3460,97 @@ passed | 1 skipped, including 8 new `invite-text.test.ts` cases.
 [invite-text.ts](src/components/calendar/invite-text.ts),
 [calendar-view.tsx](src/components/calendar/calendar-view.tsx) —
 `feature/calendar-invite-attendees`, merged to main.
+
+---
+
+## 2026-08-01 — shared chip-based people picker (Mail To/Cc/Bcc + Calendar guests)
+
+You attached two Google Calendar screenshots of its guest picker (a live
+"type 'priya' → dropdown of real contacts with avatar+name+email"
+autocomplete, plus a guest-permissions panel) and said the cc/bcc/invite-
+attendees UI wasn't up to industry standard. Since "cc, bcc" only exists
+in Mail (not Calendar), you confirmed the fix should cover **both** Mail's
+To/Cc/Bcc and Calendar's guest/attendee fields with one shared component.
+
+**Root cause**: Mail already had real contact search (`RecipientAutocomplete`,
+a private component in `mail-client.tsx` calling `findContactsAction` on a
+200ms debounce) but no chips — accepting a suggestion did string surgery
+into one big free-text `<input>`, so there was no way to see "these are
+the 3 people already added" or remove just one. Calendar's Guests/Attendees
+fields had no contact search at all — plain `<input>` bound to a comma-
+joined string, labeled "(comma-separated)".
+
+**Fix**: a new pure leaf module
+[recipients.ts](src/lib/mail/recipients.ts) (`parseRecipients`/
+`serializeRecipients`/`avatarHue`/`recipientInitials`, zero imports from
+action files — same reasoning as `tool-confirmation.ts`/`options-prompt.ts`:
+a component that needs `findContactsAction` can't be unit-tested directly
+without dragging in NextAuth) plus a new
+[people-picker.tsx](src/components/people-picker.tsx) client component —
+a chip-based `<PeoplePicker value onChange accountId bordered>` that keeps
+the **exact same external contract** (a comma-joined string in, a comma-
+joined string out) as the old plain-text fields, so every downstream
+send/save/validate path needed zero changes. `mail-client.tsx`'s private
+`RecipientAutocomplete`/`ContactSuggestion`/`lastRecipientFragment` were
+deleted; its 6 call sites now render `<PeoplePicker bordered={false}>`
+(Mail's `.mail-compose-field` CSS already supplies the field-look
+background/border via a bare descendant-`input` selector, so the picker
+just needs to nest a real `<input>` to inherit it for free).
+`schedule-meeting-panel.tsx` and `calendar-view.tsx`'s Attendees/Guests
+fields now render `<PeoplePicker>` with its own bordered box (Calendar has
+no ambient field styling to inherit). Both call sites' attendee-extraction
+logic was updated from a raw `.split(",")` to
+`parseRecipients(attendees).map(r => r.address)` — necessary because
+`PeoplePicker`'s committed chips can serialize as `"Name <email>"`, and
+Google's `attendees[].email` field needs the bare address, not the whole
+token.
+
+**Verified live**, real database + real Google Calendar: in Mail's
+fullscreen composer, typed "helen" into To and got 3 real ranked contacts
+from the `MailContact` table; clicked one and got a removable chip (colored
+initials circle, matching the existing `avatarHue`/`AttachmentChips` visual
+language); typed a raw new address and pressed Enter — also became a chip;
+removed one via its `X` and the other via Backspace-on-empty-draft; Cc/Bcc
+toggle still renders `PeoplePicker` fields correctly. Sent a real test
+email (`akshayroyal678@gmail.com`, subject "Phase 8 test: PeoplePicker
+chips") and confirmed it landed in Sent — proving the chip-committed
+recipient reached `sendMailAction` correctly. In Calendar, opened the
+create-meeting panel, added one contact via typeahead and one raw address,
+scheduled a real test meeting, and confirmed **both** arrived as real
+Google Calendar attendees (not `"Name <email>"` strings — the
+`parseRecipients(...).map(r => r.address)` fix above is what made this
+correct). Opened that event's Edit mode, confirmed both existing guests
+pre-populated as chips, added a third, saved, reopened Edit, and confirmed
+all three persisted — i.e. the real Google event's attendee list actually
+updated. Cancelled the test event afterward.
+
+**False alarm, recorded for next time**: `sendCurrentDraft()` and
+`cancelMeeting()` both gate on a native `window.confirm(...)` — this
+browser-automation environment auto-declines that dialog silently (no
+error, the action just silently no-ops) rather than showing anything
+interactable, and a JS-injected click on Send/Cancel meeting produced zero
+visible feedback, looking exactly like a broken button. Diagnosed by
+checking `disabled`/component state directly instead of trusting the
+screenshot, then confirmed by monkey-patching `window.confirm = () => true`
+in the page context before clicking — a legitimate, established testing
+technique (same category as intercepting `navigator.clipboard.writeText`
+above), not a change to app code. Note this resets on every full page
+navigation (a new JS realm), so it has to be re-applied after each
+`navigate()` call, not just once per session. Separately, this same
+environment does not give a browser tab real visibility/focus
+(`document.visibilityState`/`hasFocus()`) unless it's the frontmost tab,
+which stalls Framer Motion's `requestAnimationFrame`-driven opacity
+animations mid-transition (a fullscreen panel can render at ~0-25%
+opacity indefinitely) — the DOM/state is correct even though the pixels
+aren't; verify via `getComputedStyle`/component state, not screenshots,
+when this happens.
+
+`npx tsc --noEmit`: clean. `npx eslint`: clean. `npx vitest run`: 46 files,
+333 passed | 1 skipped, including 15 new `recipients.test.ts` cases.
+
+[recipients.ts](src/lib/mail/recipients.ts),
+[people-picker.tsx](src/components/people-picker.tsx),
+[mail-client.tsx](src/components/mail/mail-client.tsx),
+[schedule-meeting-panel.tsx](src/components/mail/schedule-meeting-panel.tsx),
+[calendar-view.tsx](src/components/calendar/calendar-view.tsx) —
+`feature/people-picker`, merged to main.
