@@ -349,12 +349,37 @@ export async function queryThreadsForView(opts: {
   // thread whose sole message got trashed kept appearing everywhere with
   // stale subject/snippet, opening to an empty message list once selected.
   const inTrash = folderRole === "TRASH";
+  const inDrafts = folderRole === "DRAFTS";
+
+  // Same problem, different clutter role: a thread whose ONLY message is a
+  // Draft (never sent) has no trashedAt equivalent at all, so trashedAt:
+  // null alone doesn't catch it — it stayed fully visible in Inbox/All
+  // Inbox/search with stale subject/snippet, then opened to an empty
+  // message list, because getMailThread's own "full conversation" query
+  // (this same PREVIEW_EXCLUDE_ROLES) already treats Drafts as clutter to
+  // hide from any non-Drafts view. Requiring a real message directly here
+  // — rather than only trusting a cached flag that can itself drift out of
+  // sync, which is exactly what happened before this fix — closes both
+  // cases (Drafts-only, Trash-only, or any mix of the two) at the root,
+  // for every view except the two views whose entire purpose is showing
+  // that clutter.
+  const requireRealMessage =
+    inTrash || inDrafts
+      ? []
+      : [
+          {
+            messages: {
+              some: { folder: { role: { notIn: [...PREVIEW_EXCLUDE_ROLES] } } },
+            },
+          },
+        ];
 
   const whereClause = {
     accountId: accountFilter,
     AND: [
       { OR: [{ snoozedUntil: null }, { snoozedUntil: { lt: new Date() } }] },
       ...(inTrash ? [] : [{ trashedAt: null }]),
+      ...requireRealMessage,
       ...(folderScope ? [folderScope] : []),
       ...(label ? [{ labelsJson: { contains: label } }] : []),
       ...excludeSmartInbox,
