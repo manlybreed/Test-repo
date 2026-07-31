@@ -195,6 +195,19 @@ export function parseWeeklyWindowsJson(json: string): WeeklyWindows {
   return out;
 }
 
+/** `BookingPolicy.durationOptionsJson` is stored as a plain JSON number
+ * array (e.g. `"[15,30,60]"`). Malformed JSON or an empty array falls
+ * back to a single 30-minute option rather than throwing or leaving a
+ * policy with nothing bookable at all. */
+export function parseDurationOptions(json: string): number[] {
+  try {
+    const arr = JSON.parse(json || "[30]");
+    return Array.isArray(arr) && arr.length ? arr : [30];
+  } catch {
+    return [30];
+  }
+}
+
 /**
  * Real, connected-calendar-grounded candidate slots for a public booking
  * policy — the exact same conflict-avoidance implementation as
