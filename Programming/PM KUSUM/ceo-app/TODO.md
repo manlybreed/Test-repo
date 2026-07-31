@@ -2966,3 +2966,33 @@ payload shapes; the three new autonomy actions).
 [ceo-shell.tsx](src/components/ceo-shell.tsx) —
 `feature/calendar-view-backend` + `feature/calendar-view-page`, merged
 to main.
+
+## 2026-07-31 — Calendar Phase 2: edit/cancel real events from the grid
+
+Extends the event detail card the calendar page already had (Phase 1)
+with Edit and Cancel — closing the gap where the new view could show
+events but never change them.
+
+`updateMeetingAction`/`cancelMeetingAction` (`actions/calendar.ts`) each
+gate on `assertAutonomy("calendar_update"/"calendar_cancel",
+{confirmed})` and reject a past `startIso`, mirroring
+`createMeetingAction`'s existing defense-in-depth exactly.
+`EventDetailCard` (`calendar-view.tsx`) gained an edit mode (title/date/
+time/duration fields, pre-filled from the clicked event — reusing
+`schedule-meeting-panel.tsx`'s exact field conventions) and a "Cancel
+meeting" button with a `window.confirm` naming the real consequence (a
+cancellation email to N attendees), the same one-click-destructive
+pattern `calendar-panel.tsx`'s disconnect flow already uses.
+
+**Verified live** against real Google Calendar events: rescheduled
+"Phase 2 confirmation-card test - confirm" from Jul 29 9:00am to Aug 5
+11:00am — confirmed by navigating to August and re-opening it
+("Wednesday, August 5 · 11:00 AM – 11:30 AM"); cancelling that event
+removed it from the grid entirely. Incidentally verified the past-date
+guard too: the first edit attempt (time-only change, date left on the
+already-past Jul 29) was correctly refused with "Refusing to move a
+meeting into the past." Zero console errors.
+
+[calendar.ts](src/actions/calendar.ts),
+[calendar-view.tsx](src/components/calendar/calendar-view.tsx) —
+`feature/calendar-event-actions`, merged to main.
