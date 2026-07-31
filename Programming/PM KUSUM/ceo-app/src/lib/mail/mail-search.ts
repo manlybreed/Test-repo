@@ -105,6 +105,55 @@ function contains(v: string): ContainsFilter {
   return { contains: v, mode: "insensitive" };
 }
 
+/**
+ * Short alphabetic tokens ("pos", "sbi", "edc") must not match as substrings
+ * of longer words — ILIKE '%pos%' matches "proposal", which flooded
+ * "SBI POS machine" with financing-proposal threads.
+ */
+export function needsWordBoundary(token: string): boolean {
+  const t = token.trim().toLowerCase();
+  return t.length > 0 && t.length <= 3 && /^[a-z0-9]+$/i.test(t);
+}
+
+/** Case-insensitive whole-token (or substring for longer / multi-word) match. */
+export function textHasToken(haystack: string, token: string): boolean {
+  const hay = haystack.toLowerCase();
+  const t = token.trim().toLowerCase();
+  if (!t) return false;
+  if (!needsWordBoundary(t)) return hay.includes(t);
+  return new RegExp(
+    `(^|[^a-z0-9])${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`,
+    "i",
+  ).test(hay);
+}
+
+/**
+ * Prisma field filters for a search token. Short tokens use separator-padded
+ * contains / startsWith / endsWith approximations (Prisma has no ~* filter).
+ */
+function fieldTokenMatch(field: string, term: string): object[] {
+  if (!needsWordBoundary(term)) {
+    return [{ [field]: contains(term) }];
+  }
+  const mode = "insensitive" as const;
+  return [
+    { [field]: { equals: term, mode } },
+    { [field]: { startsWith: `${term} `, mode } },
+    { [field]: { startsWith: `${term}:`, mode } },
+    { [field]: { startsWith: `${term}-`, mode } },
+    { [field]: { endsWith: ` ${term}`, mode } },
+    { [field]: contains(` ${term} `) },
+    { [field]: contains(` ${term}.`) },
+    { [field]: contains(` ${term},`) },
+    { [field]: contains(` ${term}:`) },
+    { [field]: contains(` ${term}-`) },
+    { [field]: contains(`(${term})`) },
+    { [field]: contains(`[${term}]`) },
+    { [field]: contains(`/${term} `) },
+    { [field]: contains(`\n${term} `) },
+  ];
+}
+
 /** Prisma OR: match a person across participants / from / to / cc (no body scan). */
 export function personParticipantWhere(
   addresses: string[],
@@ -151,17 +200,19 @@ export function messageFieldMatchOr(variants: string[]) {
   const expanded = expandSenderVariants(variants);
   return {
     OR: expanded.flatMap((v) => [
-      { subject: contains(v) },
-      { snippet: contains(v) },
-      { searchText: contains(v) },
-      { bodyText: contains(v) },
-      { fromAddress: contains(v) },
-      { fromName: contains(v) },
-      { toAddresses: contains(v) },
-      { ccAddresses: contains(v) },
+      ...fieldTokenMatch("subject", v),
+      ...fieldTokenMatch("snippet", v),
+      ...fieldTokenMatch("searchText", v),
+      ...fieldTokenMatch("bodyText", v),
+      ...fieldTokenMatch("fromAddress", v),
+      ...fieldTokenMatch("fromName", v),
+      ...fieldTokenMatch("toAddresses", v),
+      ...fieldTokenMatch("ccAddresses", v),
       {
         attachments: {
-          some: { extractedText: contains(v) },
+          some: {
+            OR: fieldTokenMatch("extractedText", v),
+          },
         },
       },
     ]),
@@ -332,12 +383,12 @@ function groupClause(variants: string[]) {
   return {
     OR: [
       ...v.flatMap((term) => [
-        { subject: contains(term) },
-        { snippet: contains(term) },
-        { participantsJson: contains(term) },
-        { labelsJson: contains(term) },
+        ...fieldTokenMatch("subject", term),
+        ...fieldTokenMatch("snippet", term),
+        ...fieldTokenMatch("participantsJson", term),
+        ...fieldTokenMatch("labelsJson", term),
       ]),
-      { messages: { some: messageFieldMatchOr(v) } },
+      { messages: { some: messageFieldMatchOr(variants) } },
     ],
   };
 }
@@ -421,10 +472,10 @@ export function scoreSearchHit(opts: {
 
   for (const group of groups) {
     const variants = expandSenderVariants(group);
-    const inSubject = variants.some((v) => subject.includes(v));
-    const inFrom = variants.some((v) => from.includes(v));
-    const inSnippet = variants.some((v) => snippet.includes(v));
-    const inBlob = variants.some((v) => blob.includes(v));
+    const inSubject = variants.some((v) => textHasToken(subject, v));
+    const inFrom = variants.some((v) => textHasToken(from, v));
+    const inSnippet = variants.some((v) => textHasToken(snippet, v));
+    const inBlob = variants.some((v) => textHasToken(blob, v));
     if (inSubject) score += 28;
     else if (inFrom) score += 22;
     else if (inSnippet) score += 12;
@@ -432,14 +483,14 @@ export function scoreSearchHit(opts: {
   }
 
   for (const hint of opts.plan?.fromHints || []) {
-    if (from.includes(hint.toLowerCase())) score += 20;
+    if (textHasToken(from, hint)) score += 20;
   }
   for (const term of opts.plan?.should || []) {
-    if (hay.includes(term.toLowerCase())) score += 6;
+    if (textHasToken(hay, term)) score += 6;
   }
 
   const subjectHits = groups.filter((g) =>
-    expandSenderVariants(g).some((v) => subject.includes(v)),
+    expandSenderVariants(g).some((v) => textHasToken(subject, v)),
   ).length;
   if (groups.length && subjectHits === groups.length) score += 30;
 

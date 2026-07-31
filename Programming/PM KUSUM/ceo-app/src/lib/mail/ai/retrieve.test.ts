@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { packChunks, type RetrievedChunk } from "@/lib/mail/ai/retrieve";
+import {
+  packChunks,
+  searchPlanToFtsQuery,
+  type RetrievedChunk,
+} from "@/lib/mail/ai/retrieve";
+import { lexicalSearchPlan } from "@/lib/mail/ai/search-expand";
 
 describe("AI-05 RAG pack", () => {
   it("packs chunks under budget and collects citations", () => {
@@ -32,5 +37,16 @@ describe("AI-05 RAG pack", () => {
     const { packed, citations } = packChunks([]);
     expect(packed).toBe("");
     expect(citations).toEqual([]);
+  });
+});
+
+describe("searchPlanToFtsQuery", () => {
+  it("builds AND-of-OR groups from SBI POS lexical plan without requiring machine", () => {
+    const plan = lexicalSearchPlan("SBI POS machine");
+    const fts = searchPlanToFtsQuery(plan.mustGroups);
+    expect(fts).toMatch(/sbi/i);
+    expect(fts).toMatch(/e-statement|pos/i);
+    expect(fts.toLowerCase()).not.toMatch(/\bmachine\b/);
+    expect(fts).toContain(" OR ");
   });
 });

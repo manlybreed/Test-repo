@@ -670,16 +670,31 @@ export async function searchThreadsAction(
       });
       if (rows.length) return { rows, mode: "contacts" };
     }
-    // No contact hit / no threads — fall through to FTS (still no AI).
+    // No contact hit / no threads — fall through to keyword (still no AI).
   }
 
-  const useAi = tier === "nl";
+  // --- Keyword (and person fallthrough): synonym groups, no Claude ---
+  // Primary path is lexicalSearchPlan + thread ILIKE (same concept-AND that made
+  // "SBI POS machine" match e-statement / State Bank before tiering). Optional
+  // "machine" is not required. FTS alone was matching raw tokens and ranking poorly.
+  if (tier !== "nl") {
+    const plan = lexicalSearchPlan(freeText);
+    const { rows } = await queryThreadsForView({
+      accountId: account.id,
+      query: freeText,
+      searchPlan: plan,
+      extraWhere: whereFragments,
+      take: 80,
+    });
+    return { rows, mode: "fts" };
+  }
 
+  // --- NL tier: AI expand + FTS + optional rerank ---
   const chunks = await retrieveMail({
     accountId: account.id,
     query: freeText,
     limit: 80,
-    skipExpand: !useAi,
+    expand: "ai",
   });
 
   let rows = await orderThreadsFromMessageHits(
@@ -688,11 +703,8 @@ export async function searchThreadsAction(
     whereFragments,
   );
 
-  // FTS miss → lexical ILIKE fallback (last resort)
   if (!rows.length) {
-    const plan = useAi
-      ? await expandSearchQuery(freeText)
-      : lexicalSearchPlan(freeText);
+    const plan = await expandSearchQuery(freeText);
     ({ rows } = await queryThreadsForView({
       accountId: account.id,
       query: freeText,
@@ -700,7 +712,7 @@ export async function searchThreadsAction(
       extraWhere: whereFragments,
       take: 80,
     }));
-    if (!rows.length && useAi && plan.mustGroups.length > 1) {
+    if (!rows.length && plan.mustGroups.length > 1) {
       ({ rows } = await queryThreadsForView({
         accountId: account.id,
         query: freeText,
@@ -711,8 +723,8 @@ export async function searchThreadsAction(
     }
   }
 
-  if (!useAi || rows.length < 2) {
-    return { rows, mode: useAi ? "ai" : "fts" };
+  if (rows.length < 2) {
+    return { rows, mode: "ai" };
   }
 
   const ordered = await rerankSearchHits({

@@ -93,7 +93,7 @@ Grounding invariants (already enforced, keep them):
 | Tier | Detect | Path | AI? | Target latency |
 |------|--------|------|-----|----------------|
 | **Person** | 1–3 tokens, looks like a name (`classifySearchTier`) | `findContacts` → participant filter | **No** | **&lt;200ms** |
-| **Keyword / operators** | short tokens, `from:` / `is:` etc. | Postgres **FTS** via `retrieveMail({skipExpand})` | No | **&lt;500ms** |
+| **Keyword / operators** | short tokens, `from:` / `is:` etc. | `lexicalSearchPlan` synonym groups (no Claude) + thread match; optional FTS via `expand: "lexical"` | No | **&lt;500ms–1s** |
 | **NL / paraphrase** | questions, “about…”, “who sent…”, long free text | expand + FTS (+ rerank) | **Yes** | keep under ~5s |
 
 Also:
