@@ -355,3 +355,57 @@ export async function moveMailThreadToFolder(input: {
   });
   return { ok: result.ok, path: result.path };
 }
+
+/** Move all IMAP messages in one or more threads into Junk/Spam (server-side). */
+export async function markMailThreadsAsSpam(input: {
+  accountId: string;
+  threadIds: string[];
+}) {
+  const { client } = await connectImap(input.accountId);
+  const junkPath = await resolveMailboxPath(client, input.accountId, "JUNK");
+  await client.logout().catch(() => undefined);
+  const result = await moveThreadsMessagesToPath({
+    ...input,
+    targetPath: junkPath,
+    targetRole: "JUNK",
+  });
+  return { ok: result.ok, junkPath: result.targetPath };
+}
+
+/** Move all IMAP messages in a single thread into Junk/Spam. */
+export async function markMailThreadAsSpam(input: {
+  accountId: string;
+  threadId: string;
+}) {
+  return markMailThreadsAsSpam({
+    accountId: input.accountId,
+    threadIds: [input.threadId],
+  });
+}
+
+/** Move one or more threads out of Junk/Spam back into the Inbox ("Not spam"). */
+export async function markMailThreadsNotSpam(input: {
+  accountId: string;
+  threadIds: string[];
+}) {
+  const { client } = await connectImap(input.accountId);
+  const inboxPath = await resolveMailboxPath(client, input.accountId, "INBOX");
+  await client.logout().catch(() => undefined);
+  const result = await moveThreadsMessagesToPath({
+    ...input,
+    targetPath: inboxPath,
+    targetRole: "INBOX",
+  });
+  return { ok: result.ok, path: result.targetPath };
+}
+
+/** Move a single thread out of Junk/Spam back into the Inbox ("Not spam"). */
+export async function markMailThreadNotSpam(input: {
+  accountId: string;
+  threadId: string;
+}) {
+  return markMailThreadsNotSpam({
+    accountId: input.accountId,
+    threadIds: [input.threadId],
+  });
+}

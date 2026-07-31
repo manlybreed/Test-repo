@@ -29,7 +29,7 @@ You help the CEO with:
 - Salary slips (PDF) for employees — use list_employees first
 - Tasks and Pomodoro / time tracking
 - Expense records — use list_expenses or get_expense_summary to answer expense questions
-- CEO Mail (akshay@) — use search_mail / ask_mail / digest_inbox / summarize_thread / draft_reply / propose_tasks_from_mail / recall_person to read and draft. archive_mail_thread / move_mail_thread_to_folder / set_mail_priority / mark_mail_important / mark_mail_read / snooze_mail_thread are reversible mail actions you can call directly once you have a threadId (get it from search_mail). trash_mail_thread / bulk_trash_mail_threads / send_mail are irreversible — calling them never executes anything by itself, the CEO sees a confirmation card with the exact details and must click Confirm; call them as soon as you have the required details, do not withhold the call to ask permission first. send_mail is for a brand-new email only, never a reply to an existing thread — resolve the recipient address via search_mail/list_clients/recall_person first, never guess one.
+- CEO Mail (akshay@) — use search_mail / ask_mail / digest_inbox / summarize_thread / draft_reply / propose_tasks_from_mail / recall_person to read and draft. archive_mail_thread / move_mail_thread_to_folder / set_mail_priority / mark_mail_important / mark_mail_read / mark_mail_spam / mark_mail_not_spam / snooze_mail_thread are reversible mail actions you can call directly once you have a threadId (get it from search_mail). trash_mail_thread / bulk_trash_mail_threads / send_mail are irreversible — calling them never executes anything by itself, the CEO sees a confirmation card with the exact details and must click Confirm; call them as soon as you have the required details, do not withhold the call to ask permission first. send_mail is for a brand-new email only, never a reply to an existing thread — resolve the recipient address via search_mail/list_clients/recall_person first, never guess one.
 - Calendar & meetings — use check_calendar_availability before proposing or discussing any time; it returns ready-made slots with an exact startIso/endIso already confirmed against real availability. When scheduling, copy that startIso/endIso verbatim into schedule_meeting — never recompute or retype a date/time yourself, even one that looks equivalent to a slot you saw. schedule_meeting creates a real Calendar event with a Meet link and sends real invites (or falls back to a downloadable .ics if Calendar isn't connected). It is irreversible, so calling it never executes it directly — the CEO always sees a confirmation card with the exact details and must click Confirm themselves before anything is actually created. Call schedule_meeting as soon as you have a specific time and attendee list; you do not need to ask "shall I confirm?" first — the card handles that.
 
 Irreversible tools (schedule_meeting, and any mail send/delete tool) never execute on your tool call alone — a confirmation card with the exact details is shown to the CEO, and only a real click by them triggers the action. Call these tools freely once you have the required details; do not withhold the call to ask permission first, and do not claim an action is done until you see its actual tool result.
@@ -414,6 +414,26 @@ export const ceoTools: Anthropic.Tool[] = [
   {
     name: "mark_mail_read",
     description: "Mark a mail thread's inbox messages as read. Reversible.",
+    input_schema: {
+      type: "object",
+      properties: { threadId: { type: "string" } },
+      required: ["threadId"],
+    },
+  },
+  {
+    name: "mark_mail_spam",
+    description:
+      "Move a mail thread to Junk/Spam (resolve threadId via search_mail first). Reversible — moves it out of the inbox, doesn't delete anything.",
+    input_schema: {
+      type: "object",
+      properties: { threadId: { type: "string" } },
+      required: ["threadId"],
+    },
+  },
+  {
+    name: "mark_mail_not_spam",
+    description:
+      "Move a mail thread out of Junk/Spam back into the inbox — use when the CEO says a thread was wrongly filed as spam. Reversible.",
     input_schema: {
       type: "object",
       properties: { threadId: { type: "string" } },
@@ -811,6 +831,16 @@ export async function runCeoTool(name: string, input: any): Promise<string> {
       case "mark_mail_read": {
         const { markThreadRead } = await import("@/actions/mail");
         await markThreadRead(input.threadId);
+        return JSON.stringify({ ok: true });
+      }
+      case "mark_mail_spam": {
+        const { markThreadSpamAction } = await import("@/actions/mail");
+        await markThreadSpamAction(input.threadId);
+        return JSON.stringify({ ok: true });
+      }
+      case "mark_mail_not_spam": {
+        const { markThreadNotSpamAction } = await import("@/actions/mail");
+        await markThreadNotSpamAction(input.threadId);
         return JSON.stringify({ ok: true });
       }
       case "snooze_mail_thread": {

@@ -32,10 +32,18 @@ describe("AI-12 assistant mail tools", () => {
       "set_mail_priority",
       "mark_mail_important",
       "mark_mail_read",
+      "mark_mail_spam",
+      "mark_mail_not_spam",
       "snooze_mail_thread",
     ]) {
       expect(src).toContain(`name: "${name}"`);
     }
+  });
+
+  it("mark_mail_spam/mark_mail_not_spam are reversible — not gated behind confirmation", async () => {
+    const { CONFIRMATION_REQUIRED_TOOLS } = await import("../../ai/tool-confirmation");
+    expect(CONFIRMATION_REQUIRED_TOOLS.has("mark_mail_spam")).toBe(false);
+    expect(CONFIRMATION_REQUIRED_TOOLS.has("mark_mail_not_spam")).toBe(false);
   });
 
   it("registers send_mail and trash tools, gated behind CONFIRMATION_REQUIRED_TOOLS not model self-report", async () => {
