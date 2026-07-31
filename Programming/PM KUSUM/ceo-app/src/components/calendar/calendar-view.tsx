@@ -29,8 +29,15 @@ import {
 } from "@/actions/calendar";
 import type { CalendarEventSummary } from "@/lib/calendar/google";
 import { BookingPolicyPanel } from "@/components/calendar/booking-policy-panel";
+import { MiniCalendar } from "@/components/calendar/mini-calendar";
+import { TimeGrid } from "@/components/calendar/time-grid";
+import { ScheduleMeetingPanel } from "@/components/mail/schedule-meeting-panel";
 
 const DURATIONS = [15, 30, 45, 60, 90];
+
+/** Stable reference — ScheduleMeetingPanel's reset effect keys off
+ * defaultAttendees, so a fresh `[]` literal each render would retrigger it. */
+const EMPTY_ATTENDEES: string[] = [];
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
@@ -86,13 +93,6 @@ function headerLabel(viewMode: ViewMode, anchor: Date): string {
   return format(anchor, "MMMM yyyy");
 }
 
-function eventTimeLabel(ev: CalendarEventSummary): string {
-  if (ev.isAllDay) return "All day";
-  const start = new Date(ev.start);
-  const end = new Date(ev.end);
-  return `${format(start, "h:mm a")} – ${format(end, "h:mm a")}`;
-}
-
 export function CalendarView({ accountId }: { accountId?: string }) {
   const [pending, startTransition] = useTransition();
   const [viewMode, setViewMode] = useState<ViewMode>("month");
@@ -101,6 +101,9 @@ export function CalendarView({ accountId }: { accountId?: string }) {
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<CalendarEventSummary | null>(null);
   const [showBookingPolicy, setShowBookingPolicy] = useState(false);
+  // Set by clicking an empty grid slot, a Month-cell "+", or the header's
+  // "New event" — pre-fills ScheduleMeetingPanel's date/time fields.
+  const [creatingAt, setCreatingAt] = useState<{ date: string; time: string } | null>(null);
   // Bumped after a successful edit/cancel so the fetch effect below
   // re-runs for the *same* visible range (startIso/endIso alone
   // wouldn't change) and the grid reflects the mutation immediately.
@@ -133,6 +136,15 @@ export function CalendarView({ accountId }: { accountId?: string }) {
     return map;
   }, [data]);
 
+  // The concrete day columns TimeGrid renders: 7 for week, 1 for day.
+  const visibleDays = useMemo(
+    () =>
+      viewMode === "day"
+        ? [anchor]
+        : Array.from({ length: 7 }, (_, i) => addDays(start, i)),
+    [viewMode, anchor, start],
+  );
+
   function go(dir: -1 | 1) {
     haptic("tap");
     setAnchor((a) => shiftAnchor(viewMode, a, dir));
@@ -141,6 +153,11 @@ export function CalendarView({ accountId }: { accountId?: string }) {
   function goToday() {
     haptic("tap");
     setAnchor(new Date());
+  }
+
+  function openCreateAt(day: Date, time = "10:00") {
+    haptic("tap");
+    setCreatingAt({ date: toDateInputValue(day), time });
   }
 
   if (data && !data.connected) {
@@ -158,7 +175,27 @@ export function CalendarView({ accountId }: { accountId?: string }) {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3 p-4">
+    <div className="flex h-full min-h-0">
+      <aside
+        className="hidden w-56 shrink-0 flex-col gap-4 overflow-y-auto p-4 md:flex"
+        style={{ borderRight: "1px solid var(--border)" }}
+      >
+        <button
+          type="button"
+          className="cursor-pointer rounded-lg px-3 py-2 text-xs font-medium"
+          style={{
+            background: "linear-gradient(135deg, var(--accent), var(--navy-bright))",
+            color: "#fff",
+            border: "1px solid rgba(129,140,248,0.45)",
+          }}
+          onClick={() => openCreateAt(anchor)}
+        >
+          + New event
+        </button>
+        <MiniCalendar anchor={anchor} onSelect={(d) => setAnchor(d)} />
+      </aside>
+
+      <div className="flex h-full min-h-0 flex-1 flex-col gap-3 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <button
@@ -246,7 +283,7 @@ export function CalendarView({ accountId }: { accountId?: string }) {
       )}
 
       <div
-        className="min-h-0 flex-1 overflow-auto rounded-2xl"
+        className={`min-h-0 flex-1 rounded-2xl ${viewMode === "month" ? "overflow-auto" : "overflow-hidden"}`}
         style={{ border: "1px solid var(--border)", background: "var(--bg-panel)" }}
       >
         {pending && !data && (
@@ -266,22 +303,16 @@ export function CalendarView({ accountId }: { accountId?: string }) {
               setViewMode("day");
             }}
             onEventClick={setSelected}
+            onCreateAt={openCreateAt}
           />
         )}
 
-        {viewMode === "week" && (
-          <WeekColumns
-            start={start}
+        {(viewMode === "week" || viewMode === "day") && (
+          <TimeGrid
+            days={visibleDays}
             eventsByDay={eventsByDay}
             onEventClick={setSelected}
-          />
-        )}
-
-        {viewMode === "day" && (
-          <DayList
-            anchor={anchor}
-            eventsByDay={eventsByDay}
-            onEventClick={setSelected}
+            onCreateAt={(day, time) => openCreateAt(day, time)}
           />
         )}
       </div>
@@ -298,6 +329,19 @@ export function CalendarView({ accountId }: { accountId?: string }) {
         onClose={() => setShowBookingPolicy(false)}
         accountId={accountId}
       />
+
+      <ScheduleMeetingPanel
+        open={Boolean(creatingAt)}
+        onClose={() => setCreatingAt(null)}
+        accountId={accountId}
+        defaultTitle=""
+        defaultAttendees={EMPTY_ATTENDEES}
+        initialDate={creatingAt?.date}
+        initialTime={creatingAt?.time}
+        description="Scheduled from BluRidge Calendar"
+        onScheduled={() => setRefreshTick((t) => t + 1)}
+      />
+      </div>
     </div>
   );
 }
@@ -311,6 +355,7 @@ function MonthGrid({
   eventsByDay,
   onDayClick,
   onEventClick,
+  onCreateAt,
 }: {
   anchor: Date;
   start: Date;
@@ -318,6 +363,7 @@ function MonthGrid({
   eventsByDay: Map<string, CalendarEventSummary[]>;
   onDayClick: (d: Date) => void;
   onEventClick: (ev: CalendarEventSummary) => void;
+  onCreateAt: (d: Date) => void;
 }) {
   const days = useMemo(() => eachDayOfInterval({ start, end }), [start, end]);
   return (
@@ -341,7 +387,7 @@ function MonthGrid({
           <button
             key={key}
             type="button"
-            className="flex min-h-[92px] cursor-pointer flex-col items-stretch gap-1 p-1.5 text-left"
+            className="group relative flex min-h-[92px] cursor-pointer flex-col items-stretch gap-1 p-1.5 text-left"
             style={{
               borderRight: "1px solid var(--border)",
               borderBottom: "1px solid var(--border)",
@@ -355,6 +401,19 @@ function MonthGrid({
               style={{ color: isToday(day) ? "var(--accent-bright)" : "var(--text-muted)" }}
             >
               {format(day, "d")}
+            </span>
+            <span
+              role="button"
+              tabIndex={0}
+              aria-label={`New event on ${format(day, "MMMM d")}`}
+              className="absolute right-1 top-1 hidden cursor-pointer rounded px-1.5 text-xs leading-5 group-hover:block"
+              style={{ background: "var(--accent-dim)", color: "var(--accent-bright)" }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onCreateAt(day);
+              }}
+            >
+              +
             </span>
             <div className="flex flex-col gap-0.5">
               {visible.map((ev) => (
@@ -381,110 +440,6 @@ function MonthGrid({
           </button>
         );
       })}
-    </div>
-  );
-}
-
-function WeekColumns({
-  start,
-  eventsByDay,
-  onEventClick,
-}: {
-  start: Date;
-  eventsByDay: Map<string, CalendarEventSummary[]>;
-  onEventClick: (ev: CalendarEventSummary) => void;
-}) {
-  const days = useMemo(
-    () => Array.from({ length: 7 }, (_, i) => addDays(start, i)),
-    [start],
-  );
-  return (
-    <div className="grid grid-cols-7 divide-x" style={{ borderColor: "var(--border)" }}>
-      {days.map((day) => {
-        const key = format(day, "yyyy-MM-dd");
-        const dayEvents = (eventsByDay.get(key) ?? []).slice().sort(
-          (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime(),
-        );
-        return (
-          <div key={key} className="flex min-h-[240px] flex-col gap-1.5 p-2">
-            <div className="mb-1 text-center">
-              <div className="text-[0.65rem] uppercase tracking-wide" style={{ color: "var(--text-dim)" }}>
-                {format(day, "EEE")}
-              </div>
-              <div
-                className="text-sm font-semibold"
-                style={{ color: isToday(day) ? "var(--accent-bright)" : "var(--text)" }}
-              >
-                {format(day, "d")}
-              </div>
-            </div>
-            {dayEvents.map((ev) => (
-              <button
-                key={ev.eventId}
-                type="button"
-                className="cursor-pointer rounded-lg px-2 py-1.5 text-left text-[0.7rem]"
-                style={{ background: "var(--accent-dim)", color: "var(--accent-bright)" }}
-                onClick={() => onEventClick(ev)}
-              >
-                <div className="truncate font-medium">{ev.title}</div>
-                <div style={{ color: "var(--text-dim)" }}>{eventTimeLabel(ev)}</div>
-              </button>
-            ))}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function DayList({
-  anchor,
-  eventsByDay,
-  onEventClick,
-}: {
-  anchor: Date;
-  eventsByDay: Map<string, CalendarEventSummary[]>;
-  onEventClick: (ev: CalendarEventSummary) => void;
-}) {
-  const key = format(anchor, "yyyy-MM-dd");
-  const dayEvents = (eventsByDay.get(key) ?? []).slice().sort(
-    (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime(),
-  );
-  if (!dayEvents.length) {
-    return (
-      <p className="p-6 text-sm" style={{ color: "var(--text-dim)" }}>
-        Nothing scheduled.
-      </p>
-    );
-  }
-  return (
-    <div className="flex flex-col gap-2 p-3">
-      {dayEvents.map((ev) => (
-        <button
-          key={ev.eventId}
-          type="button"
-          className="flex cursor-pointer items-start justify-between gap-3 rounded-xl px-3.5 py-3 text-left"
-          style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
-          onClick={() => onEventClick(ev)}
-        >
-          <div className="min-w-0">
-            <div className="truncate text-sm font-medium" style={{ color: "var(--text)" }}>
-              {ev.title}
-            </div>
-            <div className="text-xs" style={{ color: "var(--text-dim)" }}>
-              {eventTimeLabel(ev)}
-            </div>
-          </div>
-          {ev.meetLink && (
-            <span
-              className="shrink-0 rounded-md px-2 py-0.5 text-[0.65rem] font-semibold"
-              style={{ background: "var(--accent-dim)", color: "var(--accent-bright)" }}
-            >
-              Meet
-            </span>
-          )}
-        </button>
-      ))}
     </div>
   );
 }
