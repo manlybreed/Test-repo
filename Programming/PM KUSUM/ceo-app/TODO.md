@@ -2448,3 +2448,75 @@ would only pay off for the rare last-resort ILIKE tier.
 
 [contacts.ts](src/lib/mail/contacts.ts) —
 `perf/mail-contact-trgm-index`, merged to main.
+
+## 2026-07-31 — Fix: eval:rag searched the wrong mailbox; found and fixed a deeper AND-of-OR-groups FTS bug
+
+Follow-up to the mail-search precision fix above. Fixing a flagged
+rough edge in `scripts/eval-rag.ts` surfaced a real, more serious bug
+that the precision fix above didn't actually close.
+
+**`eval:rag` account selection**: `main()` called
+`prisma.mailAccount.findFirst()` with no filter, so in this multi
+-account mailbox it searched `accounts@thebluridge.com` — not
+`akshay@thebluridge.com`, the mailbox `rag-golden.json`'s queries were
+actually written against. Overall recall read 0.38 purely from
+searching the wrong inbox. Now defaults to `akshay@thebluridge.com`,
+overridable via `EVAL_RAG_ACCOUNT`, with a warned fallback to
+`findFirst()` if that address isn't found. Against the correct
+mailbox, recall jumped straight to 1.00 — confirming this was 100%
+account mismatch, not a retrieval regression.
+
+**The deeper find**: re-running `eval:rag` against the correct mailbox
+revealed a genuine precision failure — "SBI POS machine" still matched
+the "Proposal for Financing" thread, even with Haiku generating a
+correctly-fixed plan (confirmed directly: no "e-statement" anywhere in
+its mustGroups). Root cause, confirmed against Postgres directly:
+`websearch_to_tsquery` has **no grouping/parenthesization support at
+all** — literal `(`/`)` characters in its input are silently dropped.
+`searchPlanToFtsQuery` built queries like `(sbi OR "state bank") (pos
+OR "point of sale" OR terminal)` and handed that string straight to
+`websearch_to_tsquery`; with the parens gone and `&` binding tighter
+than `|` in tsquery, the query silently collapsed to `sbi | (state
+bank & pos) | point of sale | terminal` — a mostly-OR chain where
+matching "sbi" *alone* satisfied the whole "every concept group must
+match" query.
+
+This defeated the `mustGroups` AND-of-OR-groups contract for any query
+with 2+ groups where at least one has 2+ variants — i.e. **always**
+for the AI/NL search path (Haiku emits multi-variant groups) and for
+the Phase 1 "lexical FTS" fallback step. It reproduced the exact "SBI
+POS Machine" false-positive class the literal-first waterfall fix
+above was supposed to close, just through a different mechanism than
+the `SYNONYMS`-table bug — meaning that fix was not actually complete
+for the AI/Ask search surface.
+
+**Fixed** with a new `mustGroupsTsQuery()` in
+[retrieve.ts](src/lib/mail/ai/retrieve.ts): builds the query from real
+Postgres `tsquery` values combined with the actual `&&`/`||` operators
+(`phraseto_tsquery` per variant), instead of string-concatenating into
+a single `websearch_to_tsquery` call. Falls back to
+`websearch_to_tsquery` on the raw string only when there's no usable
+plan at all — a single-token query has no group boundary to lose, so
+that's safe.
+
+**Verified live**: `retrieveMail("SBI POS machine")` in default
+AI-expand mode now returns exactly the one real match. `npm run
+eval:rag` against the correct mailbox: 0 precision failures (was 1).
+
+**Not fixed here, flagged as a follow-up**: fixing this correctly
+exposed a second, lower-severity issue that the same broken grouping
+had been masking — Haiku's plan for one paraphrase-bucket query
+(`"the message about paying anthropic"`) includes a spurious
+*required* `"message"` group, a filler word from the phrasing, not a
+real concept. It used to be harmless because the broken AND-of-groups
+made every extra required group a no-op; now that grouping genuinely
+holds, an over-eager required group can cause a real recall miss.
+Needs a prompt-quality pass on `expandSearchQuery`'s system prompt in
+[search-expand.ts](src/lib/mail/ai/search-expand.ts) to stop treating
+generic/filler words as required concepts — separate unit of work, not
+addressed in this fix.
+
+[eval-rag.ts](scripts/eval-rag.ts),
+[retrieve.ts](src/lib/mail/ai/retrieve.ts) —
+`fix/eval-rag-account-selection` and `fix/fts-tsquery-and-of-or-groups`,
+merged to main.

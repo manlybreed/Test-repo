@@ -193,6 +193,42 @@ See [TODO.md](../TODO.md) 2026-07-31 entries ("Fix: mail search
 precision..." and "Indexed contact fuzzy lookup...") for the full
 implementation write-up.
 
+### 3.4 Addendum — 2026-07-31 (second pass): the precision fix above wasn't complete for the AI/NL search path
+
+Fixing an unrelated flagged rough edge (`eval:rag` searching the wrong
+mailbox account — `findFirst()` with no filter picked
+`accounts@thebluridge.com` instead of `akshay@thebluridge.com`, the
+mailbox the golden set was written against) surfaced a real gap in
+§3.3's own fix once the eval harness was pointed at the right data.
+
+| Gap | Detail |
+|---|---|
+| G15 | `websearch_to_tsquery` has **no grouping/parenthesization support at all** — confirmed directly against Postgres, literal `(`/`)` characters in its input are silently dropped. `searchPlanToFtsQuery` built `mustGroups` into strings like `(sbi OR "state bank") (pos OR "point of sale" OR terminal)` and passed that straight to `websearch_to_tsquery`; with the parens gone and tsquery's `&` binding tighter than `|`, the query silently collapsed to `sbi | (state bank & pos) | point of sale | terminal` — matching "sbi" *alone* satisfied the entire "every concept group must match" query. This defeated `mustGroups`' AND-of-OR-groups contract for **any query with 2+ groups where at least one has 2+ variants** — always true for the AI/NL path (Haiku emits multi-variant groups) and for the Phase 1 lexical-FTS fallback step. Reproduced the exact "SBI POS Machine" false positive through a different mechanism than the `SYNONYMS`-table bug §3.3 fixed — meaning §3.3's fix was real but incomplete; the AI/Ask search surface could still surface it. |
+
+Fixed: a new `mustGroupsTsQuery()` in `retrieve.ts` builds the query
+from real Postgres `tsquery` values combined with the actual `&&`
+(AND) / `||` (OR) operators (`phraseto_tsquery` per variant), instead
+of string-concatenating into one `websearch_to_tsquery` call. Falls
+back to `websearch_to_tsquery` on the raw string only when there's no
+usable plan at all (a single-token query has no group boundary to
+lose). Verified live: `retrieveMail("SBI POS machine")` in default
+AI-expand mode now returns exactly the one real "DAILY POS E-Statement"
+match. `npm run eval:rag` against the correct mailbox: 0 precision
+failures (was 1, once the account-selection bug above was fixed enough
+to even measure this correctly).
+
+**Not fixed, flagged as a follow-up**: making the grouping genuinely
+correct exposed a second, lower-severity, pre-existing issue it had
+been masking — `expandSearchQuery`'s Haiku prompt sometimes extracts a
+generic/filler word from the query phrasing (e.g. "message" from "the
+message about paying anthropic") as its own *required* mustGroup. That
+was harmless while the AND-of-groups was broken (an extra required
+group was a no-op inside the OR-collapse); now that grouping actually
+holds, an over-eager required group can cause a genuine recall miss.
+Needs a prompt-quality pass on the system prompt in `search-expand.ts`
+to stop treating filler words as required concepts — separate unit of
+work.
+
 ## 4. Roadmap
 
 **Implementation status:** R1 ✅ · R2 ✅ · R3 ✅ · R4 ✅ scaffolded · R5 ⛔ gated · **R6 P0 (tiered Threads search) ✅** · remaining R6 polish ⏳
