@@ -60,7 +60,23 @@ async function main() {
   const goldenPath = path.join(__dirname, "rag-golden.json");
   const golden = JSON.parse(readFileSync(goldenPath, "utf8")) as Golden;
 
-  const account = await prisma.mailAccount.findFirst();
+  // rag-golden.json's queries ("hackernoon newsletter", "invoice from
+  // anthropic", etc.) were authored against one specific mailbox. Picking an
+  // arbitrary account (bare findFirst()) makes recall look artificially low
+  // when a multi-account DB's first row isn't that mailbox — not a retrieval
+  // regression, just the wrong inbox being searched. Override with
+  // EVAL_RAG_ACCOUNT for a different mailbox/environment.
+  const targetAddress = process.env.EVAL_RAG_ACCOUNT || "akshay@thebluridge.com";
+  let account = await prisma.mailAccount.findFirst({
+    where: { address: targetAddress },
+  });
+  if (!account) {
+    console.warn(
+      `No mail account found for "${targetAddress}" — falling back to the first account found. ` +
+        `Set EVAL_RAG_ACCOUNT to the mailbox this golden set was authored against for meaningful recall numbers.`,
+    );
+    account = await prisma.mailAccount.findFirst();
+  }
   if (!account) {
     console.error("No mail account found — sync a mailbox first.");
     process.exit(1);
