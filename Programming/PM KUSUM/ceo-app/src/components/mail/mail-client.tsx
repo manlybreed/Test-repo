@@ -1434,6 +1434,21 @@ export function MailClient({
    * the list back alongside a docked compose without leaving it. */
   const [threadsPinnedWhileComposing, setThreadsPinnedWhileComposing] =
     useState(false);
+  /** True only while merely viewing/continuing an existing draft or Outbox
+   * item (openLocalDraft, the outbox-item branch, and openThread's
+   * viewingDrafts branch) — as opposed to an explicit reply/compose action
+   * on a thread you were already reading. That distinction is what focus
+   * mode keys off: opening a draft should behave like Inbox (thread list
+   * stays visible), since it's not "starting something new," while an
+   * explicit Reply still gets the existing extra-room behavior. */
+  const [isViewingDraftItem, setIsViewingDraftItem] = useState(false);
+  /** True only while openThread's own async getMailThread() fetch for the
+   * currently-selected id is in flight — NOT the same as the `pending` flag
+   * from the unrelated startTransition() used for AI actions below. Without
+   * this, the reader body showed nothing at all between clicking a thread
+   * and the fetch resolving (no skeleton, no "Loading…" — just blank),
+   * which was easy to mistake for content silently failing to render. */
+  const [threadLoading, setThreadLoading] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [showSnoozeMenu, setShowSnoozeMenu] = useState(false);
   const [mailboxesOpen, setMailboxesOpen] = useState(true);
@@ -1538,11 +1553,21 @@ export function MailClient({
   // and give the reader the freed columns (restores when the reply closes) —
   // unless the user has pinned the list back via threadsPinnedWhileComposing,
   // the only way to see other threads while a reply/draft stays open
-  // otherwise (previously there was none at all: docking any reply, or a
-  // draft opened from the Drafts folder, hid the thread list until compose
-  // fully closed, with no escape hatch).
+  // otherwise (previously there was none at all: docking any reply hid the
+  // thread list until compose fully closed, with no escape hatch).
+  //
+  // That default only applies to an EXPLICIT reply/compose action, though —
+  // merely opening an existing draft/Outbox item to view or keep editing it
+  // (isViewingDraftItem) should behave like Inbox instead: the thread list
+  // stays visible, since nothing new is being "started" the way clicking
+  // Reply is. threadsPinnedWhileComposing is the manual override in
+  // whichever direction flips today's default.
   const composingDocked = showCompose && !composeFullscreen;
-  const hideThreadsForFocus = composingDocked && !threadsPinnedWhileComposing;
+  const hideThreadsForFocus =
+    composingDocked &&
+    (isViewingDraftItem
+      ? threadsPinnedWhileComposing
+      : !threadsPinnedWhileComposing);
   const readerSpanClass = hideThreadsForFocus
     ? foldersCollapsed
       ? "lg:col-span-[23]"
@@ -1620,6 +1645,7 @@ export function MailClient({
         ) {
           e.preventDefault();
           setShowCompose(true);
+          setIsViewingDraftItem(false);
           haptic("tap");
         }
         break;
@@ -1819,6 +1845,7 @@ export function MailClient({
       });
       setShowCompose(true);
       setComposeFullscreen(false);
+      setIsViewingDraftItem(true);
       setStatus(
         row?.outboxStatus
           ? `Outbox · ${row.outboxStatus}`
@@ -1835,6 +1862,7 @@ export function MailClient({
     setSelectedId(id);
     setShowCompose(false);
     setComposeFullscreen(false);
+    setIsViewingDraftItem(false);
     setDraftId(null);
     setAskA("");
     setCommitments([]);
@@ -1845,6 +1873,7 @@ export function MailClient({
     setRemindAt("");
     setMessages([]);
     setStatus("Loading…");
+    setThreadLoading(true);
 
     void listTasksForThreadAction(id)
       .then((rows) => setThreadTasks(rows))
@@ -1863,11 +1892,13 @@ export function MailClient({
         });
         if (!t) {
           setStatus("Thread not found");
+          setThreadLoading(false);
           return;
         }
         const msgs = t.messages as Msg[];
         setMessages(msgs);
         setStatus("");
+        setThreadLoading(false);
 
         // Always synthesize a fallback row from the thread we just fetched,
         // regardless of whether `id` was in `threads` at click time. That
@@ -1927,6 +1958,7 @@ export function MailClient({
             html: draftHtml,
           });
           setShowCompose(true);
+          setIsViewingDraftItem(true);
           setStatus("Draft opened from mailbox — Save draft to keep edits");
           return;
         }
@@ -1934,6 +1966,7 @@ export function MailClient({
         applyReplyState(msgs, "reply");
       } catch (e) {
         setStatus(e instanceof Error ? e.message : "Could not open thread");
+        setThreadLoading(false);
         haptic("warn");
       }
     })();
@@ -1973,6 +2006,7 @@ export function MailClient({
     if (!messages.length) return;
     applyReplyState(messages, "reply-all");
     setShowCompose(true);
+    setIsViewingDraftItem(false);
     haptic("tap");
   }
 
@@ -2178,6 +2212,7 @@ export function MailClient({
     });
     setShowCompose(true);
     setComposeFullscreen(true);
+    setIsViewingDraftItem(false);
     setStatus("New message — add To, then AI Draft with a short brief");
   }
 
@@ -2242,6 +2277,7 @@ export function MailClient({
     // an existing draft from the Drafts folder should land in the normal
     // editor.
     setComposeFullscreen(false);
+    setIsViewingDraftItem(true);
     setCommitments([]);
     startNavTransition(async () => {
       const d = await getDraftAction(id, accountInfo?.id);
@@ -6367,6 +6403,7 @@ export function MailClient({
                           icon={<ReplyIcon size={16} />}
                           onClick={() => {
                             setShowCompose(true);
+                            setIsViewingDraftItem(false);
                             haptic("tap");
                           }}
                         />
@@ -6383,6 +6420,7 @@ export function MailClient({
                           onClick={() => {
                             setShowCompose(true);
                             setComposeFullscreen(true);
+                            setIsViewingDraftItem(false);
                             haptic("tap");
                           }}
                         />
@@ -6449,11 +6487,54 @@ export function MailClient({
                       }
                     />
                   ))}
-                  {pending && !messages.length && (
-                    <p className="text-sm" style={{ color: "var(--text-dim)" }}>
-                      Loading thread…
-                    </p>
-                  )}
+                  {/* openThread's own fetch isn't wrapped in startTransition
+                      (that would defer the initial paint by ~1s), so the
+                      unrelated `pending` flag from the AI-action transition
+                      below doesn't cover it — without threadLoading, the
+                      reader body showed nothing at all while a thread was
+                      in flight, easy to mistake for content silently
+                      failing to render rather than just "still loading." */}
+                  {(threadLoading || (pending && !messages.length)) &&
+                    !messages.length &&
+                    !showCompose && (
+                      <div className="space-y-3" aria-label="Loading thread">
+                        {[0, 1].map((i) => (
+                          <div
+                            key={i}
+                            className="animate-pulse space-y-2.5 rounded-2xl px-4 py-3.5"
+                            style={{
+                              background: "var(--bg-elevated)",
+                              border: "1px solid var(--border)",
+                            }}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div
+                                className="h-11 w-11 shrink-0 rounded-full"
+                                style={{ background: "var(--bg-hover)" }}
+                              />
+                              <div className="min-w-0 flex-1 space-y-1.5">
+                                <div
+                                  className="h-3 w-1/3 rounded"
+                                  style={{ background: "var(--bg-hover)" }}
+                                />
+                                <div
+                                  className="h-2.5 w-1/4 rounded"
+                                  style={{ background: "var(--bg-hover)" }}
+                                />
+                              </div>
+                            </div>
+                            <div
+                              className="h-2.5 w-full rounded"
+                              style={{ background: "var(--bg-hover)" }}
+                            />
+                            <div
+                              className="h-2.5 w-5/6 rounded"
+                              style={{ background: "var(--bg-hover)" }}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
 
                   {/* Gmail-style inline reply: an in-flow card at the end of
                       the thread, inside the same scroll — nothing overlaps. */}
