@@ -28,6 +28,7 @@ import {
   type CalendarEventListResult,
 } from "@/actions/calendar";
 import type { CalendarEventSummary } from "@/lib/calendar/google";
+import { BookingPolicyPanel } from "@/components/calendar/booking-policy-panel";
 
 const DURATIONS = [15, 30, 45, 60, 90];
 
@@ -99,6 +100,7 @@ export function CalendarView({ accountId }: { accountId?: string }) {
   const [data, setData] = useState<CalendarEventListResult | null>(null);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<CalendarEventSummary | null>(null);
+  const [showBookingPolicy, setShowBookingPolicy] = useState(false);
   // Bumped after a successful edit/cancel so the fetch effect below
   // re-runs for the *same* visible range (startIso/endIso alone
   // wouldn't change) and the grid reflects the mutation immediately.
@@ -199,24 +201,41 @@ export function CalendarView({ accountId }: { accountId?: string }) {
             {headerLabel(viewMode, anchor)}
           </h2>
         </div>
-        <div className="flex items-center gap-1 rounded-lg p-1" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
-          {(["month", "week", "day"] as ViewMode[]).map((m) => (
-            <button
-              key={m}
-              type="button"
-              className="cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium capitalize"
-              style={{
-                background: viewMode === m ? "var(--accent-dim)" : "transparent",
-                color: viewMode === m ? "var(--accent-bright)" : "var(--text-muted)",
-              }}
-              onClick={() => {
-                haptic("tap");
-                setViewMode(m);
-              }}
-            >
-              {m}
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 rounded-lg p-1" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
+            {(["month", "week", "day"] as ViewMode[]).map((m) => (
+              <button
+                key={m}
+                type="button"
+                className="cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium capitalize"
+                style={{
+                  background: viewMode === m ? "var(--accent-dim)" : "transparent",
+                  color: viewMode === m ? "var(--accent-bright)" : "var(--text-muted)",
+                }}
+                onClick={() => {
+                  haptic("tap");
+                  setViewMode(m);
+                }}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="cursor-pointer rounded-lg px-3 py-1.5 text-xs font-medium"
+            style={{
+              background: "var(--bg-hover)",
+              border: "1px solid var(--border)",
+              color: "var(--text-muted)",
+            }}
+            onClick={() => {
+              haptic("tap");
+              setShowBookingPolicy(true);
+            }}
+          >
+            Booking link
+          </button>
         </div>
       </div>
 
@@ -272,6 +291,12 @@ export function CalendarView({ accountId }: { accountId?: string }) {
         accountId={accountId}
         onClose={() => setSelected(null)}
         onMutated={() => setRefreshTick((t) => t + 1)}
+      />
+
+      <BookingPolicyPanel
+        open={showBookingPolicy}
+        onClose={() => setShowBookingPolicy(false)}
+        accountId={accountId}
       />
     </div>
   );
