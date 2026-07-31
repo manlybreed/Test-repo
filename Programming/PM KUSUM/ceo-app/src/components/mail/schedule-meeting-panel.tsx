@@ -4,6 +4,8 @@ import { useEffect, useState, useTransition } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { haptic } from "@/components/mail/haptics";
 import { createMeetingAction, type MeetingResult } from "@/actions/calendar";
+import { PeoplePicker } from "@/components/people-picker";
+import { parseRecipients } from "@/lib/mail/recipients";
 
 const spring = { type: "spring" as const, stiffness: 420, damping: 32 };
 
@@ -110,10 +112,7 @@ export function ScheduleMeetingPanel({
       return;
     }
     const end = new Date(start.getTime() + duration * 60 * 1000);
-    const attendeeEmails = attendees
-      .split(",")
-      .map((a) => a.trim())
-      .filter(Boolean);
+    const attendeeEmails = parseRecipients(attendees).map((r) => r.address);
 
     startTransition(async () => {
       try {
@@ -245,14 +244,15 @@ export function ScheduleMeetingPanel({
                     </select>
                   </label>
                   <label className="block text-xs" style={{ color: "var(--text-dim)" }}>
-                    Attendees (comma-separated)
-                    <input
-                      className="mt-1 w-full cursor-text rounded-lg px-3 py-2.5 text-sm outline-none"
-                      style={fieldInputStyle()}
-                      placeholder="name@company.com, ..."
-                      value={attendees}
-                      onChange={(e) => setAttendees(e.target.value)}
-                    />
+                    Attendees
+                    <div className="mt-1">
+                      <PeoplePicker
+                        placeholder="Add attendees…"
+                        value={attendees}
+                        onChange={setAttendees}
+                        accountId={accountId}
+                      />
+                    </div>
                   </label>
 
                   {error && (
