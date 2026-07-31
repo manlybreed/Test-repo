@@ -10,6 +10,37 @@ import { claudeJson, getAnthropic } from "@/lib/mail/ai/claude";
  * message, and gives `recallPerson` a warm row to answer from.
  */
 
+let contactTrgmReady: Promise<void> | null = null;
+
+/**
+ * pg_trgm GIN trigram indexes on MailContact.displayName/address (Phase 2 of
+ * the mail-search precision fix, rag-search-plan §3.3 addendum) — findContacts
+ * below already issues Prisma `contains`/insensitive filters, which compile to
+ * ILIKE '%term%'; these indexes are what let Postgres serve that ILIKE with a
+ * bitmap index scan instead of a sequential scan. No query rewrite needed.
+ * Same idempotent, catch-and-fall-back-to-unindexed-scan shape as
+ * ensureMailFtsIndex() in retrieve.ts.
+ */
+export async function ensureContactTrgmIndex(): Promise<void> {
+  if (!contactTrgmReady) {
+    contactTrgmReady = (async () => {
+      await prisma.$executeRawUnsafe(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`);
+      await prisma.$executeRawUnsafe(`
+        CREATE INDEX IF NOT EXISTS mail_contact_display_name_trgm_idx
+        ON "MailContact" USING GIN ("displayName" gin_trgm_ops);
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE INDEX IF NOT EXISTS mail_contact_address_trgm_idx
+        ON "MailContact" USING GIN (address gin_trgm_ops);
+      `);
+    })().catch((e) => {
+      contactTrgmReady = null;
+      throw e;
+    });
+  }
+  await contactTrgmReady;
+}
+
 function parseJsonArray(raw: string | null | undefined): string[] {
   try {
     const v = JSON.parse(raw || "[]");
@@ -281,6 +312,8 @@ export async function findContacts(
 ): Promise<ContactRow[]> {
   const q = query.trim().toLowerCase();
   if (q.length < 2) return [];
+
+  await ensureContactTrgmIndex().catch(() => undefined);
 
   const count = await prisma.mailContact.count({ where: { accountId } });
   if (count === 0) {
