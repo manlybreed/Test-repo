@@ -2410,3 +2410,41 @@ documenting the gaps this fix closed.
 [eval-rag.ts](scripts/eval-rag.ts),
 [rag-golden.json](scripts/rag-golden.json) —
 `fix/mail-search-literal-first-fallback`, merged to main.
+
+## 2026-07-31 — Indexed contact fuzzy lookup (`pg_trgm` trigram indexes)
+
+Phase 2 of the mail-search precision fix above. `findContacts`
+([contacts.ts](src/lib/mail/contacts.ts)) fuzzy-matches a typed name/
+email fragment against `MailContact.displayName`/`address` via Prisma
+`contains` — a leading-wildcard ILIKE that a plain B-tree index can
+never accelerate. Only the exact-address unique constraint was actually
+indexed; every fuzzy name lookup was a full sequential scan.
+
+Added `ensureContactTrgmIndex()`, same idempotent
+create-extension-then-index pattern already used by
+`ensureMailFtsIndex()` in [retrieve.ts](src/lib/mail/ai/retrieve.ts):
+`CREATE EXTENSION IF NOT EXISTS pg_trgm` plus a GIN trigram index on
+each of `displayName` and `address`. No query rewrite needed — Prisma's
+`contains + mode:"insensitive"` already compiles to the exact `ILIKE
+'%term%'` the trigram operator class accelerates.
+
+**Verified with `EXPLAIN`, not just "the index exists"**: with
+`enable_seqscan` forced off, both a `displayName ILIKE '%akshay%'` and
+an `address ILIKE '%sbi%'` query correctly plan as a Bitmap Index Scan
+on the new trigram indexes. With default planner settings (the real
+runtime behavior today), Postgres still picks a sequential scan — and
+that's the *correct* call, not a gap: at the current ~260-row
+`MailContact` table size, a seq scan is genuinely cheaper than the
+fixed overhead of a bitmap index scan. The index is what lets the
+planner automatically switch over once the table grows past that
+crossover point; forcing index usage on a table this size would be the
+wrong fix, not a better one.
+
+**Not doing** (per the original plan, unchanged by anything found
+during Phase 1): no separate trigram index on `MailThread.subject` —
+subject search already routes through the existing weighted tsvector
+index via the Phase 1 literal-first waterfall; a standalone index here
+would only pay off for the rare last-resort ILIKE tier.
+
+[contacts.ts](src/lib/mail/contacts.ts) —
+`perf/mail-contact-trgm-index`, merged to main.
