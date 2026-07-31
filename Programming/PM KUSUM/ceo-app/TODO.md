@@ -3123,3 +3123,76 @@ passed | 1 skipped.
 [page.tsx](src/app/book/[slug]/page.tsx),
 [propose-times.ts](src/lib/calendar/propose-times.ts) —
 `feature/public-booking-page`, merged to main.
+
+## 2026-08-01 — Calendar Phase 5: full AI control of Calendar
+
+Extends `ceoTools` (`src/lib/ai/tools.ts`) so the assistant can do
+everything Phases 1-4 added, not just check availability and create one
+event — reachable from both the Assistant page and ⌘K/voice for free,
+since both already share `runToolLoop`. Six new tools:
+`list_calendar_events` (read-only), `update_calendar_event`/
+`cancel_calendar_event` (irreversible, same confirmation-card pattern as
+`schedule_meeting`), and `get_booking_policy`/`get_booking_link`
+(read-only), `update_booking_policy` (irreversible). `update_calendar_event`
+requires the model to pass the event's `title` (current or new) alongside
+`eventId` purely so the confirmation card can name the meeting without a
+second lookup; `cancel_calendar_event` similarly takes `attendeeCount` for
+the same reason. `update_booking_policy` reads the current policy via
+`getBookingPolicyAction`, merges in only the fields the model actually
+sent (`saveBookingPolicyAction`'s own contract is a full-object upsert,
+not a partial patch), and deliberately never lets the model change the
+slug — rotating a CEO's already-shared link isn't something this phase
+puts in the model's hands. `src/lib/ai/tool-confirmation.ts` gained three
+`describePendingAction` cases, including a `summarizeWeeklyWindows`
+helper that collapses a uniform Mon-Fri-same-hours patch into one
+readable phrase rather than a day-by-day dump.
+
+**Bug caught live, not by the unit tests, and fixed before shipping**:
+`list_calendar_events`/`update_calendar_event` are the first tools that
+require the model to supply its own date/time directly rather than
+copying a server-computed slot (`check_calendar_availability`'s whole
+reason for existing) — and the shared tool loop had never told the model
+what "today" actually is. Asking "what's on my calendar the first week
+of August" got back "1st – 7th Aug **2025**" — a full year off, the exact
+hallucination class this codebase has hit once before, just never
+triggered until this phase's tools needed the model to compute a date
+range itself. First fix attempt (`run-tool-loop.ts`: prepend
+`` `Current date and time: ${now.toISOString()} (Asia/Kolkata is
+UTC+5:30)` ``) was *also* live-tested and *also* wrong: told to convert a
+raw UTC instant itself, the model read the UTC calendar date directly and
+said "Today is Friday, July 31" when it was already August 1st IST.
+Fixed for real by computing the IST wall-clock date/time directly via
+`toLocaleDateString`/`toLocaleTimeString` with `timeZone: "Asia/Kolkata"`
+and handing the model the answer, not raw material to compute it from —
+re-tested and got "Today is Saturday, 1 August 2026" correctly. Injected
+once in `runToolLoop`, so every date-sensitive tool benefits, not just
+the calendar ones.
+
+**Verified live** end-to-end against the real, already-connected Google
+Calendar, entirely through the Assistant chat (no direct API calls):
+asked "what's on my calendar" — got a correct, real answer, confirmed
+against `/ceo/calendar` directly; asked it to schedule a real test
+meeting — got a `schedule_meeting` confirmation card, confirmed, and a
+real Google Calendar event + Meet link appeared; asked it to reschedule
+that meeting — got an `update_calendar_event` confirmation card with the
+exact new time, confirmed, and the real event moved (verified on
+`/ceo/calendar`); asked it to cancel that meeting — got a
+`cancel_calendar_event` card correctly saying "sends a cancellation email
+to 1 attendee," confirmed, and the real event disappeared; asked for the
+booking link and its settings — `get_booking_policy`/`get_booking_link`
+correctly returned the real, already-configured policy from Phase 3;
+asked it to add a booking buffer and a second duration option — got an
+`update_booking_policy` confirmation card, confirmed, and the change
+persisted (re-verified by reopening the booking-policy panel and reading
+back both fields). One further live-caught gap fixed mid-verification:
+the first `update_booking_policy` confirmation card only mentioned the
+duration change, silently dropping the buffer change from its summary —
+`describePendingAction`'s `update_booking_policy` case now folds
+buffer/notice/advance-window fields into the same summary, re-tested and
+confirmed both changes show. `npx tsc --noEmit`: clean. `npx eslint`:
+clean. `npx vitest run`: 292 passed | 1 skipped.
+
+[tools.ts](src/lib/ai/tools.ts),
+[tool-confirmation.ts](src/lib/ai/tool-confirmation.ts),
+[run-tool-loop.ts](src/lib/ai/run-tool-loop.ts) —
+`feature/calendar-ai-tools`, merged to main.
