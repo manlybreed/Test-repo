@@ -32,3 +32,38 @@ describe("Phase 2 — assistant calendar tools", () => {
     expect(summary).toContain("akshayroyal678@gmail.com");
   });
 });
+
+describe("Phase 5 — full AI control of Calendar", () => {
+  const src = readFileSync(join(process.cwd(), "src/lib/ai/tools.ts"), "utf8");
+
+  it("registers every Phase 5 calendar/booking-policy tool", () => {
+    for (const name of [
+      "list_calendar_events",
+      "update_calendar_event",
+      "cancel_calendar_event",
+      "get_booking_policy",
+      "update_booking_policy",
+      "get_booking_link",
+    ]) {
+      expect(src).toContain(`name: "${name}"`);
+    }
+  });
+
+  it("update_calendar_event and cancel_calendar_event both require eventId + title", () => {
+    for (const name of ["update_calendar_event", "cancel_calendar_event"]) {
+      const start = src.indexOf(`name: "${name}"`);
+      const block = src.slice(start, start + 1200);
+      expect(block).toContain('required: ["eventId", "title"]');
+    }
+  });
+
+  it("gates the three irreversible Phase 5 tools, not the three read-only ones", async () => {
+    const { CONFIRMATION_REQUIRED_TOOLS } = await import("./tool-confirmation");
+    for (const name of ["update_calendar_event", "cancel_calendar_event", "update_booking_policy"]) {
+      expect(CONFIRMATION_REQUIRED_TOOLS.has(name)).toBe(true);
+    }
+    for (const name of ["list_calendar_events", "get_booking_policy", "get_booking_link"]) {
+      expect(CONFIRMATION_REQUIRED_TOOLS.has(name)).toBe(false);
+    }
+  });
+});

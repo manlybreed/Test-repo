@@ -54,13 +54,45 @@ export async function runToolLoop(
   opts?: { maxTurns?: number; systemPromptPreamble?: string; extraTools?: Anthropic.Tool[] },
 ): Promise<ToolLoopResult> {
   const maxTurns = opts?.maxTurns ?? 6;
+  // Computed fresh per call (never baked into the static SYSTEM_PROMPT
+  // constant) so the model always has real "now" grounding for relative
+  // dates ("this week", "tomorrow") — list_calendar_events and
+  // update_calendar_event ask the model to supply its own ISO date
+  // range/time directly, unlike check_calendar_availability's
+  // server-computed slots, so without this the model has nothing but its
+  // own training-time sense of the date to fall back on. That's the exact
+  // hallucination class already seen once in this codebase (a meeting
+  // scheduled a year in the wrong direction) — this closes it for every
+  // date-sensitive tool, not just the calendar ones, since it's injected
+  // once here in the shared loop.
+  const now = new Date();
+  // Computed as an IST wall-clock label, not a raw UTC ISO string handed
+  // to the model to convert itself — live testing caught the model
+  // reading a UTC timestamp's own calendar date as "today" (e.g. calling
+  // 2026-08-01T00:03 IST "July 31" because that instant's UTC date is
+  // still the 31st), the exact "let code compute it, don't make the
+  // model compute it" lesson this codebase already applies to slot
+  // generation, just missed here on the first pass.
+  const istDateLabel = now.toLocaleDateString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  const istTimeLabel = now.toLocaleTimeString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  const dateContext = `Right now it is ${istDateLabel}, ${istTimeLabel} IST (Asia/Kolkata, UTC+5:30). Treat this as "today"/"now" for any relative date/time reasoning — this week, tomorrow, next Monday, etc. — and compute ISO datetimes for tool calls relative to this IST date, not the UTC calendar date of any timestamp you see elsewhere. Never guess or rely on your own sense of the current date.`;
   // Prepended, not appended — a caller-specific instruction (e.g. the ⌘K
   // bar's "check for pure navigation first") needs to be evaluated before
   // the model settles into the tool-oriented reasoning the main prompt
   // otherwise leads with, not read as an afterthought at the end.
-  const system = opts?.systemPromptPreamble
-    ? `${opts.systemPromptPreamble}\n\n${SYSTEM_PROMPT}`
-    : SYSTEM_PROMPT;
+  const system = [dateContext, opts?.systemPromptPreamble, SYSTEM_PROMPT]
+    .filter(Boolean)
+    .join("\n\n");
   const tools = opts?.extraTools?.length ? [...ceoTools, ...opts.extraTools] : ceoTools;
   let finalText = "";
   const downloads: { label: string; href: string }[] = [];
