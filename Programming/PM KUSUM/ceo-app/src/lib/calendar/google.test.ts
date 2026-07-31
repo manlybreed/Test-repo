@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildMeetingEventPayload,
+  buildUpdateEventPayload,
   getAuthUrl,
   googleCalendarConfigured,
 } from "@/lib/calendar/google";
@@ -71,6 +72,40 @@ describe("google calendar — buildMeetingEventPayload (pure)", () => {
       attendeeEmails: [],
     });
     expect(payload.attendees).toEqual([]);
+  });
+});
+
+describe("google calendar — buildUpdateEventPayload (pure)", () => {
+  it("only includes fields actually present on the patch — a Calendar PATCH only touches what's sent", () => {
+    const payload = buildUpdateEventPayload({ title: "Renamed standup" });
+    expect(payload).toEqual({ summary: "Renamed standup" });
+  });
+
+  it("builds a reschedule patch (start/end only)", () => {
+    const payload = buildUpdateEventPayload({
+      startIso: "2026-08-04T09:00:00.000Z",
+      endIso: "2026-08-04T09:30:00.000Z",
+    });
+    expect(payload).toEqual({
+      start: { dateTime: "2026-08-04T09:00:00.000Z" },
+      end: { dateTime: "2026-08-04T09:30:00.000Z" },
+    });
+  });
+
+  it("builds an attendee-list patch in the same {email} shape as buildMeetingEventPayload", () => {
+    const payload = buildUpdateEventPayload({
+      attendeeEmails: ["yogesh@sbi.co.in", "akshayroyal678@gmail.com"],
+    });
+    expect(payload).toEqual({
+      attendees: [
+        { email: "yogesh@sbi.co.in" },
+        { email: "akshayroyal678@gmail.com" },
+      ],
+    });
+  });
+
+  it("returns an empty patch body for an empty patch (no-op update)", () => {
+    expect(buildUpdateEventPayload({})).toEqual({});
   });
 });
 

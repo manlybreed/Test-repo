@@ -16,6 +16,9 @@ export type MailAction =
   | "move"
   | "schedule_send"
   | "calendar_invite"
+  | "calendar_update"
+  | "calendar_cancel"
+  | "calendar_policy_update"
   | "unsubscribe"
   | "block_sender"
   | "create_task"
@@ -26,6 +29,9 @@ const IRREVERSIBLE: ReadonlySet<MailAction> = new Set([
   "delete",
   "schedule_send",
   "calendar_invite",
+  "calendar_update",
+  "calendar_cancel",
+  "calendar_policy_update",
   "unsubscribe",
   "block_sender",
   "create_task",
