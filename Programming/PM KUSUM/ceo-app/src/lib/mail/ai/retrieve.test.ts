@@ -45,8 +45,11 @@ describe("searchPlanToFtsQuery", () => {
     const plan = lexicalSearchPlan("SBI POS machine");
     const fts = searchPlanToFtsQuery(plan.mustGroups);
     expect(fts).toMatch(/sbi/i);
-    expect(fts).toMatch(/e-statement|pos/i);
+    expect(fts).toMatch(/point of sale|pos/i);
     expect(fts.toLowerCase()).not.toMatch(/\bmachine\b/);
+    // "pos" must never be conflated with an unrelated concept (e-statement
+    // was the actual root cause of the "SBI POS Machine" false positive).
+    expect(fts.toLowerCase()).not.toContain("e-statement");
     expect(fts).toContain(" OR ");
   });
 });

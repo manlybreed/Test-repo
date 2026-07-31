@@ -1,5 +1,5 @@
 {
-  "_readme": "Phase R4 golden set for `npm run eval:rag`. Four buckets. Each entry: a query and one or more `expect` clauses (fromContains / subjectContains, case-insensitive). An entry HITS if any expect clause matches any result in top-k. The `paraphrase` bucket is the decision slice for R5 (hybrid pgvector): if it clears the bar after R1-R3, skip R5. Grow this from real Ask/search logs and flagged misses; keep expectations resync-stable (sender/subject substrings, not messageIds).",
+  "_readme": "Phase R4 golden set for `npm run eval:rag`. Four buckets. Each entry: a query and one or more `expect` clauses (fromContains / subjectContains, case-insensitive). An entry HITS if any expect clause matches any result in top-k. `mustNotMatch` (added 2026-07-31, precision-fix addendum) is a separate, independent assertion: a clause that must NEVER match any top-k result, regardless of whether `expect` also hits — catches a specific known-wrong result surfacing alongside (or instead of) the right one, the class of bug recall checks alone can't see. The `paraphrase` bucket is the decision slice for R5 (hybrid pgvector): if it clears the bar after R1-R3, skip R5. Grow this from real Ask/search logs and flagged misses; keep expectations resync-stable (sender/subject substrings, not messageIds).",
   "buckets": {
     "production": [
       { "query": "invoice from anthropic", "expect": [{ "fromContains": "anthropic" }] },
@@ -10,7 +10,9 @@
     ],
     "adversarial": [
       { "query": "test email bluridge consulting", "expect": [{ "subjectContains": "test" }] },
-      { "query": "meeting invitation nextcloud", "expect": [{ "subjectContains": "meeting" }, { "subjectContains": "invitation" }] }
+      { "query": "meeting invitation nextcloud", "expect": [{ "subjectContains": "meeting" }, { "subjectContains": "invitation" }] },
+      { "query": "SBI POS machine", "mustNotMatch": [{ "subjectContains": "proposal for financing" }] },
+      { "query": "pos", "mustNotMatch": [{ "subjectContains": "proposal for financing" }] }
     ],
     "edge": [
       { "query": "hi", "expectEmptyOk": true },

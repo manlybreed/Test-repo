@@ -66,6 +66,7 @@ import { retrieveMail } from "@/lib/mail/ai/retrieve";
 import {
   expandSearchQuery,
   lexicalSearchPlan,
+  literalSearchPlan,
   rerankSearchHits,
 } from "@/lib/mail/ai/search-expand";
 import { summarizeThread } from "@/lib/mail/ai/summarize";
@@ -620,12 +621,21 @@ export async function listAllInboxesThreadsAction(opts?: {
 }
 
 /**
- * Full-mailbox search with tiered routing (R6 / rag-search-plan §3.2):
+ * Full-mailbox search with tiered routing (R6 / rag-search-plan §3.2,
+ * precision fix §3.3):
  * - person  → MailContact, no Claude
- * - keyword → Postgres FTS (skipExpand), ILIKE only if FTS empty
+ * - keyword → literal FTS → lexical FTS → literal ILIKE → lexical ILIKE
+ *             waterfall (narrowest/indexed first, broadest/unindexed last)
  * - nl      → expand + FTS + optional Haiku rerank
  */
-export type SearchThreadsMode = "contacts" | "fts" | "ai" | "operators";
+export type SearchThreadsMode =
+  | "contacts"
+  | "fts"
+  | "fts-expanded"
+  | "ilike"
+  | "ilike-expanded"
+  | "ai"
+  | "operators";
 
 export type SearchThreadsResult = {
   rows: Awaited<ReturnType<typeof queryThreadsForView>>["rows"];
@@ -673,20 +683,64 @@ export async function searchThreadsAction(
     // No contact hit / no threads — fall through to keyword (still no AI).
   }
 
-  // --- Keyword (and person fallthrough): synonym groups, no Claude ---
-  // Primary path is lexicalSearchPlan + thread ILIKE (same concept-AND that made
-  // "SBI POS machine" match e-statement / State Bank before tiering). Optional
-  // "machine" is not required. FTS alone was matching raw tokens and ranking poorly.
+  // --- Keyword (and person fallthrough), no Claude: a 4-step waterfall,
+  // narrowest/indexed first, broadest/unindexed last (rag-search-plan
+  // §3.3) — a bad or overly-broad SYNONYMS entry can never corrupt a
+  // query whose literal terms already resolve cleanly; only a genuine
+  // literal miss falls through to concept expansion, and only a genuine
+  // FTS miss falls through to an unindexed scan at all.
   if (tier !== "nl") {
-    const plan = lexicalSearchPlan(freeText);
-    const { rows } = await queryThreadsForView({
+    // 1) Literal FTS — indexed (mail_message_tsv_idx), exact user tokens,
+    //    zero synonym risk.
+    let chunks = await retrieveMail({
       accountId: account.id,
       query: freeText,
-      searchPlan: plan,
+      limit: 80,
+      expand: "none",
+    });
+    let rows = await orderThreadsFromMessageHits(
+      account.id,
+      chunks.map((c) => c.threadId),
+      whereFragments,
+    );
+    if (rows.length) return { rows, mode: "fts" };
+
+    // 2) Lexical FTS — still indexed, synonym-expanded, only tried once
+    //    the literal reading truly finds nothing.
+    chunks = await retrieveMail({
+      accountId: account.id,
+      query: freeText,
+      limit: 80,
+      expand: "lexical",
+    });
+    rows = await orderThreadsFromMessageHits(
+      account.id,
+      chunks.map((c) => c.threadId),
+      whereFragments,
+    );
+    if (rows.length) return { rows, mode: "fts-expanded" };
+
+    // 3) Literal ILIKE — unindexed but exact tokens; also the only tier
+    //    reaching labelsJson/participantsJson/ccAddresses, which the
+    //    tsvector index doesn't cover.
+    ({ rows } = await queryThreadsForView({
+      accountId: account.id,
+      query: freeText,
+      searchPlan: literalSearchPlan(freeText),
       extraWhere: whereFragments,
       take: 80,
-    });
-    return { rows, mode: "fts" };
+    }));
+    if (rows.length) return { rows, mode: "ilike" };
+
+    // 4) Lexical ILIKE — synonym-expanded and unindexed, true last resort.
+    ({ rows } = await queryThreadsForView({
+      accountId: account.id,
+      query: freeText,
+      searchPlan: lexicalSearchPlan(freeText),
+      extraWhere: whereFragments,
+      take: 80,
+    }));
+    return { rows, mode: "ilike-expanded" };
   }
 
   // --- NL tier: AI expand + FTS + optional rerank ---
