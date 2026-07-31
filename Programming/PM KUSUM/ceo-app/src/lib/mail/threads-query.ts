@@ -76,7 +76,7 @@ export async function recomputeThreadDenorm(threadId: string) {
 
   const thread = await prisma.mailThread.findUnique({
     where: { id: threadId },
-    select: { labelsJson: true },
+    select: { labelsJson: true, trashedAt: true },
   });
   if (!thread) return;
 
@@ -88,9 +88,23 @@ export async function recomputeThreadDenorm(threadId: string) {
       await prisma.mailThread.delete({ where: { id: threadId } }).catch(() => undefined);
       return;
     }
+    // `latest` came back empty, so every remaining message is Drafts/Trash.
+    // If every one of them is specifically Trash (not just a lingering
+    // draft), the thread itself must be marked trashed — otherwise it keeps
+    // showing up, with stale subject/snippet, in every non-Trash view
+    // (Inbox, All Inbox, "contacts"/keyword search) with an empty message
+    // list once opened, since those views only ever exclude by folder scope
+    // or by this trashedAt flag, never by "does anything survive to show."
+    const nonTrashLeft = await prisma.mailMessage.count({
+      where: { threadId, folder: { role: { not: "TRASH" } } },
+    });
     await prisma.mailThread.update({
       where: { id: threadId },
-      data: { unreadCount: unread, labelsJson: JSON.stringify(labels) },
+      data: {
+        unreadCount: unread,
+        labelsJson: JSON.stringify(labels),
+        trashedAt: nonTrashLeft === 0 ? (thread.trashedAt ?? new Date()) : thread.trashedAt,
+      },
     });
     return;
   }
@@ -103,6 +117,9 @@ export async function recomputeThreadDenorm(threadId: string) {
       subject: latest.subject || undefined,
       unreadCount: unread,
       labelsJson: JSON.stringify(labels),
+      // A real non-Draft/non-Trash message exists — the thread can never be
+      // considered trashed while that's true, even if it previously was.
+      trashedAt: null,
     },
   });
 }
@@ -322,10 +339,22 @@ export async function queryThreadsForView(opts: {
       ? { messages: { some: { folderId: { in: folderIds } } } }
       : null;
 
+  // Only the Trash folder view itself should ever surface a thread whose
+  // messages have all been trashed. Every other view (Inbox, All Inbox,
+  // a specific label, contacts/keyword search — none of which pass a
+  // folderScope tight enough to exclude Trash on their own, e.g. the merged
+  // "All Inbox" and the "contacts" search tier query with no folder scope
+  // at all) relied on nothing to keep these out; trashedAt was previously
+  // set but never actually enforced as a filter here. Without this, a
+  // thread whose sole message got trashed kept appearing everywhere with
+  // stale subject/snippet, opening to an empty message list once selected.
+  const inTrash = folderRole === "TRASH";
+
   const whereClause = {
     accountId: accountFilter,
     AND: [
       { OR: [{ snoozedUntil: null }, { snoozedUntil: { lt: new Date() } }] },
+      ...(inTrash ? [] : [{ trashedAt: null }]),
       ...(folderScope ? [folderScope] : []),
       ...(label ? [{ labelsJson: { contains: label } }] : []),
       ...excludeSmartInbox,
@@ -339,7 +368,6 @@ export async function queryThreadsForView(opts: {
   // original send/receive date — otherwise trashing something old never
   // surfaces it at the top, which is the entire point of checking Trash
   // right after deleting something.
-  const inTrash = folderRole === "TRASH";
 
   // Non-search views paginate for real (skip/take at the DB level); search
   // pulls a wider net and re-ranks by relevance instead of paging.
