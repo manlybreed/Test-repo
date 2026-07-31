@@ -14,6 +14,14 @@ import {
   type SmartLabel,
 } from "@/lib/mail/ai/smart-labels";
 import { markMailThreadAsSpam } from "@/lib/mail/imap-mailbox";
+import {
+  EMPTY_SPAM_FEEDBACK,
+  getSpamFeedback,
+  hasSpamFeedbackSignal,
+  primaryExternalSender,
+  recordSpamFeedback,
+  resolveSpamFeedbackTier,
+} from "@/lib/mail/ai/spam-feedback";
 
 const TriageSchema = z.object({
   priority: z.enum(["P1", "P2", "P3", "P4", "NONE"]),
@@ -157,14 +165,25 @@ export async function triageThread(
           },
         });
 
-  const clientHit = await prisma.client.findFirst({
-    where: {
-      email: {
-        in: messages.map((m) => m.fromAddress),
-        mode: "insensitive",
+  const primarySender = primaryExternalSender(
+    messages.map((m) => m.fromAddress),
+    thread.account.address,
+  );
+
+  const [clientHit, spamFeedback] = await Promise.all([
+    prisma.client.findFirst({
+      where: {
+        email: {
+          in: messages.map((m) => m.fromAddress),
+          mode: "insensitive",
+        },
       },
-    },
-  });
+    }),
+    primarySender
+      ? getSpamFeedback({ accountId: thread.accountId, fromAddress: primarySender })
+      : Promise.resolve(EMPTY_SPAM_FEEDBACK),
+  ]);
+  const spamTier = resolveSpamFeedbackTier(spamFeedback);
 
   const corpus = triageCorpus(messages);
 
@@ -196,11 +215,20 @@ Spam/phishing — isSpam is a SEPARATE, much stricter judgment than "low value."
 - Phishing: impersonates a bank/service/colleague, urges urgent login/payment/credential entry via a suspicious or mismatched link, fake security alerts, fake invoice/wire-fraud attempts.
 - Scams: lottery/prize/inheritance windfalls, romance/advance-fee scams, fake job offers demanding payment, impossible investment returns.
 - Unsolicited bulk abuse: mass-blasted adult/pharma/counterfeit-goods spam with no plausible prior relationship and no real business behind it.
-Do NOT set isSpam for: newsletters/marketing the recipient plausibly subscribed to or a real business sending cold outreach (use NEWSLETTER instead — that is legitimate, just low-value); automated transactional mail (receipts, bank alerts, shipping); anything you are not confident about. When unsure, leave isSpam false — a false positive hides real mail from the CEO, which is worse than a missed spam message. Give a one-sentence spamReason only when isSpam is true.`,
+Do NOT set isSpam for: newsletters/marketing the recipient plausibly subscribed to or a real business sending cold outreach (use NEWSLETTER instead — that is legitimate, just low-value); automated transactional mail (receipts, bank alerts, shipping); anything you are not confident about. When unsure, leave isSpam false — a false positive hides real mail from the CEO, which is worse than a missed spam message. Give a one-sentence spamReason only when isSpam is true.
+senderHistory, when present, is this account's own accumulated feedback on this sender/domain from past manual corrections — weigh it as strong evidence: prior manual spam reports with no not-spam corrections support isSpam:true, any prior manual not-spam correction supports isSpam:false regardless of other signals.`,
     user: fenceMailData({
       subject: thread.subject,
       myAddress: thread.account.address,
       knownClient: clientHit?.name || null,
+      senderHistory: hasSpamFeedbackSignal(spamFeedback)
+        ? {
+            manualSpamReports:
+              spamFeedback.addressManualSpamCount + spamFeedback.domainManualSpamCount,
+            notSpamCorrections:
+              spamFeedback.addressNotSpamCount + spamFeedback.domainNotSpamCount,
+          }
+        : null,
       messages: messages.map((m) => ({
         from: m.fromAddress,
         subject: m.subject,
@@ -240,9 +268,15 @@ Do NOT set isSpam for: newsletters/marketing the recipient plausibly subscribed 
   // Defense in depth against a spam false positive, the same discipline
   // this project applies to any consequential AI-driven action: never
   // trust a single model call alone when the result moves real mail out
-  // of the inbox. A known client contact or clear PM_KUSUM business
-  // signal always overrides the model's own isSpam call back to false.
-  const isSpam = Boolean(parsed.data.isSpam) && !clientHit && !refined.includes("PM_KUSUM");
+  // of the inbox. A known client contact, clear PM_KUSUM business signal,
+  // or this account's own accumulated "not spam" feedback always
+  // overrides the model's own isSpam call back to false. Conversely, a
+  // sender this account has repeatedly reported (spamTier "hard_spam")
+  // forces isSpam:true even if this particular pass's model call missed
+  // it — the self-learning half of the guardrail, not just the safety
+  // half.
+  const guardedFalse = Boolean(clientHit) || refined.includes("PM_KUSUM") || spamTier === "never_spam";
+  const isSpam = !guardedFalse && (Boolean(parsed.data.isSpam) || spamTier === "hard_spam");
 
   const result: TriageResult = {
     priority,
@@ -284,6 +318,13 @@ Do NOT set isSpam for: newsletters/marketing the recipient plausibly subscribed 
         accountId: thread.accountId,
         threadId,
       }).catch(() => undefined);
+      if (primarySender) {
+        await recordSpamFeedback({
+          accountId: thread.accountId,
+          address: primarySender,
+          event: { action: "spam", source: "auto" },
+        }).catch(() => undefined);
+      }
     }
 
     await prisma.mailAiCache.create({

@@ -61,13 +61,20 @@ describe("AI-22 spam defense-in-depth guardrail", () => {
     "utf8",
   );
 
-  it("never trusts the model's isSpam call alone — known clients and PM_KUSUM mail always override it back to false", () => {
+  it("never trusts the model's isSpam call alone — known clients, PM_KUSUM mail, and accumulated not-spam feedback always override it back to false", () => {
     expect(src).toContain(
-      'const isSpam = Boolean(parsed.data.isSpam) && !clientHit && !refined.includes("PM_KUSUM");',
+      'const guardedFalse = Boolean(clientHit) || refined.includes("PM_KUSUM") || spamTier === "never_spam";',
+    );
+    expect(src).toContain(
+      'const isSpam = !guardedFalse && (Boolean(parsed.data.isSpam) || spamTier === "hard_spam");',
     );
   });
 
   it("treats spam-move as reversible (checkAutonomy(\"move\")), not gated behind confirmation", () => {
     expect(src).toContain('if (isSpam && checkAutonomy("move").allowed)');
+  });
+
+  it("records auto-classified spam as feedback, distinct from manual reports", () => {
+    expect(src).toContain('event: { action: "spam", source: "auto" }');
   });
 });

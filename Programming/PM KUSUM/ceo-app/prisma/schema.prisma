@@ -771,6 +771,7 @@ model MailAccount {
   syncStates    MailSyncState[]
   autonomy      MailAutonomySettings?
   blockedSenders BlockedSender[]
+  senderFeedback MailSenderFeedback[]
   contacts      MailContact[]
   vacationResponder MailVacationResponder?
   credential    MailAccountCredential?
@@ -1132,6 +1133,37 @@ model BlockedSender {
 
   @@unique([accountId, address])
   @@index([accountId])
+}
+
+/// AI-22 self-learning: accumulates Report-spam/Not-spam feedback per
+/// sender-or-domain so triageThread's classification gets more confident
+/// over time, without re-litigating a conclusively-decided sender from
+/// scratch on every pass. See src/lib/mail/ai/spam-feedback.ts.
+model MailSenderFeedback {
+  id              String   @id @default(cuid())
+  accountId       String
+  account         MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  /// Lowercased exact address when scope="address", bare registrable
+  /// domain when scope="domain".
+  key             String
+  /// "address" | "domain"
+  scope           String
+  /// Report-spam clicks — manual, human-verified.
+  manualSpamCount Int      @default(0)
+  /// triageThread's own auto-apply fired isSpam:true, unattended. Tracked
+  /// separately so a single manual "not spam" always outweighs any number
+  /// of auto-filings — conflating the two would let the model's own past
+  /// mistakes out-vote a human correction.
+  autoSpamCount   Int      @default(0)
+  /// Always manual — there is no automated "un-spam" event today.
+  notSpamCount    Int      @default(0)
+  lastAction      String?
+  lastSource      String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([accountId, key, scope])
+  @@index([accountId, scope])
 }
 
 model MailAutonomySettings {
