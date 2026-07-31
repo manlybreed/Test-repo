@@ -133,6 +133,7 @@ import {
   markThreadNotSpamAction,
   markThreadsSpamAction,
   markThreadsNotSpamAction,
+  suggestSpamCorrectionAction,
   correctSmartLabelAction,
   suggestLabelCorrectionAction,
   applyLabelCorrectionAction,
@@ -276,6 +277,21 @@ type LabelSuggestionState = {
   showMatches: boolean;
   applyResult?: { count: number; snapshot: LabelCorrectionSnapshot | null };
   ruleCreated?: boolean;
+};
+
+/** Post-"Report spam" "these look like the same campaign too" toast —
+ * a leaner sibling of LabelSuggestionState: no standing-rule concept
+ * (that's the sender-feedback table, built automatically) and no
+ * folder/smart-label branching (always the same Junk move). Undo simply
+ * re-runs "Not spam" on the applied ids — real IMAP move back, not a
+ * local-only snapshot restore. */
+type SpamSuggestionState = {
+  sourceThreadId: string;
+  matches: MatchingThreadPreview[];
+  matchesCapped: boolean;
+  selectedIds: Set<string>;
+  showMatches: boolean;
+  applyResult?: { count: number; appliedIds: string[] };
 };
 
 type Signature = { id: string; name: string; htmlBody: string; isDefault: boolean };
@@ -1367,6 +1383,13 @@ export function MailClient({
     null,
   );
   const labelSuggestionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  /** Post-"Report spam" "same campaign?" toast. */
+  const [spamSuggestion, setSpamSuggestion] = useState<SpamSuggestionState | null>(
+    null,
+  );
+  const spamSuggestionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
   /** Which smart-label chip's correction popover is open, keyed by its current label value. */
@@ -2742,6 +2765,122 @@ export function MailClient({
     });
   }
 
+  function resetSpamSuggestionTimer() {
+    if (spamSuggestionTimerRef.current) {
+      clearTimeout(spamSuggestionTimerRef.current);
+    }
+    spamSuggestionTimerRef.current = setTimeout(() => {
+      setSpamSuggestion(null);
+      spamSuggestionTimerRef.current = null;
+    }, 15000);
+  }
+
+  function openSpamSuggestion(state: SpamSuggestionState) {
+    setSpamSuggestion(state);
+    resetSpamSuggestionTimer();
+  }
+
+  function dismissSpamSuggestion() {
+    if (spamSuggestionTimerRef.current) {
+      clearTimeout(spamSuggestionTimerRef.current);
+      spamSuggestionTimerRef.current = null;
+    }
+    setSpamSuggestion(null);
+  }
+
+  /** Fire-and-forget: after a manual "Report spam," check whether other
+   * inbox mail looks like the same campaign and offer it — never blocks
+   * the fast single-thread report that triggered it. */
+  function maybeSuggestSpamCorrection(threadId: string) {
+    void suggestSpamCorrectionAction({ threadId }).then((res) => {
+      if (!res || !res.matches.length) return;
+      openSpamSuggestion({
+        sourceThreadId: threadId,
+        matches: res.matches,
+        matchesCapped: res.matchesCapped,
+        // Default to everything selected — deselecting is the exception.
+        selectedIds: new Set(res.matches.map((m) => m.id)),
+        showMatches: false,
+      });
+    });
+  }
+
+  function toggleSpamSuggestionMatch(id: string) {
+    setSpamSuggestion((prev) => {
+      if (!prev) return prev;
+      const next = new Set(prev.selectedIds);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return { ...prev, selectedIds: next };
+    });
+  }
+
+  function setAllSpamSuggestionMatches(selectAll: boolean) {
+    setSpamSuggestion((prev) =>
+      prev
+        ? {
+            ...prev,
+            selectedIds: selectAll ? new Set(prev.matches.map((m) => m.id)) : new Set(),
+          }
+        : prev,
+    );
+  }
+
+  function toggleSpamSuggestionExpanded() {
+    setSpamSuggestion((prev) => {
+      if (!prev) return prev;
+      const opening = !prev.showMatches;
+      if (opening) {
+        if (spamSuggestionTimerRef.current) {
+          clearTimeout(spamSuggestionTimerRef.current);
+          spamSuggestionTimerRef.current = null;
+        }
+      } else {
+        resetSpamSuggestionTimer();
+      }
+      return { ...prev, showMatches: opening };
+    });
+  }
+
+  /** Confirm: move the selected matches to Junk too, reusing the same
+   * bulk action manual "Report spam" already uses (real IMAP move +
+   * sender-feedback recording) — no separate move mechanism for the
+   * suggestion flow. */
+  function applySpamSuggestion() {
+    if (!spamSuggestion || !spamSuggestion.selectedIds.size) return;
+    const s = spamSuggestion;
+    const threadIds = Array.from(s.selectedIds);
+    startTransition(async () => {
+      await markThreadsSpamAction(threadIds);
+      haptic("success");
+      setThreads((prev) => prev.filter((t) => !s.selectedIds.has(t.id)));
+      setSpamSuggestion((prev) =>
+        prev && prev.sourceThreadId === s.sourceThreadId
+          ? { ...prev, applyResult: { count: threadIds.length, appliedIds: threadIds }, showMatches: false }
+          : prev,
+      );
+      resetSpamSuggestionTimer();
+    });
+  }
+
+  /** Real IMAP move back to Inbox for the applied batch — the same
+   * "Not spam" mechanism a single manual correction already uses. */
+  function undoSpamSuggestionApply() {
+    const appliedIds = spamSuggestion?.applyResult?.appliedIds;
+    if (!appliedIds?.length) return;
+    if (spamSuggestionTimerRef.current) {
+      clearTimeout(spamSuggestionTimerRef.current);
+      spamSuggestionTimerRef.current = null;
+    }
+    setSpamSuggestion(null);
+    startTransition(async () => {
+      await markThreadsNotSpamAction(appliedIds);
+      setStatus("Undone");
+      haptic("success");
+      void reloadActiveViewRef.current();
+    });
+  }
+
   function archiveSelected() {
     if (!selectedId || selectedId.startsWith("outbox")) return;
     const id = selectedId;
@@ -2767,6 +2906,7 @@ export function MailClient({
       setShowCompose(false);
       setStatus("Reported as spam");
       haptic("success");
+      maybeSuggestSpamCorrection(id);
     });
   }
 
@@ -7190,6 +7330,149 @@ export function MailClient({
                     className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full"
                     style={{ color: "var(--text-dim)" }}
                     onClick={dismissLabelSuggestion}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              </motion.div>
+            )}
+            {spamSuggestion && (
+              <motion.div
+                key="spam-suggestion-toast"
+                initial={{ opacity: 0, y: 20, scale: 0.96, x: "-50%" }}
+                animate={{ opacity: 1, y: 0, scale: 1, x: "-50%" }}
+                exit={{ opacity: 0, y: 20, scale: 0.96, x: "-50%" }}
+                transition={spring}
+                className={`fixed left-1/2 z-[200] flex w-[26rem] max-w-[92vw] flex-col items-center gap-2 ${pendingSend ? "bottom-20" : "bottom-6"}`}
+              >
+                {spamSuggestion.showMatches && !spamSuggestion.applyResult && (
+                  <div
+                    data-menu
+                    className="flex w-full flex-col overflow-hidden rounded-2xl shadow-lg"
+                    style={{
+                      background: "var(--bg-elevated)",
+                      border: "1px solid var(--border-strong)",
+                    }}
+                  >
+                    <div
+                      className="flex items-center justify-between gap-2 px-3 py-2 text-xs"
+                      style={{ borderBottom: "1px solid var(--border)" }}
+                    >
+                      <span style={{ color: "var(--text-dim)" }}>
+                        {spamSuggestion.selectedIds.size} of{" "}
+                        {spamSuggestion.matches.length} selected
+                        {spamSuggestion.matchesCapped
+                          ? " (most recent — there may be more)"
+                          : ""}
+                      </span>
+                      <div className="flex shrink-0 gap-2">
+                        <button
+                          type="button"
+                          className="cursor-pointer underline"
+                          style={{ color: "var(--mail-purple)" }}
+                          onClick={() => setAllSpamSuggestionMatches(true)}
+                        >
+                          Select all
+                        </button>
+                        <button
+                          type="button"
+                          className="cursor-pointer underline"
+                          style={{ color: "var(--text-dim)" }}
+                          onClick={() => setAllSpamSuggestionMatches(false)}
+                        >
+                          Deselect all
+                        </button>
+                      </div>
+                    </div>
+                    <ul className="max-h-64 overflow-y-auto p-1">
+                      {spamSuggestion.matches.map((m) => (
+                        <li key={m.id}>
+                          <label className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 hover:bg-white/5">
+                            <input
+                              type="checkbox"
+                              className="mt-0.5 shrink-0"
+                              checked={spamSuggestion.selectedIds.has(m.id)}
+                              onChange={() => toggleSpamSuggestionMatch(m.id)}
+                            />
+                            <span className="min-w-0 flex-1">
+                              <span
+                                className="block truncate text-xs font-medium"
+                                style={{ color: "var(--text)" }}
+                              >
+                                {m.fromName || m.fromAddress || "Unknown sender"}
+                              </span>
+                              <span
+                                className="block truncate text-[0.7rem]"
+                                style={{ color: "var(--text-dim)" }}
+                              >
+                                {m.subject || "(no subject)"}
+                              </span>
+                            </span>
+                          </label>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <div
+                  data-menu
+                  className="flex max-w-full flex-wrap items-center gap-3 rounded-full px-4 py-2.5 shadow-lg"
+                  style={{
+                    background: "var(--bg-elevated)",
+                    border: "1px solid var(--border-strong)",
+                  }}
+                >
+                  <span className="text-sm" style={{ color: "var(--text)" }}>
+                    {spamSuggestion.applyResult ? (
+                      spamSuggestion.applyResult.count > 0 ? (
+                        `Moved ${spamSuggestion.applyResult.count} more to Junk`
+                      ) : (
+                        "No matches moved"
+                      )
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="cursor-pointer underline decoration-dotted underline-offset-2"
+                          onClick={toggleSpamSuggestionExpanded}
+                        >
+                          {spamSuggestion.matches.length}
+                          {spamSuggestion.matchesCapped ? "+" : ""} other email
+                          {spamSuggestion.matches.length === 1 ? "" : "s"}
+                        </button>
+                        {" look like the same campaign — move to Junk too?"}
+                      </>
+                    )}
+                  </span>
+                  {spamSuggestion.applyResult && (
+                    <button
+                      type="button"
+                      className="cursor-pointer rounded-full px-3 py-1 text-sm font-semibold"
+                      style={{ background: "var(--mail-purple-dim)", color: "#c4b5fd" }}
+                      onClick={undoSpamSuggestionApply}
+                    >
+                      Undo
+                    </button>
+                  )}
+                  {!spamSuggestion.applyResult && spamSuggestion.selectedIds.size > 0 && (
+                    <button
+                      type="button"
+                      className="cursor-pointer rounded-full px-3 py-1 text-sm font-semibold"
+                      style={{ background: "var(--mail-purple-dim)", color: "#c4b5fd" }}
+                      disabled={pending}
+                      onClick={applySpamSuggestion}
+                    >
+                      Move {spamSuggestion.selectedIds.size}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    title="Dismiss"
+                    aria-label="Dismiss"
+                    className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full"
+                    style={{ color: "var(--text-dim)" }}
+                    onClick={dismissSpamSuggestion}
                   >
                     <X size={14} />
                   </button>
