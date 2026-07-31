@@ -31,9 +31,12 @@ import type { CalendarEventSummary } from "@/lib/calendar/google";
 import { BookingPolicyPanel } from "@/components/calendar/booking-policy-panel";
 import { MiniCalendar } from "@/components/calendar/mini-calendar";
 import { TimeGrid } from "@/components/calendar/time-grid";
+import { formatInviteText } from "@/components/calendar/invite-text";
 import { ScheduleMeetingPanel } from "@/components/mail/schedule-meeting-panel";
 
 const DURATIONS = [15, 30, 45, 60, 90];
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** Stable reference — ScheduleMeetingPanel's reset effect keys off
  * defaultAttendees, so a fresh `[]` literal each render would retrigger it. */
@@ -461,13 +464,16 @@ function EventDetailCard({
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
   const [duration, setDuration] = useState(30);
+  const [attendees, setAttendees] = useState("");
   const [error, setError] = useState("");
+  const [copied, setCopied] = useState(false);
 
   // Reset local edit state whenever a genuinely different event opens
   // (or the card closes) — never carry stale field values across events.
   useEffect(() => {
     setEditing(false);
     setError("");
+    setCopied(false);
     if (event) {
       const start = new Date(event.start);
       const end = new Date(event.end);
@@ -475,8 +481,21 @@ function EventDetailCard({
       setDate(toDateInputValue(start));
       setTime(toTimeInputValue(start));
       setDuration(Math.max(5, Math.round((end.getTime() - start.getTime()) / 60000)));
+      setAttendees(event.attendeeEmails.join(", "));
     }
   }, [event]);
+
+  function copyInvite() {
+    if (!event) return;
+    haptic("tap");
+    navigator.clipboard.writeText(formatInviteText(event)).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1800);
+      },
+      () => setError("Could not copy to clipboard"),
+    );
+  }
 
   function startEdit() {
     haptic("tap");
@@ -493,6 +512,22 @@ function EventDetailCard({
     }
     const end = new Date(start.getTime() + duration * 60 * 1000);
 
+    const nextAttendees = attendees
+      .split(",")
+      .map((a) => a.trim())
+      .filter(Boolean);
+    const invalid = nextAttendees.find((a) => !EMAIL_RE.test(a));
+    if (invalid) {
+      setError(`"${invalid}" isn't a valid email address`);
+      return;
+    }
+    // Google's events.patch REPLACES the whole attendee list and
+    // re-notifies everyone on it, so only send the field when it really
+    // changed — otherwise a pure time edit would spam existing guests.
+    const attendeesChanged =
+      nextAttendees.length !== event.attendeeEmails.length ||
+      nextAttendees.some((a, i) => a !== event.attendeeEmails[i]);
+
     startTransition(async () => {
       try {
         await updateMeetingAction({
@@ -501,6 +536,7 @@ function EventDetailCard({
             title: title.trim() || event.title,
             startIso: start.toISOString(),
             endIso: end.toISOString(),
+            ...(attendeesChanged ? { attendeeEmails: nextAttendees } : {}),
           },
           confirmed: true,
           accountId,
@@ -609,6 +645,14 @@ function EventDetailCard({
                       Join Meet
                     </a>
                   )}
+                  <button
+                    type="button"
+                    className="cursor-pointer rounded-lg px-3 py-1.5 text-xs font-medium"
+                    style={{ background: "var(--accent-dim)", color: "var(--accent-bright)", border: "1px solid transparent" }}
+                    onClick={copyInvite}
+                  >
+                    {copied ? "Invite copied" : "Copy invite"}
+                  </button>
                   <a
                     href={event.htmlLink}
                     target="_blank"
@@ -697,6 +741,19 @@ function EventDetailCard({
                         </option>
                       ))}
                     </select>
+                  </label>
+                  <label className="block text-xs" style={{ color: "var(--text-dim)" }}>
+                    Guests (comma-separated)
+                    <input
+                      className="mt-1 w-full cursor-text rounded-lg px-3 py-2.5 text-sm outline-none"
+                      style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-strong)", color: "var(--text)" }}
+                      placeholder="name@company.com, ..."
+                      value={attendees}
+                      onChange={(e) => setAttendees(e.target.value)}
+                    />
+                    <span className="mt-1 block" style={{ color: "var(--text-muted)" }}>
+                      Anyone added here gets a Google invite; anyone removed gets a cancellation.
+                    </span>
                   </label>
                 </div>
 
