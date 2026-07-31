@@ -2646,3 +2646,42 @@ independently by the harness added earlier this session.
 [search-expand.ts](src/lib/mail/ai/search-expand.ts),
 [mail-search.ts](src/lib/mail/mail-search.ts) —
 `fix/expand-query-filler-words`, merged to main.
+
+## 2026-07-31 — Fix: thread whose only message is a Draft was visible everywhere, opening blank (same bug class as the trashed-only fix)
+
+Reported: a thread ("PM KUSUM Solar Plant Initiative — Documents for
+Your Review") looked deleted and opened to a blank reader — same
+symptom as the orphaned-trashed-thread bug fixed earlier today.
+
+**Root cause, confirmed via direct query**: this thread's sole message
+lives in **Drafts**, not Trash — a genuinely different root state, but
+the exact same architectural gap. `getMailThread`'s "full conversation"
+query deliberately treats both Drafts and Trash as "clutter" to exclude
+from any non-Drafts, non-Trash view — but nothing in
+`queryThreadsForView` ever required a thread to have at least one real
+message before showing it in Inbox/All Inbox/search. The earlier fix
+only addressed the Trash side (via the `trashedAt` field); there's no
+equivalent cached flag for "every message is a Draft," so a Draft-only
+thread sailed straight through.
+
+**Generalized instead of patching the second case separately**: rather
+than inventing a parallel `draftOnly`-style flag (which would only
+reproduce the exact denorm-drift risk that caused the original bug),
+`queryThreadsForView` now directly requires
+`messages: { some: { folder: { role: { notIn: ["DRAFTS", "TRASH"] } } } }`
+for any view that isn't specifically Drafts or Trash — the same
+`PREVIEW_EXCLUDE_ROLES` condition `getMailThread`'s own query already
+uses to decide what counts as real content. This closes the Drafts-only
+case, the Trash-only case, and any future mix of the two, at the root,
+without depending on any cached flag staying in sync. Kept `trashedAt:
+null` alongside it — still needed for Trash-view sort order, and as a
+second, independent layer.
+
+**Verified live**: searching "yoegsh meena" dropped from 5 to 4 results
+with the draft-only thread gone; the Drafts folder itself still
+correctly shows it and opens it into the composer ("Draft loaded —
+edit and Save or Send"), the right behavior for an actual draft, not a
+regression.
+
+[threads-query.ts](src/lib/mail/threads-query.ts) —
+`fix/orphaned-drafts-only-threads`, merged to main.
