@@ -2296,3 +2296,117 @@ ML + human feedback, not a single bigger model call.
 [sync.ts](src/lib/mail/sync.ts),
 [triage.ts](src/lib/mail/ai/triage.ts) —
 `feature/mail-auth-header-signal`, merged to main.
+
+## 2026-07-31 — Fix: mail search precision (SBI POS Machine false positives) — literal-first, synonym expansion as fallback only
+
+Reported bug: searching "SBI POS Machine" (a physical card-swipe
+terminal) returned "BluRidge <> SBI | Proposal for Financing" threads —
+loan proposals with nothing to do with a POS machine. Root cause,
+confirmed by direct inspection: `SYNONYMS.pos` in
+[mail-search.ts](src/lib/mail/mail-search.ts) wrongly aliased `"pos"` →
+`"e-statement"`/`"estatement"` (a bank e-statement lists POS
+transactions as line items, which is why the two co-occur — they are
+not the same concept). A financing-proposal email genuinely discussing
+KYC/e-statement documentation satisfied the "pos" concept group even
+though it had nothing to do with a POS machine.
+
+**Fixed at the architectural level the user asked for, not as a
+one-line data patch.** The actual defect: every required search token
+was unconditionally synonym-expanded into an OR-group as the *only*
+matching strategy, so any single bad or overly-broad `SYNONYMS` entry —
+present or future, for any token — silently corrupted precision for
+every query touching that token, with no fallback to what the user
+literally typed. Fixed generally:
+
+- **New `literalSearchPlan()`** in
+  [search-expand.ts](src/lib/mail/ai/search-expand.ts) — exact user
+  tokens, no synonym expansion. The Threads-search keyword tier
+  ([mail.ts](src/actions/mail.ts)) now runs an explicit 4-step
+  waterfall — literal FTS → lexical FTS → literal ILIKE → lexical ILIKE
+  — narrowest/indexed first, broadest/unindexed last. A bad synonym
+  entry can now only ever corrupt the *last* resort, never the first.
+- **A keyword-agnostic regression guard**
+  ([mail-search.test.ts](src/lib/mail/mail-search.test.ts)): a
+  reciprocity-checked audit of the whole `SYNONYMS` table — two keys
+  may legitimately share vocabulary only if at least one lists the
+  other's name as its own variant (e.g. `machine`/`terminal`,
+  `kusum`/`pmkusum`); any other shared long phrase is flagged as a
+  probable accidental concept-merge. This is what actually caught
+  `pos`/`statement` sharing "e-statement" — a mechanical check that
+  will catch the *next* bad pairing too, for any word, not just this
+  one.
+- **Multi-word synonym scoring downgrade** (`scoreSearchHit`): a match
+  satisfied only via a multi-word/hyphenated synonym variant
+  ("point of sale", "e-statement") now scores at 0.4× vs. a
+  literal/single-word hit — mirrors Algolia's own documented
+  `alternativesAsExact` distinction (see sources below). A second,
+  independent defense layer beyond the waterfall itself.
+- **`retrieveMail`'s literal (`expand:"none"`) mode** now builds its FTS
+  query through `literalSearchPlan` too, and its ILIKE fallback
+  respects the caller's expand mode
+  ([retrieve.ts](src/lib/mail/ai/retrieve.ts)). Found live, not just in
+  code review: previously `"none"` passed the *raw* query string
+  straight to `websearch_to_tsquery`, which made optional boost words
+  (e.g. "machine") mandatory AND terms in the tsquery. That overly
+  -strict query usually matched nothing, so the search silently fell
+  through to this function's own unindexed ILIKE fallback — which
+  reaches into attachment text — while the outer waterfall still
+  reported the result as `(fts)`. Confirmed against the real mailbox: a
+  raw `'sbi' & 'pos' & 'machin'` tsquery matched zero messages, while
+  twelve unrelated PM KUSUM solar-financing threads surfaced anyway via
+  the attachment-scanning ILIKE fallback (one attached bank-statement
+  PDF literally contained the line "POS ATM PURCH"). After the fix, the
+  literal-plan-shaped query (`sbi & pos`, machine optional) is genuinely
+  indexed and correctly returns exactly the one real match.
+- **`scripts/eval-rag.ts`'s R4 golden-set harness** gained a
+  `mustNotMatch` clause type — an assertion that a specific known-wrong
+  result must never appear in the top-k, independent of recall. Read
+  directly: the existing harness only ever measured recall
+  (`expect`/`expectEmpty`), so it was structurally blind to this entire
+  bug class. Added to `rag-golden.json`'s `adversarial` bucket (the
+  reported case, plus the same real thread via the bare `"pos"` word
+  -boundary angle). `npm run eval:rag` now reports "Precision: 0
+  failures" against the real mailbox.
+
+**Industry-grounded, not just internally reasoned** (per explicit
+request to check state-of-the-art practice): [Inside the Algolia Engine
+Part 6 — Handling Synonyms the Right
+Way](https://www.algolia.com/blog/engineering/inside-the-engine-part-6-handling-synonyms-the-right-way)
+confirms hand-curated, domain-specific synonym lists are correct
+practice (not a reason to abandon `SYNONYMS`) and that multi-word
+synonyms should score below exact/literal matches, directly informing
+the scoring downgrade above. PostgreSQL's native `thesaurus` dictionary
+mechanism was considered as an alternative synonym-normalization layer
+and explicitly not adopted — this project's own plan already commits to
+Postgres-only with no new search infra, and `SYNONYMS` feeds ranking/
+`fromHints` beyond raw matching, so migrating would replace only half
+the problem for a materially larger rewrite than this bug warranted.
+
+**On "O(1)" search** (per the original request): true O(1) doesn't
+exist for general text search. `MailContact.address` exact match is
+already ~O(1) via its unique B-tree index; everything else — FTS via
+the existing GIN tsvector index — is indexed sub-linear search (bitmap
+index scan), which is the honest, correct, industry-standard target
+here, not a literal O(1) claim.
+
+**Validated with multiple, varied keyword pairs, not one hardcoded
+query** (per explicit instruction that this must not be an "SBI POS"
+special case): `literalSearchPlan` tested against "SBI POS machine",
+"HDFC EDC device", "invoice GST", and "PM KUSUM proposal" — four
+unrelated jargon domains — plus a property test proving the mechanism
+holds for *every* key currently in `SYNONYMS`, and a synthetic,
+made-up bad-mapping case independent of the real table entirely. 244
+tests passing (12 new), no regressions.
+
+**Not yet done** (tracked separately, not silently dropped): `pg_trgm`
+trigram indexes for `MailContact` fuzzy name/email lookup (currently
+unindexed `contains`), and a `docs/rag-search-plan.md` addendum
+documenting the gaps this fix closed.
+
+[mail-search.ts](src/lib/mail/mail-search.ts),
+[search-expand.ts](src/lib/mail/ai/search-expand.ts),
+[retrieve.ts](src/lib/mail/ai/retrieve.ts),
+[mail.ts](src/actions/mail.ts),
+[eval-rag.ts](scripts/eval-rag.ts),
+[rag-golden.json](scripts/rag-golden.json) —
+`fix/mail-search-literal-first-fallback`, merged to main.
