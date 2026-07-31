@@ -2141,3 +2141,78 @@ authentication-header (SPF/DKIM/DMARC) signal — both still pending.
 [triage.ts](src/lib/mail/ai/triage.ts),
 [actions/mail.ts](src/actions/mail.ts) —
 `feature/mail-spam-sender-feedback`, merged to main.
+
+## 2026-07-31 — Self-learning spam triage, Phase 2: AI cross-sender campaign clustering
+
+Continuation of the sender-feedback loop above. The user specifically
+asked whether AI is used to find *similar* spam emails — it wasn't: the
+sender-feedback table only recognizes "this exact sender/domain again,"
+which a phishing campaign that deliberately rotates through different,
+never-seen-before addresses (a well-documented spam tactic) sails
+straight past. Smart labels already have exactly this AI-similarity
+mechanism — `classifySimilarThreads` +
+[label-correction.ts](src/lib/mail/ai/label-correction.ts), triggered
+automatically in the background after every manual label correction
+(`maybeSuggestLabelCorrection`,
+[mail-client.tsx:2666](src/components/mail/mail-client.tsx#L2666)) —
+spam had no equivalent.
+
+**New `src/lib/mail/ai/spam-similarity.ts`** —
+`findRecentSpamCandidatePool` casts a content-based net over the ~40
+most-recent still-in-inbox threads, deliberately with no sender/subject
+pre-filter (unlike `findBroadCandidateThreads`'s label-correction
+criteria, built from `suggestLabelMatchCriteria`'s generalized
+fromContains/subjectContains rule — the wrong shape here, since a
+rotating campaign has no such rule by definition). `classifySimilarThreads`
+is reused completely unmodified — it was already generic enough to
+accept `targetLabel: "SPAM"` directly, no changes needed.
+
+**New `suggestSpamCorrectionAction`** ([actions/mail.ts](src/actions/mail.ts))
+mirrors `suggestLabelCorrectionAction`'s shape exactly, minus the
+match-criteria step. Only ever triggered after a *manual* Report-spam
+(never after the model's own unattended auto-apply — letting an LLM
+similarity sweep run off the model's own guess could cascade one false
+positive into several). Degrades to no suggestion (never an unfiltered
+blanket one) when nothing looks similar or classification is unavailable.
+
+**UI** ([mail-client.tsx](src/components/mail/mail-client.tsx)) — a new
+`spamSuggestion` toast, a leaner sibling of the existing label
+-suggestion toast: no standing-rule/"Always do this" concept (the
+sender-feedback table from Phase 1 already is spam's forward-looking
+memory) and no folder-vs-label branching. Confirming reuses the
+existing bulk `markThreadsSpamAction` unchanged on the reviewed/selected
+subset; Undo reuses `markThreadsNotSpamAction` — no new move mechanism,
+only new suggestion/candidate-gathering plumbing feeding into what
+already existed and was already reversible.
+
+**Verified live, twice over**: seeded a same-campaign lottery-scam
+thread pair under two entirely different sender domains plus an
+unrelated control thread, called the candidate-pool + classification
+logic directly and confirmed it correctly clustered the scam pair while
+excluding the control thread. Then verified the actual end-to-end
+trigger against real inbox mail — reporting the real Framer
+promotional thread as spam surfaced a genuine suggestion ("1+ other
+email look like the same campaign") correctly pointing at an existing
+Cursor product-update email, a legitimately similar promotional
+template from a different company.
+
+**Root-caused and fixed an unrelated but real gotcha found mid
+-verification**: the long-running Next.js dev server used throughout
+this session had stopped picking up edits to *existing* Server Actions
+(`markThreadSpamAction`/`markThreadNotSpamAction`) — a real, reproducible
+dev-mode staleness quirk confirmed by testing the same code path via a
+direct script (worked immediately) vs. through the live browser (silently
+recorded nothing, feedback rows never created) on the *same* unmodified
+source. A newly-added action (`suggestSpamCorrectionAction`) compiled and
+ran correctly the whole time — only edits to already-existing action
+bodies were affected. Restarting the dev server cleared it; re-verified
+feedback recording and the suggestion flow both work correctly against
+the fresh compile. Framer's sender-feedback ended the session at
+`manualSpamCount:1, notSpamCount:1` (never_spam tier) — a real, correct
+outcome, not test residue, since it's a genuine correction of a
+legitimate newsletter sender.
+
+[spam-similarity.ts](src/lib/mail/ai/spam-similarity.ts),
+[actions/mail.ts](src/actions/mail.ts),
+[mail-client.tsx](src/components/mail/mail-client.tsx) —
+`feature/mail-spam-campaign-clustering`, merged to main.
