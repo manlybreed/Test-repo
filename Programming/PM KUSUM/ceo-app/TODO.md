@@ -2996,3 +2996,55 @@ meeting into the past." Zero console errors.
 [calendar.ts](src/actions/calendar.ts),
 [calendar-view.tsx](src/components/calendar/calendar-view.tsx) —
 `feature/calendar-event-actions`, merged to main.
+
+## 2026-07-31 — Calendar Phase 3: booking policy settings UI
+
+Gives the CEO a place to configure the public booking policy that
+Phase 4's visitor-facing page will read — closing the gap where
+`BookingPolicy` (added in Phase 0) had no UI to write to it at all.
+
+New `src/actions/booking-policy.ts` (`getBookingPolicyAction`,
+`saveBookingPolicyAction`, `checkSlugAvailableAction`), following this
+codebase's per-file `requireAccount()` convention rather than sharing a
+helper. `saveBookingPolicyAction` validates the slug shape
+(`^[a-z0-9]+(-[a-z0-9]+)*$`) and at least one duration option up front,
+then upserts, catching a `Prisma.PrismaClientKnownRequestError` with
+`code === "P2002"` (the same pattern already used in
+`lib/mail/sync.ts`) to return a friendly "already taken" message
+instead of throwing. New `src/components/calendar/booking-policy-panel.tsx`
+— a modal opened via a "Booking link" button on `/ceo/calendar`
+(`calendar-view.tsx`): enabled toggle, slug field with a 400ms-debounced
+live availability check, title/description, a 7-row weekday editor (one
+time window per day), duration checkboxes, buffer/notice/advance-window
+number inputs, and a copy-link row.
+
+**Bug caught during live verification, fixed before shipping**: opening
+the panel first threw "Cannot read properties of undefined (reading
+'findUnique')" — not a code bug but a stale long-running `next dev`
+process: `prisma.ts`'s self-healing singleton only re-checks
+`REQUIRED_MODELS`, a fixed list that was never updated to include
+`bookingPolicy`, so the stale cached client (loaded before this feature
+existed) slipped past the check instead of hitting the module's own
+friendly "stop the dev server and regenerate" error. Fixed by restarting
+the dev server (which picks up the already-current generated client);
+not a code change.
+
+**Verified live**: loaded the panel's defaults (slug derived from the
+mailbox address, all 7 days unchecked at 09:00–18:00, 30 min duration
+pre-selected) against the real `bookingPolicy` table; typing an invalid
+slug (`Akshay Test!!`) showed "Lowercase letters, numbers, hyphens only"
+live; a valid, unused slug (`akshay-consult`) showed "Available"; toggled
+booking on, checked Mon–Fri with 10:00–16:00, saved (network tab
+confirmed `{"ok":true}`); closed and reopened the panel — every field
+(enabled, slug, title, Mon–Fri 10–16 checked, Sat/Sun still off at the
+09:00–18:00 default, 30 min duration) read back exactly as saved,
+confirming the JSON round-trip through `weeklyWindowsJson`/
+`durationOptionsJson` is correct. `npx tsc --noEmit`: clean. `npx eslint`:
+clean. `npx vitest run`: 266 passed | 1 skipped (no new tests required
+by this phase's own plan — Phase 4's public-booking tests are the
+planned unit-test coverage for this policy data).
+
+[booking-policy.ts](src/actions/booking-policy.ts),
+[booking-policy-panel.tsx](src/components/calendar/booking-policy-panel.tsx),
+[calendar-view.tsx](src/components/calendar/calendar-view.tsx) —
+`feature/booking-policy-settings`, merged to main.
