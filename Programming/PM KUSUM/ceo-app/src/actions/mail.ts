@@ -37,6 +37,7 @@ import {
   mergeSmartLabels,
   parseLabelsJson,
 } from "@/lib/mail/ai/smart-labels";
+import { recordSpamFeedbackForThreads } from "@/lib/mail/ai/spam-feedback";
 import {
   archiveMailThread,
   archiveMailThreads,
@@ -337,6 +338,11 @@ export async function markThreadSpamAction(threadId: string) {
     throw new Error("Use Drafts/Outbox controls for local items");
   }
   const result = await markMailThreadAsSpam({ accountId: account.id, threadId });
+  await recordSpamFeedbackForThreads({
+    accountId: account.id,
+    threadIds: [threadId],
+    event: { action: "spam", source: "manual" },
+  }).catch(() => undefined);
   void syncCeoMail({
     userId: account.userId,
     maxPerFolder: 40,
@@ -354,6 +360,11 @@ export async function markThreadNotSpamAction(threadId: string) {
     throw new Error("Use Drafts/Outbox controls for local items");
   }
   const result = await markMailThreadNotSpam({ accountId: account.id, threadId });
+  await recordSpamFeedbackForThreads({
+    accountId: account.id,
+    threadIds: [threadId],
+    event: { action: "not_spam", source: "manual" },
+  }).catch(() => undefined);
   void syncCeoMail({
     userId: account.userId,
     maxPerFolder: 40,
@@ -370,6 +381,11 @@ export async function markThreadsSpamAction(threadIds: string[]) {
   if (!ids.length) return { ok: true as const, junkPath: null };
   const { account, userId } = await requireAccountForThread(ids[0]!);
   const result = await markMailThreadsAsSpam({ accountId: account.id, threadIds: ids });
+  await recordSpamFeedbackForThreads({
+    accountId: account.id,
+    threadIds: ids,
+    event: { action: "spam", source: "manual" },
+  }).catch(() => undefined);
   void syncCeoMail({ userId, maxPerFolder: 40, maxTriageNew: 0 }).catch(() => undefined);
   revalidateMail();
   return result;
@@ -382,6 +398,11 @@ export async function markThreadsNotSpamAction(threadIds: string[]) {
   if (!ids.length) return { ok: true as const, path: null };
   const { account, userId } = await requireAccountForThread(ids[0]!);
   const result = await markMailThreadsNotSpam({ accountId: account.id, threadIds: ids });
+  await recordSpamFeedbackForThreads({
+    accountId: account.id,
+    threadIds: ids,
+    event: { action: "not_spam", source: "manual" },
+  }).catch(() => undefined);
   void syncCeoMail({ userId, maxPerFolder: 40, maxTriageNew: 0 }).catch(() => undefined);
   revalidateMail();
   return result;
