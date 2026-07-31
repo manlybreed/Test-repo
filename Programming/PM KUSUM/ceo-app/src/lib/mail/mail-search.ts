@@ -325,19 +325,46 @@ export type ParsedSearchOperators = {
   freeText: string;
   /** Structured Prisma where fragments for each recognized operator, ANDed in as-is. */
   whereFragments: object[];
+  /**
+   * Explicit in:/folder: scope, if present — e.g. `in:drafts` or
+   * `folder:"Client Invoices"`. Resolving a role/name to an actual
+   * folderId needs DB access (a role can resolve to several folders, e.g.
+   * a nested "Trash.Drafts" duplicate — see resolveSystemFolder's
+   * canonical-folder tie-breaking in threads-query.ts), so that stays
+   * unresolved here; the caller (searchThreadsAction) resolves it.
+   */
+  folderScope: { role: string } | { name: string } | null;
+};
+
+/** in:/folder: values that map to a canonical MailFolder.role rather than a free-form name lookup. */
+const IN_FOLDER_ROLE_ALIASES: Record<string, string> = {
+  inbox: "INBOX",
+  sent: "SENT",
+  draft: "DRAFTS",
+  drafts: "DRAFTS",
+  trash: "TRASH",
+  bin: "TRASH",
+  deleted: "TRASH",
+  archive: "ARCHIVE",
+  allmail: "ARCHIVE",
+  spam: "JUNK",
+  junk: "JUNK",
 };
 
 const OPERATOR_RE = /(\w+):(?:"([^"]*)"|(\S+))/g;
 
 /**
  * Gmail-style search operators — from:, to:, has:attachment, is:unread/
- * starred/important/read, label:, before:/after: (YYYY-MM-DD). Anything not
- * recognized (including a bare "key:" with no matching operator) is left in
- * freeText so it still gets searched literally rather than silently dropped.
+ * starred/important/read, label:, before:/after: (YYYY-MM-DD), in:/folder:
+ * (drafts/sent/trash/archive/spam/inbox, or a custom folder name). Anything
+ * not recognized (including a bare "key:" with no matching operator) is left
+ * in freeText so it still gets searched literally rather than silently
+ * dropped.
  */
 export function parseSearchOperators(query: string): ParsedSearchOperators {
   const whereFragments: object[] = [];
   const freeTextParts: string[] = [];
+  let folderScope: ParsedSearchOperators["folderScope"] = null;
   let lastIndex = 0;
   OPERATOR_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
@@ -375,6 +402,9 @@ export function parseSearchOperators(query: string): ParsedSearchOperators {
       whereFragments.push({ lastMessageAt: { lt: new Date(value) } });
     } else if (key === "after" && !Number.isNaN(new Date(value).getTime())) {
       whereFragments.push({ lastMessageAt: { gte: new Date(value) } });
+    } else if (key === "in" || key === "folder") {
+      const alias = IN_FOLDER_ROLE_ALIASES[lower.replace(/\s+/g, "")];
+      folderScope = alias ? { role: alias } : { name: value };
     } else {
       freeTextParts.push(m[0]);
     }
@@ -384,6 +414,7 @@ export function parseSearchOperators(query: string): ParsedSearchOperators {
   return {
     freeText: freeTextParts.join(" ").replace(/\s+/g, " ").trim(),
     whereFragments,
+    folderScope,
   };
 }
 

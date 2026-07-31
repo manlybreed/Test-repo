@@ -1704,7 +1704,22 @@ export function MailClient({
       startNavTransition(async () => {
         const startedAt = performance.now();
         try {
-          const { rows, mode } = await searchThreadsAction(q, accountInfo?.id);
+          // Browsing a real folder (Drafts/Sent/Trash/a custom folder — not
+          // Smart Inbox/All Inboxes/Outbox, which are cross-folder views)
+          // implicitly scopes search to it, same as browsing already does;
+          // an explicit in:/folder: operator in the query overrides this
+          // server-side regardless of what's passed here.
+          const isRealFolder =
+            activeFolder &&
+            activeFolder !== SMART_INBOX_ID &&
+            activeFolder !== ALL_INBOXES_ID &&
+            activeFolder !== OUTBOX_ID &&
+            !activeSmartLabel;
+          const { rows, mode } = await searchThreadsAction(
+            q,
+            accountInfo?.id,
+            isRealFolder ? { folderId: activeFolder } : undefined,
+          );
           const elapsedMs = Math.round(performance.now() - startedAt);
           if (threadsFetchSeqRef.current !== seq) return;
           setThreads(rows as Thread[]);
@@ -1722,7 +1737,7 @@ export function MailClient({
       });
     }, 320);
     return () => window.clearTimeout(handle);
-  }, [threadQuery, accountInfo?.id]);
+  }, [threadQuery, accountInfo?.id, activeFolder, activeSmartLabel]);
 
   // Restore folder / smart-label view when search is cleared
   useEffect(() => {
