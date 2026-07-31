@@ -2808,3 +2808,89 @@ passed | 1 skipped.
 
 [mail-client.tsx](src/components/mail/mail-client.tsx) —
 `fix/local-draft-opens-docked`, merged to main.
+
+## 2026-07-31 — Fix: remote images loaded unconditionally, drafts still hid the thread list, blank reader while a thread loads
+
+Reported together, from a live screenshot walkthrough:
+
+1. "these emails have content but it is not rendered" — a real IMAP
+   draft, opened while browsing Drafts, showed only the header (subject
+   + DRAFT badge) with nothing else for a stretch, looking like content
+   had silently failed to render.
+2. "in the inbox, see the way content is shown and the mail list is
+   shown, but in drafts the moment mail is clicked, the mail list
+   disappears... ensure consistent UX just like inbox."
+3. "there should be a button to display images... i think not
+   everything is downloaded to prevent attacks" — no image-blocking
+   mechanism existed at all; remote `<img>` tags loaded unconditionally.
+
+**Root causes, one per issue**:
+
+1. `openThread`'s own `getMailThread()` fetch isn't wrapped in
+   `startTransition` (that would defer the first paint by ~1s), so the
+   pre-existing `pending && !messages.length` "Loading thread…" text was
+   gated on a `pending` flag from a completely different
+   `useTransition()` (used for AI actions) that this fetch never sets.
+   The reader body showed *nothing* for however long the fetch took —
+   imperceptible on a fast local connection, long enough to screenshot
+   on a slower one.
+2. The pre-existing "focus mode" (collapse the thread list, give the
+   reader the room) was keyed off `composingDocked` alone — true for
+   *any* docked compose, with no distinction between "the user just
+   clicked Reply" (an explicit action; hiding the list to write is a
+   reasonable default) and "the user just opened an existing draft to
+   view/continue it" (not starting anything new — should behave like
+   Inbox, where selecting a message never hides the list).
+3. `MessageReader` rendered `dangerouslySetInnerHTML` from the sanitized
+   HTML directly — sanitization stripped scripts/styles/event handlers,
+   but never touched `<img>` `src` values, so a tracking-pixel URL from
+   an untrusted sender loaded the instant the message opened, with no
+   opt-in gate at all (every mainstream mail client blocks this by
+   default).
+
+**Fixes**:
+
+1. Added a `threadLoading` state, true only while `openThread`'s own
+   fetch for the *currently selected* id is in flight, false on both
+   the success and catch paths. The existing loading indicator was
+   replaced with a proper skeleton (two pulsing placeholder cards)
+   shown whenever `threadLoading && !messages.length && !showCompose`.
+2. Added `isViewingDraftItem`, set true only in `openLocalDraft`, the
+   `outbox-item:` branch, and `openThread`'s `viewingDrafts` branch —
+   never in an explicit reply/compose action (Reply, Reply all, Reply
+   in fullscreen, the `R` shortcut, AI Draft, composeNew, etc., which
+   all explicitly reset it to `false`). `hideThreadsForFocus` now reads:
+   ```
+   composingDocked && (isViewingDraftItem
+     ? threadsPinnedWhileComposing   // draft/outbox view: list visible by default
+     : !threadsPinnedWhileComposing) // explicit reply: list hidden by default (unchanged)
+   ```
+   `threadsPinnedWhileComposing` (from the fix above this one) is the
+   manual override in whichever direction flips today's default — the
+   same toggle button, same dynamically-computed "Show/Hide thread
+   list" label.
+3. `message-reader.tsx` gained `hasRemoteImages()` and a
+   `blockRemoteImages()` step inside `prepareMailHtml` (new
+   `allowRemoteImages` param, defaulting to `true` so every *existing*
+   caller — including `printMessage()`, a deliberate, explicit view —
+   is unaffected). `<img src="http(s)://...">` is replaced with a
+   transparent 1×1 placeholder, the real URL stashed in
+   `data-blocked-src`, width/height preserved so layout doesn't jump.
+   `MessageReader` tracks per-message `imagesAllowed` state (resets to
+   blocked whenever a genuinely different message mounts, persists
+   while re-rendering the same one) and shows a banner — "Images are
+   hidden to protect your privacy." + a "Display images" button — only
+   when the message actually has a remote image to unblock.
+
+**Verified live**: opened a Reddit newsletter thread with real remote
+images — 30 `<img data-blocked-src>` placeholders rendered instead of
+loading, banner + button shown; clicking "Display images" flipped all
+30 to their real URLs and hid the banner. Opened a draft from Drafts —
+thread-list column (`lg:col-span-[6]`) stayed visible alongside the
+reader (`lg:col-span-[14]`), matching Inbox's layout instead of
+collapsing to reader-only. `npx vitest run`: 253 passed | 1 skipped,
+including 6 new tests for `hasRemoteImages`/image blocking.
+
+[message-reader.tsx](src/components/mail/message-reader.tsx),
+[mail-client.tsx](src/components/mail/mail-client.tsx) —
+`feature/mail-reader-images-and-focus-consistency`, merged to main.
