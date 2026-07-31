@@ -105,6 +105,47 @@ function contains(v: string): ContainsFilter {
   return { contains: v, mode: "insensitive" };
 }
 
+/** Prisma OR: match a person across participants / from / to / cc (no body scan). */
+export function personParticipantWhere(
+  addresses: string[],
+  nameQuery?: string,
+): object {
+  const ors: object[] = [];
+  for (const raw of addresses) {
+    const addr = raw.trim().toLowerCase();
+    if (!addr) continue;
+    ors.push({ participantsJson: { contains: addr, mode: "insensitive" as const } });
+    ors.push({
+      messages: {
+        some: {
+          OR: [
+            { fromAddress: { contains: addr, mode: "insensitive" as const } },
+            { toAddresses: { contains: addr, mode: "insensitive" as const } },
+            { ccAddresses: { contains: addr, mode: "insensitive" as const } },
+          ],
+        },
+      },
+    });
+  }
+  const name = nameQuery?.trim();
+  if (name && name.length >= 2) {
+    ors.push({
+      messages: {
+        some: {
+          OR: [
+            { fromName: { contains: name, mode: "insensitive" as const } },
+            { toAddresses: { contains: name, mode: "insensitive" as const } },
+          ],
+        },
+      },
+    });
+    ors.push({
+      participantsJson: { contains: name, mode: "insensitive" as const },
+    });
+  }
+  return ors.length ? { OR: ors } : { id: "__never__" };
+}
+
 /** Prisma OR: match variants across subject/body/sender local@domain/attachments. */
 export function messageFieldMatchOr(variants: string[]) {
   const expanded = expandSenderVariants(variants);
@@ -141,6 +182,76 @@ function expandSenderVariants(variants: string[]): string[] {
     }
   }
   return [...out];
+}
+
+export type SearchTier = "person" | "keyword" | "nl";
+
+/** Tokens that are project/bank/product jargon, not person names. */
+const NON_PERSON_TOKENS = new Set([
+  ...Object.keys(SYNONYMS),
+  "invoice",
+  "invoices",
+  "loan",
+  "payment",
+  "payments",
+  "meeting",
+  "meetings",
+  "draft",
+  "attachment",
+  "attachments",
+  "report",
+  "reports",
+  "receipt",
+  "receipts",
+  "proposal",
+  "contract",
+  "contracts",
+  "quote",
+  "quotation",
+  "po",
+  "gst",
+  "tds",
+  "pan",
+  "aadhaar",
+  "pm",
+  "kusum",
+]);
+
+const NL_QUERY_RE =
+  /\b(who|what|when|where|why|how|which|whose|whom|about|regarding|show\s+me|find\s+(me\s+)?(all\s+)?(the\s+)?(mails?|emails?|messages?)|any\s+(mail|email)|look\s+for|search\s+for|tell\s+me|did\s+\w+\s+send|sent\s+me)\b/i;
+
+/** 1–3 alphabetic name-like tokens (optional middle initials / hyphens). */
+const PERSON_NAME_RE =
+  /^[a-z][a-z.'’\-]*(\s+[a-z][a-z.'’\-]*){0,2}$/i;
+
+/**
+ * Route Threads search box queries (R6 / §3.2):
+ * - person: bare names → MailContact, no Claude
+ * - keyword: short tokens / jargon → FTS
+ * - nl: questions / paraphrase → AI expand + FTS (+ optional rerank)
+ */
+export function classifySearchTier(freeText: string): SearchTier {
+  const q = freeText.trim();
+  if (!q) return "keyword";
+  if (q.includes("?") || NL_QUERY_RE.test(q)) return "nl";
+
+  const tokens = tokenizeSearchQuery(q);
+  if (tokens.length >= 5 || q.length >= 48) return "nl";
+
+  if (
+    tokens.length >= 1 &&
+    tokens.length <= 3 &&
+    PERSON_NAME_RE.test(q) &&
+    !/\d|@/.test(q)
+  ) {
+    // Bank/product jargon ("sbi pos", "invoice") is keyword, not a person.
+    const allJargon = tokens.every((t) => NON_PERSON_TOKENS.has(t));
+    const mixedJargon =
+      tokens.length > 1 && tokens.some((t) => NON_PERSON_TOKENS.has(t));
+    if (!allJargon && !mixedJargon) return "person";
+  }
+
+  return "keyword";
 }
 
 export type ParsedSearchOperators = {

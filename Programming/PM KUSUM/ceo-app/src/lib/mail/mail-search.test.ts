@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildThreadSearchAnd,
+  classifySearchTier,
   parseSearchOperators,
   scoreSearchHit,
   synonymVariants,
@@ -18,6 +19,23 @@ describe("mail search", () => {
       "sbi",
       "pos",
     ]);
+  });
+
+  it("classifies bare names as person tier (no AI)", () => {
+    expect(classifySearchTier("prachi")).toBe("person");
+    expect(classifySearchTier("John Smith")).toBe("person");
+  });
+
+  it("classifies bank/product jargon as keyword, not person", () => {
+    expect(classifySearchTier("SBI POS")).toBe("keyword");
+    expect(classifySearchTier("invoice")).toBe("keyword");
+    expect(classifySearchTier("kusum")).toBe("keyword");
+  });
+
+  it("classifies questions and paraphrase as NL", () => {
+    expect(classifySearchTier("who sent the transformer quote?")).toBe("nl");
+    expect(classifySearchTier("emails about the loan status")).toBe("nl");
+    expect(classifySearchTier("find me the mail regarding POS")).toBe("nl");
   });
 
   it("expands POS / SBI synonyms", () => {

@@ -1676,7 +1676,7 @@ export function MailClient({
     return () => window.removeEventListener("keydown", h);
   }, []);
 
-  // Smart search: AI expands intent, then matches subject/body/sender@domain
+  // Tiered search: contacts / FTS / AI-NL (see rag-search-plan §3.2)
   useEffect(() => {
     const q = threadQuery.trim();
     if (q.length < 2) {
@@ -1685,21 +1685,20 @@ export function MailClient({
     }
     setSearching(true);
     setStatus("Searching…");
-    // Slightly longer debounce — AI expand + rerank costs a round-trip
     const handle = window.setTimeout(() => {
       const seq = ++threadsFetchSeqRef.current;
       startNavTransition(async () => {
         const startedAt = performance.now();
         try {
-          const rows = (await searchThreadsAction(q, accountInfo?.id)) as Thread[];
+          const { rows, mode } = await searchThreadsAction(q, accountInfo?.id);
           const elapsedMs = Math.round(performance.now() - startedAt);
           if (threadsFetchSeqRef.current !== seq) return;
-          setThreads(rows);
+          setThreads(rows as Thread[]);
           setActiveSmartLabel(null);
           setStatus(
             rows.length
-              ? `Search · ${rows.length} result${rows.length === 1 ? "" : "s"} · ${elapsedMs}ms`
-              : `Search · no matches · ${elapsedMs}ms`,
+              ? `Search · ${rows.length} result${rows.length === 1 ? "" : "s"} · ${elapsedMs}ms (${mode})`
+              : `Search · no matches · ${elapsedMs}ms (${mode})`,
           );
         } catch (e) {
           setStatus(e instanceof Error ? e.message : "Search failed");
@@ -1707,7 +1706,7 @@ export function MailClient({
           setSearching(false);
         }
       });
-    }, 480);
+    }, 320);
     return () => window.clearTimeout(handle);
   }, [threadQuery, accountInfo?.id]);
 
