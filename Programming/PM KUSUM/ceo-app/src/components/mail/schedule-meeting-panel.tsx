@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { haptic } from "@/components/mail/haptics";
 import { createMeetingAction, type MeetingResult } from "@/actions/calendar";
@@ -37,28 +37,59 @@ export function ScheduleMeetingPanel({
   accountId,
   defaultTitle,
   defaultAttendees,
+  initialDate,
+  initialTime,
+  description,
+  onScheduled,
 }: {
   open: boolean;
   onClose: () => void;
   accountId?: string;
   defaultTitle: string;
   defaultAttendees: string[];
+  /** Pre-fills the date/time fields — used by the Calendar page's
+   * click-a-slot-to-create flow. Omitted (Mail's call site) falls back
+   * to defaultDateTime()'s tomorrow-at-10:00. */
+  initialDate?: string;
+  initialTime?: string;
+  description?: string;
+  /** Fired after a real Google Calendar event is created (not the ICS
+   * fallback, which has nothing server-side to refetch) so a caller
+   * showing a live grid can refresh it. */
+  onScheduled?: () => void;
 }) {
   const [pending, startTransition] = useTransition();
   const initial = defaultDateTime();
   const [title, setTitle] = useState(defaultTitle);
-  const [date, setDate] = useState(initial.date);
-  const [time, setTime] = useState(initial.time);
+  const [date, setDate] = useState(initialDate ?? initial.date);
+  const [time, setTime] = useState(initialTime ?? initial.time);
   const [duration, setDuration] = useState(30);
   const [attendees, setAttendees] = useState(defaultAttendees.join(", "));
   const [error, setError] = useState("");
   const [result, setResult] = useState<MeetingResult | null>(null);
 
+  // The panel stays mounted across opens, so a newly-clicked slot has to
+  // push its date/time into state — without this, clicking a second
+  // slot would still show the first one's values.
+  useEffect(() => {
+    if (!open) return;
+    const d = defaultDateTime();
+    setTitle(defaultTitle);
+    setDate(initialDate ?? d.date);
+    setTime(initialTime ?? d.time);
+    setAttendees(defaultAttendees.join(", "));
+    setError("");
+    setResult(null);
+    // defaultAttendees is a fresh array literal at most call sites;
+    // joining it keeps this effect from re-firing on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialDate, initialTime, defaultTitle, defaultAttendees.join(",")]);
+
   function reset() {
     const d = defaultDateTime();
     setTitle(defaultTitle);
-    setDate(d.date);
-    setTime(d.time);
+    setDate(initialDate ?? d.date);
+    setTime(initialTime ?? d.time);
     setDuration(30);
     setAttendees(defaultAttendees.join(", "));
     setError("");
@@ -88,7 +119,7 @@ export function ScheduleMeetingPanel({
       try {
         const res = await createMeetingAction({
           title: title.trim() || "Meeting",
-          description: "Scheduled from BluRidge Mail",
+          description: description ?? "Scheduled from BluRidge Mail",
           startIso: start.toISOString(),
           endIso: end.toISOString(),
           attendeeEmails,
@@ -103,6 +134,8 @@ export function ScheduleMeetingPanel({
           a.download = res.filename;
           a.click();
           URL.revokeObjectURL(url);
+        } else {
+          onScheduled?.();
         }
         setResult(res);
         haptic("success");
