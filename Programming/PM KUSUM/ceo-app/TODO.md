@@ -2595,3 +2595,54 @@ exactly as before.
 [threads-query.ts](src/lib/mail/threads-query.ts),
 [mail-client.tsx](src/components/mail/mail-client.tsx) —
 `fix/orphaned-trashed-threads`, merged to main.
+
+## 2026-07-31 — Fix: query planner requiring generic/meta words ("message") as search concepts
+
+Follow-up to the AND-of-OR-groups tsquery fix above (G15). Fixing that
+bug made a second, previously-invisible issue measurable: `npm run
+eval:rag` showed the `paraphrase` bucket had dropped to 0.92 recall,
+missing "the message about paying anthropic" — a query that should
+obviously find the real Anthropic payment threads.
+
+**Root cause**: `expandSearchQuery`'s Haiku plan (and the deterministic
+`lexicalSearchPlan` fallback merged into it) turned "message" — a word
+describing the query's own phrasing ("the MESSAGE about paying...") —
+into its own required `mustGroup`. A required group the real email's
+body essentially never literally contains makes that email impossible
+to find. This was invisible until now because the (now-fixed) tsquery
+grouping bug made every extra required group a no-op.
+
+**Not just a prompt patch — verified live that the prompt alone
+doesn't fix it.** Tightening Haiku's system prompt (explicit
+instruction + a worked example for this exact query shape) stopped
+Haiku's own plan from including "message" — but `expandSearchQuery`
+always merges in `lexicalSearchPlan`'s fallback groups for anything
+Haiku didn't already produce, and that fallback function had **its own
+separate, hardcoded optional-token list** (only "machine"/"device"/
+"terminal" variants) — completely disconnected from `OPTIONAL_TOKENS`
+in `mail-search.ts`. So even a perfectly-fixed Haiku prompt still ended
+up with "message" re-added by the merge. Confirmed by direct testing at
+each layer before concluding the prompt-only fix was insufficient.
+
+**Fixed, two parts**:
+- Haiku's system prompt now explicitly rules out generic/meta words
+  describing the query itself ("message", "mail", "email", "note",
+  "thing", "info", "question") from `mustGroups` — `should` at most —
+  with a worked example.
+- `OPTIONAL_TOKENS` gained the same word set, and
+  [lexicalSearchPlan()](src/lib/mail/ai/search-expand.ts) was rewritten
+  to use `requiredSearchTokens()` — the same shared mechanism
+  `literalSearchPlan()` already uses — instead of its own hardcoded
+  list, so a change to `OPTIONAL_TOKENS` now actually propagates to
+  every place required-vs-optional token classification happens,
+  instead of silently having no effect on this one function.
+
+**Verified live**: `retrieveMail("the message about paying
+anthropic")` now returns the real Anthropic payment/invoice/receipt
+threads. `npm run eval:rag`: overall recall back to 1.00/13,
+`paraphrase` bucket 1.00, 0 precision failures — both tracked
+independently by the harness added earlier this session.
+
+[search-expand.ts](src/lib/mail/ai/search-expand.ts),
+[mail-search.ts](src/lib/mail/mail-search.ts) —
+`fix/expand-query-filler-words`, merged to main.
