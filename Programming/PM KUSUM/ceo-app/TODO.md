@@ -3196,3 +3196,69 @@ clean. `npx vitest run`: 292 passed | 1 skipped.
 [tool-confirmation.ts](src/lib/ai/tool-confirmation.ts),
 [run-tool-loop.ts](src/lib/ai/run-tool-loop.ts) —
 `feature/calendar-ai-tools`, merged to main.
+
+## 2026-08-01 — Calendar Phase 6: "pick, don't type" quick-options chips
+
+The last piece of the user's original ExitPlanMode feedback ("the user
+should not type much, they should be able to just select from options
+as much as possible") — when the assistant lists candidate meeting
+slots or existing events, the CEO can now click a chip instead of
+retyping what they just read, in both the Assistant chat and the ⌘K
+bar, since both already share `runToolLoop`.
+
+New `src/lib/ai/options-prompt.ts` — a pure leaf module with zero
+imports from `tools.ts`'s action files, the same reasoning
+`tool-confirmation.ts` is its own leaf module for: it needs to stay
+directly unit-testable without pulling in NextAuth/server-runtime
+imports. `buildOptionsPrompt` turns a `check_calendar_availability` or
+`list_calendar_events` tool result into a `{label, options: [{value,
+label}]}` prompt, reusing each tool's own already-formatted labels
+(`formatSlotForDisplay`'s output for slots, `list_calendar_events`'s
+`when` for events) so the chips and the model's own prose never
+describe the same time two different ways. `runToolLoop` tracks only
+the most-recently-*executed* turn's calendar call — overwritten every
+turn, not accumulated, so an earlier lookup in the same conversation
+can't leak stale options onto a later turn that moved on to something
+unrelated — and computes `optionsPrompt` only where the loop already
+finishes naturally (no tool calls this turn), never on either
+loop-terminal path (`client_action`, confirmation-required), mirroring
+exactly how `pendingConfirmation` is already scoped.
+
+New `src/components/options-chips.tsx` renders the row and hides
+itself once clicked (local `picked` state, same "resolved" pattern
+`ConfirmationCard` already uses) — a click calls the parent's existing
+send-message function with the option's exact `value`, so from the
+model's point of view a click is indistinguishable from the CEO typing
+it back; no new protocol. Wired into `assistant-chat.tsx` (per-message,
+next to `pendingConfirmation`) and `command-bar.tsx` (its `"text"`
+result variant), and forwarded through both `/api/ai/chat` and
+`/api/command`'s response bodies.
+
+**Verified live** in both surfaces against the real, already-connected
+Google Calendar: in the Assistant chat, "What times are open tomorrow?"
+(a Sunday) correctly showed no chips — the real weekday-only
+availability tool returned zero slots, and `buildOptionsPrompt` returns
+null on an empty result rather than rendering an empty row; "What times
+are open on Monday?" showed a "Pick a time" row with 5 real slots,
+clicking one correctly hid the chips (showing "✓ Mon, Aug 3 · 10:00 AM
+IST"), sent that exact text as a real new user turn, and the assistant
+responded exactly as if it had been typed (asking for the still-missing
+title/attendees). Repeated the identical check from the ⌘K bar
+("What times are open on Tuesday?" → chips → click → "Mon, Aug 3 · 9:30
+AM IST" sent → assistant asked to confirm scheduling at that exact
+time) — confirming both surfaces behave identically off the shared
+loop, as designed. `npx tsc --noEmit`: clean. `npx eslint`: clean.
+`npx vitest run`: 302 passed | 1 skipped.
+
+This completes all six phases of the Calendar plan
+(`.claude/plans/witty-finding-tiger.md`) — full visual calendar view,
+edit/cancel from the grid, configurable public booking policy, the
+public booking page itself, full AI tool control of all of the above,
+and this "pick, don't type" UX layer.
+
+[options-prompt.ts](src/lib/ai/options-prompt.ts),
+[options-chips.tsx](src/components/options-chips.tsx),
+[run-tool-loop.ts](src/lib/ai/run-tool-loop.ts),
+[assistant-chat.tsx](src/components/assistant-chat.tsx),
+[command-bar.tsx](src/components/command-bar.tsx) —
+`feature/ai-quick-options`, merged to main.
