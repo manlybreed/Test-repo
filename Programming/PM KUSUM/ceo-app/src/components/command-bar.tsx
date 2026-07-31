@@ -6,11 +6,12 @@ import { useRouter, usePathname } from "next/navigation";
 import { listCommands, matchCommand, type CommandContext } from "@/lib/commands/registry";
 import { invokeCommand } from "@/lib/commands/use-register-commands";
 import { ConfirmationCard, type PendingAction } from "@/components/confirmation-card";
+import { OptionsChips, type OptionsPrompt } from "@/components/options-chips";
 
 type ResultState =
   | { type: "idle" }
   | { type: "thinking" }
-  | { type: "text"; content: string; downloads?: { label: string; href: string }[] }
+  | { type: "text"; content: string; downloads?: { label: string; href: string }[]; optionsPrompt?: OptionsPrompt }
   | { type: "confirm"; content: string; action: PendingAction }
   | { type: "error"; message: string };
 
@@ -112,6 +113,7 @@ export function CommandBar({
         error?: string;
         downloads?: { label: string; href: string }[];
         pendingConfirmation?: { toolName: string; toolInput: Record<string, unknown>; summary: string };
+        optionsPrompt?: OptionsPrompt;
         commandId?: string;
         args?: Record<string, unknown> | null;
       };
@@ -138,7 +140,12 @@ export function CommandBar({
         setResult({ type: "error", message: data.error || "Something went wrong" });
         return;
       }
-      setResult({ type: "text", content: data.content || "", downloads: data.downloads });
+      setResult({
+        type: "text",
+        content: data.content || "",
+        downloads: data.downloads,
+        optionsPrompt: data.optionsPrompt,
+      });
     } catch {
       setResult({ type: "error", message: "Network error — is the server running?" });
     }
@@ -308,6 +315,15 @@ export function CommandBar({
                             </a>
                           ))}
                         </div>
+                      )}
+                      {result.optionsPrompt && (
+                        <OptionsChips
+                          prompt={result.optionsPrompt}
+                          onPick={(value) => {
+                            setQuery(value);
+                            run(value);
+                          }}
+                        />
                       )}
                     </div>
                   )}

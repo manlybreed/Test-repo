@@ -5,12 +5,14 @@ import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ConfirmationCard, type PendingAction } from "@/components/confirmation-card";
+import { OptionsChips, type OptionsPrompt } from "@/components/options-chips";
 
 type Msg = {
   role: "user" | "assistant";
   content: string;
   downloads?: { label: string; href: string }[];
   pendingConfirmation?: PendingAction;
+  optionsPrompt?: OptionsPrompt;
 };
 
 const SUGGESTIONS = [
@@ -63,6 +65,7 @@ export function AssistantChat() {
           content: data.reply,
           downloads: data.downloads,
           pendingConfirmation: data.pendingConfirmation || undefined,
+          optionsPrompt: data.optionsPrompt || undefined,
         },
       ]);
     } catch (err) {
@@ -247,6 +250,13 @@ export function AssistantChat() {
                     pending={confirmingIndex === i}
                     onConfirm={() => void handleConfirm(i)}
                     onCancel={() => handleCancel(i)}
+                  />
+                )}
+                {m.optionsPrompt && (
+                  <OptionsChips
+                    prompt={m.optionsPrompt}
+                    disabled={loading}
+                    onPick={(value) => void send(value)}
                   />
                 )}
               </div>

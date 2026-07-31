@@ -84,3 +84,38 @@ describe("run-tool-loop client_action (Phase 3)", () => {
     expect(block).not.toContain("runCeoTool");
   });
 });
+
+describe("run-tool-loop optionsPrompt (Phase 6)", () => {
+  const src = readFileSync(join(process.cwd(), "src/lib/ai/run-tool-loop.ts"), "utf8");
+
+  it("imports buildOptionsPrompt from the dedicated pure leaf module, not tools.ts", () => {
+    // Mirrors why tool-confirmation.ts is its own leaf module — pure
+    // logic needs to stay importable/testable without pulling in
+    // tools.ts's action-file (NextAuth/server-runtime) imports.
+    expect(src).toContain('from "./options-prompt"');
+  });
+
+  it("is not loop-terminal — computed only where the loop already finishes naturally (no tool calls this turn)", () => {
+    const naturalFinishIdx = src.indexOf("if (toolUses.length === 0)");
+    const optionsCallIdx = src.indexOf("optionsPrompt = buildOptionsPrompt(lastCalendarCall)");
+    expect(naturalFinishIdx).toBeGreaterThan(-1);
+    expect(optionsCallIdx).toBeGreaterThan(naturalFinishIdx);
+    // And it must NOT be set on either loop-terminal path (client_action,
+    // confirmation-required) — those discard the turn entirely instead.
+    const clientActionIdx = src.indexOf("if (clientActionTool) {");
+    const confirmIdx = src.indexOf("if (confirmTool) {");
+    const pushIdx = src.indexOf('messages.push({ role: "assistant"');
+    expect(clientActionIdx).toBeGreaterThan(-1);
+    expect(confirmIdx).toBeGreaterThan(clientActionIdx);
+    expect(src.slice(clientActionIdx, confirmIdx)).not.toContain("buildOptionsPrompt");
+    expect(src.slice(confirmIdx, pushIdx)).not.toContain("buildOptionsPrompt");
+  });
+
+  it("overwrites (not accumulates) the last calendar call every turn, so an earlier lookup can't leak into a later, unrelated turn", () => {
+    expect(src).toContain("lastCalendarCall = calendarCallThisTurn;");
+    const declIdx = src.indexOf("let calendarCallThisTurn: CalendarToolCall | null = null;");
+    const assignIdx = src.indexOf("lastCalendarCall = calendarCallThisTurn;");
+    expect(declIdx).toBeGreaterThan(-1);
+    expect(assignIdx).toBeGreaterThan(declIdx);
+  });
+});

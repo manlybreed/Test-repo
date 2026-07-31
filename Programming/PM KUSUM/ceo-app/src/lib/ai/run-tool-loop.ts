@@ -6,6 +6,9 @@ import {
   CONFIRMATION_REQUIRED_TOOLS,
   describePendingAction,
 } from "./tools";
+import { buildOptionsPrompt, type CalendarToolCall, type OptionsPrompt } from "./options-prompt";
+
+export type { OptionsPrompt } from "./options-prompt";
 
 export type PendingConfirmation = {
   toolName: string;
@@ -23,6 +26,7 @@ export type ToolLoopResult = {
   downloads: { label: string; href: string }[];
   pendingConfirmation: PendingConfirmation | null;
   clientAction: ClientAction | null;
+  optionsPrompt: OptionsPrompt | null;
 };
 
 /**
@@ -98,6 +102,12 @@ export async function runToolLoop(
   const downloads: { label: string; href: string }[] = [];
   let pendingConfirmation: PendingConfirmation | null = null;
   let clientAction: ClientAction | null = null;
+  let optionsPrompt: OptionsPrompt | null = null;
+  // Reflects only the most-recently-*executed* turn's calendar call (or
+  // null) — overwritten each turn below, not accumulated, so an earlier
+  // calendar lookup doesn't leak options onto a later turn that moved on
+  // to something else entirely.
+  let lastCalendarCall: CalendarToolCall | null = null;
 
   let guard = 0;
   while (guard < maxTurns) {
@@ -119,6 +129,7 @@ export async function runToolLoop(
 
     if (toolUses.length === 0) {
       finalText = texts.join("\n") || "Done.";
+      optionsPrompt = buildOptionsPrompt(lastCalendarCall);
       break;
     }
 
@@ -162,8 +173,12 @@ export async function runToolLoop(
     messages.push({ role: "assistant", content: response.content });
 
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
+    let calendarCallThisTurn: CalendarToolCall | null = null;
     for (const tool of toolUses) {
       const result = await runCeoTool(tool.name, tool.input);
+      if (tool.name === "check_calendar_availability" || tool.name === "list_calendar_events") {
+        calendarCallThisTurn = { name: tool.name, result };
+      }
       try {
         const parsed = JSON.parse(result);
         if (parsed.download) {
@@ -182,6 +197,7 @@ export async function runToolLoop(
         content: result,
       });
     }
+    lastCalendarCall = calendarCallThisTurn;
 
     messages.push({ role: "user", content: toolResults });
 
@@ -197,5 +213,5 @@ export async function runToolLoop(
         : "Completed.";
   }
 
-  return { finalText, downloads, pendingConfirmation, clientAction };
+  return { finalText, downloads, pendingConfirmation, clientAction, optionsPrompt };
 }
