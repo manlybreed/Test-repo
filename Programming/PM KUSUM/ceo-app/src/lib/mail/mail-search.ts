@@ -67,6 +67,21 @@ const OPTIONAL_TOKENS = new Set([
   "hello",
   "hi",
   "test",
+  // Meta/filler words that describe the QUERY itself ("the message about
+  // X", "any note on Y") rather than anything the target email's own body
+  // actually contains — required literal groups built from these almost
+  // never match a real message. lexicalSearchPlan() built one anyway, and
+  // expandSearchQuery()'s mergePlans() re-added it even when Haiku's own
+  // plan correctly left it out, since the fallback plan is always merged
+  // back in for any group Haiku didn't already produce.
+  "message",
+  "messages",
+  "note",
+  "notes",
+  "thing",
+  "things",
+  "question",
+  "questions",
 ]);
 
 export function tokenizeSearchQuery(query: string): string[] {

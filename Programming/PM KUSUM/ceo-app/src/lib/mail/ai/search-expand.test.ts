@@ -28,4 +28,18 @@ describe("AI-assisted search plan", () => {
     const and = buildThreadSearchAnd("SBI POS machine", plan);
     expect(and.length).toBe(plan.mustGroups.length);
   });
+
+  it("never requires a generic/meta word describing the query itself, only the real concepts", () => {
+    // "message" names the query's own phrasing ("the MESSAGE about..."), not
+    // anything the target email's body actually contains — a required group
+    // built from it can never match a real email, causing a genuine recall
+    // miss even though the real concepts (anthropic, paying) are present.
+    const plan = lexicalSearchPlan("the message about paying anthropic");
+    const required = plan.mustGroups.flat().map((s) => s.toLowerCase());
+    expect(required).not.toContain("message");
+    expect(plan.should.map((s) => s.toLowerCase())).toContain("message");
+    // The real concepts still end up required.
+    expect(plan.mustGroups.some((g) => g.includes("anthropic"))).toBe(true);
+    expect(plan.mustGroups.some((g) => g.includes("paying"))).toBe(true);
+  });
 });
