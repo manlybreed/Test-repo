@@ -3392,3 +3392,71 @@ all-day-excluded, empty).
 [calendar-view.tsx](src/components/calendar/calendar-view.tsx),
 [schedule-meeting-panel.tsx](src/components/mail/schedule-meeting-panel.tsx) —
 `feature/calendar-grid-redesign`, merged to main.
+
+## 2026-08-01 — Calendar: edit guests + copy a formatted invite
+
+**Reported**, against the Edit-meeting modal on the newly-redesigned
+calendar page: "edit should allow inviting more attendees, also, there
+should be a way to copy invite, in copy invite, the link and meeting
+details should be formatted just like other apps."
+
+**Root cause**: `EventDetailCard`'s edit form only ever had title / date
+/ time / duration — the attendee list was visible read-only in the
+detail view but had no input, so an event's guest list was fixed at
+creation time. And nothing anywhere produced shareable text for an
+existing event; the only affordances were "Join Meet" and "Open in
+Google Calendar", both of which just navigate.
+
+**Fix**: the edit form gained a Guests field, pre-filled from the
+event's current attendees and validated per-address (a bad entry
+blocks the save and names the offending string rather than failing
+opaquely at the API). One non-obvious behaviour worth recording:
+Google's `events.patch` **replaces** the whole attendee list and
+re-notifies everyone left on it, so `attendeeEmails` is only included
+in the patch when the list genuinely changed — otherwise a pure
+time-only edit would email every existing guest a pointless "updated
+invite". The field also states its real consequence inline ("Anyone
+added here gets a Google invite; anyone removed gets a cancellation")
+rather than leaving it implicit.
+
+"Copy invite" is a new button in the detail view backed by a new pure
+`invite-text.ts`. Format follows what Google Calendar / Zoom invites
+already condition people to expect:
+
+```
+Invite format test
+
+When: Wednesday, August 5, 2026 · 3:00 PM – 3:30 PM (India Standard Time)
+Guests: akshayroyal678@gmail.com, akshay@thebluridge.com
+Google Meet: https://meet.google.com/nan-snqg-yqe
+
+Add to your calendar: https://www.google.com/calendar/event?eid=…
+```
+
+The timezone is named (not hardcoded IST, and not omitted): an invite
+exists to be pasted to someone who may be elsewhere, so a bare "3:00
+PM" is genuinely ambiguous — resolved via `Intl.DateTimeFormat`'s
+`timeZoneName: "long"` with a graceful fall back to the short form,
+then to nothing, rather than throwing on a thin Intl build. Lines with
+nothing to say (no guests, no Meet link, no calendar link) are omitted
+rather than printed empty, and an all-day event renders as a bare date
+with "(all day)" instead of a nonsense time range.
+
+**Verified live** against the real, already-connected Google Calendar:
+created a test event via the grid's click-to-create with one guest,
+then intercepted `navigator.clipboard.writeText` to read exactly what
+"Copy invite" produced — byte-for-byte the block above, with the real
+Meet and event links. Confirmed the button flips to "Invite copied"
+and reverts. Opened Edit and confirmed the Guests field pre-filled with
+the existing attendee; entering `notanemail` correctly blocked the save
+with `"notanemail" isn't a valid email address`; adding a real second
+address saved, and re-copying the invite showed both guests — i.e. the
+attendee patch reached the real Google event. Test event cancelled
+afterward.
+
+`npx tsc --noEmit`: clean. `npx eslint`: clean. `npx vitest run`: 318
+passed | 1 skipped, including 8 new `invite-text.test.ts` cases.
+
+[invite-text.ts](src/components/calendar/invite-text.ts),
+[calendar-view.tsx](src/components/calendar/calendar-view.tsx) —
+`feature/calendar-invite-attendees`, merged to main.
