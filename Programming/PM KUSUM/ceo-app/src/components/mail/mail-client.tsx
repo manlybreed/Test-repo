@@ -62,6 +62,7 @@ import { VacationPanel } from "@/components/mail/vacation-panel";
 import { MailboxesPanel } from "@/components/mail/mailboxes-panel";
 import { CalendarPanel } from "@/components/mail/calendar-panel";
 import { ScheduleMeetingPanel } from "@/components/mail/schedule-meeting-panel";
+import { PeoplePicker } from "@/components/people-picker";
 import {
   listMailAccountsAction,
   type MailAccountSummary,
@@ -112,7 +113,6 @@ import {
   trashThreadAction,
   multilingualDraftAction,
   recallPersonAction,
-  findContactsAction,
   refreshStyleAction,
   summarizeAttachmentAction,
   bulkCleanupSuggestionsAction,
@@ -816,153 +816,6 @@ function AnimatedSparkle({
     >
       <Sparkles size={size} />
     </motion.span>
-  );
-}
-
-type ContactSuggestion = { address: string; displayName: string | null };
-
-/** The comma/semicolon-separated fragment currently being typed, plus everything before it. */
-function lastRecipientFragment(value: string) {
-  const idx = Math.max(value.lastIndexOf(","), value.lastIndexOf(";"));
-  const prefix = idx >= 0 ? `${value.slice(0, idx + 1)} ` : "";
-  const fragment = (idx >= 0 ? value.slice(idx + 1) : value).trim();
-  return { prefix, fragment };
-}
-
-/**
- * A To/Cc/Bcc input with a contact-suggestion dropdown. Module-level (not
- * nested inside MailClient) so it never remounts/loses focus on parent
- * re-renders — the same fix that was needed for the AI-assist panel.
- */
-function RecipientAutocomplete({
-  id,
-  value,
-  onChange,
-  placeholder,
-  wrapClassName,
-  accountId,
-}: {
-  id?: string;
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-  wrapClassName?: string;
-  accountId?: string;
-}) {
-  const [suggestions, setSuggestions] = useState<ContactSuggestion[]>([]);
-  const [open, setOpen] = useState(false);
-  const [activeIndex, setActiveIndex] = useState(0);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const wrapRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const onDocClick = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, []);
-
-  function scheduleLookup(v: string) {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    const { fragment } = lastRecipientFragment(v);
-    if (fragment.length < 2) {
-      setSuggestions([]);
-      setOpen(false);
-      return;
-    }
-    debounceRef.current = setTimeout(() => {
-      void findContactsAction(fragment, accountId)
-        .then((rows) => {
-          setSuggestions(rows);
-          setOpen(rows.length > 0);
-          setActiveIndex(0);
-        })
-        .catch(() => {
-          setSuggestions([]);
-          setOpen(false);
-        });
-    }, 200);
-  }
-
-  function acceptSuggestion(s: ContactSuggestion) {
-    const { prefix } = lastRecipientFragment(value);
-    const insertion = s.displayName ? `${s.displayName} <${s.address}>` : s.address;
-    onChange(`${prefix}${insertion}, `);
-    setOpen(false);
-    setSuggestions([]);
-  }
-
-  return (
-    <div ref={wrapRef} className={`relative ${wrapClassName || ""}`}>
-      <input
-        id={id}
-        placeholder={placeholder}
-        value={value}
-        autoComplete="email"
-        onChange={(e) => {
-          onChange(e.target.value);
-          scheduleLookup(e.target.value);
-        }}
-        onKeyDown={(e) => {
-          if (!open || !suggestions.length) return;
-          if (e.key === "ArrowDown") {
-            e.preventDefault();
-            setActiveIndex((i) => Math.min(i + 1, suggestions.length - 1));
-          } else if (e.key === "ArrowUp") {
-            e.preventDefault();
-            setActiveIndex((i) => Math.max(i - 1, 0));
-          } else if (e.key === "Enter" || e.key === "Tab") {
-            e.preventDefault();
-            e.stopPropagation();
-            acceptSuggestion(suggestions[activeIndex]!);
-          } else if (e.key === "Escape") {
-            e.preventDefault();
-            e.stopPropagation();
-            setOpen(false);
-          }
-        }}
-      />
-      {open && suggestions.length > 0 && (
-        <ul
-          className="absolute left-0 top-full z-20 mt-1 max-h-48 w-72 overflow-auto rounded-xl p-1 text-xs shadow-lg"
-          style={{
-            background: "var(--bg-elevated)",
-            border: "1px solid var(--border-strong)",
-          }}
-        >
-          {suggestions.map((s, i) => (
-            <li key={s.address}>
-              <button
-                type="button"
-                className="w-full cursor-pointer rounded-lg px-2 py-1.5 text-left hover:bg-white/5"
-                style={{
-                  background:
-                    i === activeIndex ? "var(--mail-purple-dim)" : "transparent",
-                  color: "var(--text)",
-                }}
-                onMouseEnter={() => setActiveIndex(i)}
-                onClick={() => acceptSuggestion(s)}
-              >
-                <div className="truncate font-medium">
-                  {s.displayName || s.address}
-                </div>
-                {s.displayName && (
-                  <div
-                    className="truncate text-[0.65rem]"
-                    style={{ color: "var(--text-dim)" }}
-                  >
-                    {s.address}
-                  </div>
-                )}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
   );
 }
 
@@ -6597,13 +6450,14 @@ export function MailClient({
                             <div className="mail-compose-field">
                               <label htmlFor="mail-to">To</label>
                               <div className="flex items-center gap-2">
-                                <RecipientAutocomplete
+                                <PeoplePicker
                                   id="mail-to"
                                   wrapClassName="min-w-0 flex-1"
                                   placeholder="name@company.com, …"
                                   value={to}
                                   onChange={setTo}
                                   accountId={composeAccountId}
+                                  bordered={false}
                                 />
                                 <button
                                   type="button"
@@ -6621,26 +6475,28 @@ export function MailClient({
                             {(showCcBcc || cc) && (
                               <div className="mail-compose-field">
                                 <label htmlFor="mail-cc">Cc</label>
-                                <RecipientAutocomplete
+                                <PeoplePicker
                                   id="mail-cc"
                                   wrapClassName="min-w-0"
                                   placeholder="Optional carbon copy"
                                   value={cc}
                                   onChange={setCc}
                                   accountId={composeAccountId}
+                                  bordered={false}
                                 />
                               </div>
                             )}
                             {(showCcBcc || bcc) && (
                               <div className="mail-compose-field">
                                 <label htmlFor="mail-bcc">Bcc</label>
-                                <RecipientAutocomplete
+                                <PeoplePicker
                                   id="mail-bcc"
                                   wrapClassName="min-w-0"
                                   placeholder="Optional blind copy"
                                   value={bcc}
                                   onChange={setBcc}
                                   accountId={composeAccountId}
+                                  bordered={false}
                                 />
                               </div>
                             )}
@@ -7037,13 +6893,14 @@ export function MailClient({
                 <div className="mail-compose-field">
                   <label htmlFor="mail-to-fs">To</label>
                   <div className="flex items-center gap-2">
-                    <RecipientAutocomplete
+                    <PeoplePicker
                       id="mail-to-fs"
                       wrapClassName="min-w-0 flex-1"
                       placeholder="name@company.com, …"
                       value={to}
                       onChange={setTo}
                       accountId={composeAccountId}
+                      bordered={false}
                     />
                     {/* Gmail-style: Cc/Bcc toggles from the To row, not the header */}
                     <button
@@ -7062,24 +6919,26 @@ export function MailClient({
                 {(showCcBcc || cc) && (
                   <div className="mail-compose-field">
                     <label htmlFor="mail-cc-fs">Cc</label>
-                    <RecipientAutocomplete
+                    <PeoplePicker
                       id="mail-cc-fs"
                       wrapClassName="min-w-0"
                       value={cc}
                       onChange={setCc}
                       accountId={composeAccountId}
+                      bordered={false}
                     />
                   </div>
                 )}
                 {(showCcBcc || bcc) && (
                   <div className="mail-compose-field">
                     <label htmlFor="mail-bcc-fs">Bcc</label>
-                    <RecipientAutocomplete
+                    <PeoplePicker
                       id="mail-bcc-fs"
                       wrapClassName="min-w-0"
                       value={bcc}
                       onChange={setBcc}
                       accountId={composeAccountId}
+                      bordered={false}
                     />
                   </div>
                 )}

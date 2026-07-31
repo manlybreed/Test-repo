@@ -33,6 +33,8 @@ import { MiniCalendar } from "@/components/calendar/mini-calendar";
 import { TimeGrid } from "@/components/calendar/time-grid";
 import { formatInviteText } from "@/components/calendar/invite-text";
 import { ScheduleMeetingPanel } from "@/components/mail/schedule-meeting-panel";
+import { PeoplePicker } from "@/components/people-picker";
+import { parseRecipients } from "@/lib/mail/recipients";
 
 const DURATIONS = [15, 30, 45, 60, 90];
 
@@ -512,10 +514,7 @@ function EventDetailCard({
     }
     const end = new Date(start.getTime() + duration * 60 * 1000);
 
-    const nextAttendees = attendees
-      .split(",")
-      .map((a) => a.trim())
-      .filter(Boolean);
+    const nextAttendees = parseRecipients(attendees).map((r) => r.address);
     const invalid = nextAttendees.find((a) => !EMAIL_RE.test(a));
     if (invalid) {
       setError(`"${invalid}" isn't a valid email address`);
@@ -743,14 +742,15 @@ function EventDetailCard({
                     </select>
                   </label>
                   <label className="block text-xs" style={{ color: "var(--text-dim)" }}>
-                    Guests (comma-separated)
-                    <input
-                      className="mt-1 w-full cursor-text rounded-lg px-3 py-2.5 text-sm outline-none"
-                      style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-strong)", color: "var(--text)" }}
-                      placeholder="name@company.com, ..."
-                      value={attendees}
-                      onChange={(e) => setAttendees(e.target.value)}
-                    />
+                    Guests
+                    <div className="mt-1">
+                      <PeoplePicker
+                        placeholder="Add guests…"
+                        value={attendees}
+                        onChange={setAttendees}
+                        accountId={accountId}
+                      />
+                    </div>
                     <span className="mt-1 block" style={{ color: "var(--text-muted)" }}>
                       Anyone added here gets a Google invite; anyone removed gets a cancellation.
                     </span>
