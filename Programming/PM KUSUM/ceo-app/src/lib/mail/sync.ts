@@ -12,6 +12,7 @@ import {
   threadKey,
 } from "@/lib/mail/normalize";
 import { applyStandingLabelRules } from "@/lib/mail/ai/label-rules";
+import { normalizeHeaderValue, summarizeAuthResults } from "@/lib/mail/auth-headers";
 import {
   repairSmartLabels,
   triageNewThreads,
@@ -473,8 +474,23 @@ async function runSync(
             const seen = msg.flags?.has("\\Seen") ?? false;
             const flagged = msg.flags?.has("\\Flagged") ?? false;
             const answered = msg.flags?.has("\\Answered") ?? false;
-            const listUnsub =
-              (parsed.headers?.get("list-unsubscribe") as string) || null;
+            // mailparser remaps every "list-*" header key to a single
+            // merged "list" key before storage (see mail-parser.js's
+            // processHeaders) — ".get(\"list-unsubscribe\")" was always
+            // undefined; fixed alongside the new auth-header extraction
+            // below since it directly affects the NEWSLETTER heuristic's
+            // hasListUnsubscribe signal and sits in the exact code being
+            // touched.
+            const listHeader = parsed.headers?.get("list") as
+              | { unsubscribe?: unknown }
+              | undefined;
+            const listUnsub = listHeader?.unsubscribe
+              ? String(listHeader.unsubscribe)
+              : null;
+            const authSummary = summarizeAuthResults(
+              normalizeHeaderValue(parsed.headers?.get("authentication-results")),
+              normalizeHeaderValue(parsed.headers?.get("received-spf")),
+            );
             const imapLabels = labelsFromImapFlags(
               msg.flags,
               folder.name,
@@ -514,6 +530,7 @@ async function runSync(
                   snippet: snippetFromBody(bodyText),
                   hasAttachments: (parsed.attachments?.length || 0) > 0,
                   listUnsubscribe: listUnsub,
+                  authSummary,
                   rawPath,
                   searchText: [subject, bodyText, fromAddr, ...toList]
                     .filter(Boolean)
