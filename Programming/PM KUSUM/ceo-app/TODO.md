@@ -2776,3 +2776,35 @@ passed | 1 skipped.
 [mail.ts](src/actions/mail.ts),
 [mail-client.tsx](src/components/mail/mail-client.tsx) —
 `feature/mail-folder-scoped-search`, merged to main.
+
+## 2026-07-31 — Fix: clicking a draft in Drafts opened fullscreen instead of the normal editor
+
+Reported: selecting a draft from the Drafts folder opened fullscreen
+compose rather than the normal docked editor.
+
+**Root cause**: this app has two separate storage paths for a draft —
+a local one (never synced to IMAP, `outbox:`-prefixed thread id,
+routed through `openLocalDraft`) and a real IMAP Drafts-folder message
+(routed through `openThread`'s `viewingDrafts` branch). Only
+`openLocalDraft` unconditionally called `setComposeFullscreen(true)`;
+the IMAP-draft branch never forced fullscreen at all. Since
+`listDraftsFolderAction` merges both kinds into one visually-identical
+list (same "DRAFT" badge either way), which behavior you got was
+invisible and depended on which underlying kind a given row happened
+to be.
+
+**Fix**: `openLocalDraft` now calls `setComposeFullscreen(false)`,
+matching the IMAP-draft branch and the outbox-item branch right above
+it in the same file. `composeNew()` (starting a genuinely blank
+message) is untouched and still opens fullscreen — this only changes
+opening an *existing* draft.
+
+**Verified live**: clicked the local draft "Regarding the Test Mail"
+from the Drafts folder — confirmed via DOM inspection it opened
+docked (no Exit/fullscreen control, folders sidebar still visible,
+reader panel at `lg:col-span-[20]` with the "Show thread list" toggle
+from the fix above available), not fullscreen. `npx vitest run`: 249
+passed | 1 skipped.
+
+[mail-client.tsx](src/components/mail/mail-client.tsx) —
+`fix/local-draft-opens-docked`, merged to main.
