@@ -1957,3 +1957,93 @@ that plan.
 [next.config.ts](next.config.ts),
 [disclosure-form.ts](src/lib/docgen/disclosure-form.ts) —
 `fix/production-build-edge-middleware-node-runtime`, merged to main.
+
+## 2026-07-31 — Add AI spam/phishing detection with real IMAP Junk filing
+
+The Junk folder showed nothing, and investigation found there was no
+app-level spam/phishing classification anywhere in this codebase — the
+`JUNK`-role mailbox (`resolveMailboxPath`, `imap-mailbox.ts`) is purely a
+passive mirror of whatever the upstream IMAP account itself already
+flagged, and this CEO mailbox's own IMAP/SMTP provider has no such filter
+of its own. The existing AI triage pipeline
+([triage.ts](src/lib/mail/ai/triage.ts)) already handles the *adjacent
+but distinct* concept of low-value bulk mail via the `NEWSLETTER` smart
+label (kept in the inbox at P4) — genuine spam/phishing needed a
+separate, stricter judgment that actually moves mail out of the inbox,
+not a residual label.
+
+**Design**: extended `TriageSchema` with optional `isSpam`/`spamReason`
+fields and a new system-prompt paragraph instructing the model to set
+`isSpam:true` *only* for actually malicious/abusive mail (phishing,
+scams) — explicitly not for newsletters, marketing, or transactional
+mail the recipient plausibly opted into, and to default to `false` when
+unsure (a false positive hides real mail, which is worse than a missed
+spam message). A defense-in-depth guardrail then overrides the model's
+own call back to `false` whenever the sender is a known `Client` contact
+or the thread carries the `PM_KUSUM` label — mirroring this project's
+existing discipline of never trusting a single AI call alone for a
+consequential, inbox-emptying action:
+
+```ts
+const isSpam = Boolean(parsed.data.isSpam) && !clientHit && !refined.includes("PM_KUSUM");
+```
+
+Spam-move is treated as **reversible**, the same policy tier as
+archive/move (`checkAutonomy("move")`, always allowed) — not gated
+behind the confirmation-card mechanism the Phase 2 voice/command plan
+built for irreversible actions, matching Gmail's own UX where spam is
+auto-filed silently and "Not spam" undoes it with one click.
+
+**New IMAP move functions** in
+[imap-mailbox.ts](src/lib/mail/imap-mailbox.ts) —
+`markMailThreadsAsSpam`/`markMailThreadAsSpam` (resolves/auto-creates a
+real `JUNK`-role mailbox via the existing `resolveMailboxPath`, moves
+messages there via the existing `moveThreadsMessagesToPath` engine — the
+exact pattern `archiveMailThreads` already uses, just targeting `JUNK`)
+and `markMailThreadsNotSpam`/`markMailThreadNotSpam` (same mechanism,
+back to `INBOX`). `triageThread`'s auto-apply block now calls
+`markMailThreadAsSpam` whenever the guarded `isSpam` is true.
+
+**New server actions** in [actions/mail.ts](src/actions/mail.ts) —
+`markThreadSpamAction`/`markThreadNotSpamAction` (single) and
+`markThreadsSpamAction`/`markThreadsNotSpamAction` (bulk), all gated by
+`assertAutonomy("move")`, mirroring `archiveThreadAction`'s exact shape.
+
+**New AI tools** in [tools.ts](src/lib/ai/tools.ts) — `mark_mail_spam`
+/ `mark_mail_not_spam`, reversible (not in `CONFIRMATION_REQUIRED_TOOLS`),
+callable from the assistant, ⌘K command bar, and voice.
+
+**UI** in [mail-client.tsx](src/components/mail/mail-client.tsx) — a
+"Report spam" / "Not spam" icon toggle (context-aware on whether the
+active folder's role is `JUNK`) added to the reader toolbar next to
+Archive/Trash, and to the bulk multi-select toolbar; two new registry
+commands (`mail.mark-spam`, `mail.mark-not-spam`) so voice/⌘K can invoke
+either direction directly.
+
+**Verified live against the real mailbox, not just code review**:
+manually round-tripped a Framer promotional thread through Report spam
+→ real Junk mailbox → Not spam → back to Inbox, confirmed via direct DB
+query at each step (not just the client UI, which turned out to have an
+unrelated pre-existing staleness quirk in the long-lived dev tab used
+for this session — a full reload always showed the true state). Then
+triggered live AI re-triage (the reader's "Triage" action) on two real
+phishing threads already sitting in the inbox: a fake "Password
+Expiration Notice" impersonating a webmail security alert, and a tech-
+support-scam impersonating Microsoft (`supportmail@techsupport.microsoft.com`,
+a spoofed domain) — both were correctly classified `isSpam:true` with
+accurate, specific `spamReason`s and auto-filed to the real Junk mailbox
+with no confirmation prompt, while every PM_KUSUM/client business thread
+touched during testing was left untouched. tsc, eslint, and vitest (161
+passed across 33 suites, no regressions) all clean; null-byte scan clean.
+
+**Not built** (deliberately out of scope): Gmail-style 30-day auto-purge
+of Junk contents — that's a data-retention/deletion decision distinct
+from classification and filing, flagged here as a separate follow-up if
+wanted.
+
+[triage.ts](src/lib/mail/ai/triage.ts),
+[imap-mailbox.ts](src/lib/mail/imap-mailbox.ts),
+[actions/mail.ts](src/actions/mail.ts),
+[tools.ts](src/lib/ai/tools.ts),
+[mail-client.tsx](src/components/mail/mail-client.tsx) —
+`feature/mail-spam-detection`, merged to main.
