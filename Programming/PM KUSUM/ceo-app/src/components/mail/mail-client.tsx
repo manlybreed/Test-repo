@@ -2236,7 +2236,12 @@ export function MailClient({
     setMessages([]);
     setComposeHeaders({ inReplyTo: undefined, referencesHdr: undefined });
     setShowCompose(true);
-    setComposeFullscreen(true);
+    // Docked, not fullscreen — matches the real-IMAP-draft branch in
+    // openThread (viewingDrafts) and the outbox-item branch above it.
+    // Fullscreen is for composeNew() (a genuinely blank message); opening
+    // an existing draft from the Drafts folder should land in the normal
+    // editor.
+    setComposeFullscreen(false);
     setCommitments([]);
     startNavTransition(async () => {
       const d = await getDraftAction(id, accountInfo?.id);
