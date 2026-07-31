@@ -74,12 +74,14 @@ export async function POST(req: NextRequest) {
   let downloads: { label: string; href: string }[] = [];
   let pendingConfirmation: Awaited<ReturnType<typeof runToolLoop>>["pendingConfirmation"] =
     null;
+  let optionsPrompt: Awaited<ReturnType<typeof runToolLoop>>["optionsPrompt"] = null;
 
   try {
     const result = await runToolLoop(anthropic, messages);
     finalText = result.finalText;
     downloads = result.downloads;
     pendingConfirmation = result.pendingConfirmation;
+    optionsPrompt = result.optionsPrompt;
   } catch (err) {
     console.error("[/api/ai/chat] Anthropic error:", err);
     const errMsg =
@@ -111,5 +113,6 @@ export async function POST(req: NextRequest) {
     reply: finalText,
     downloads,
     pendingConfirmation,
+    optionsPrompt,
   });
 }

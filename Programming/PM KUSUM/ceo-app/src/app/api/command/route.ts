@@ -116,6 +116,7 @@ export async function POST(req: NextRequest) {
       type: "text",
       content: result.finalText,
       downloads: result.downloads,
+      optionsPrompt: result.optionsPrompt,
     });
   } catch (err) {
     console.error("[/api/command]", err);
