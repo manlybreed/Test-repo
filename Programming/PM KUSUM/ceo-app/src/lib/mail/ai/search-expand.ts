@@ -57,12 +57,20 @@ export function literalSearchPlan(query: string): SearchPlan {
 /** Deterministic fallback when Claude is unavailable. */
 export function lexicalSearchPlan(query: string): SearchPlan {
   const tokens = tokenizeSearchQuery(query);
-  const mustGroups = tokens
-    .filter((t) => !["machine", "machines", "device", "devices"].includes(t))
-    .map((t) => synonymVariants(t));
-  const optional = tokens.filter((t) =>
-    ["machine", "machines", "device", "devices", "terminal"].includes(t),
-  );
+  // requiredSearchTokens() is the single shared "which tokens are optional
+  // boost words, not real requirements" mechanism (OPTIONAL_TOKENS in
+  // mail-search.ts) — literalSearchPlan already uses it. This used to have
+  // its own separate, hardcoded exclusion list here (only "machine"/
+  // "device"/"terminal" variants), so extending OPTIONAL_TOKENS with
+  // generic/meta words like "message" had no effect on this function at
+  // all: a query like "the message about paying anthropic" still built a
+  // required ["message"] group, and expandSearchQuery()'s mergePlans()
+  // re-added it into the AI plan even when Haiku correctly left it out,
+  // since this fallback plan is always merged back in for any group Haiku
+  // didn't already produce.
+  const required = requiredSearchTokens(tokens);
+  const optional = tokens.filter((t) => !required.includes(t));
+  const mustGroups = required.map((t) => synonymVariants(t));
   return {
     mustGroups: mustGroups.length
       ? mustGroups
@@ -115,10 +123,23 @@ Rules:
 - Include real mail phrasing: bank short codes, "e-statement", "POS", "EDC", "terminal", merchant, etc.
 - fromHints: domains/locals like "sbi", "statebank", "yono", "hdfcbank", "reportsmailer".
 - Keep variants short (1–4 words). No sentences.
+- Never put a generic word describing the QUERY ITSELF — "message", "mail",
+  "email", "note", "thing", "info", "question", and the like — into its own
+  mustGroup. Those words describe the fact that the user is searching, not
+  anything the target email actually contains; requiring one makes a real
+  match impossible to find when the email's own body never uses that word
+  (almost always). If such a word seems worth keeping at all, put it in
+  "should", never in "mustGroups".
 - Example: "SBI POS machine" →
   mustGroups: [["sbi","state bank","state bank of india"],["pos","point of sale","edc","terminal"]],
   should: ["machine","device","merchant","card"],
   fromHints: ["sbi","statebank","yono","onlinesbi"]
+- Example: "the message about paying anthropic" →
+  mustGroups: [["anthropic"],["paying","payment","invoice","bill","charge"]],
+  should: ["message","receipt","transaction"],
+  fromHints: ["anthropic","billing"]
+  ("message" names the query, not the email's content — it stays out of
+  mustGroups even though the phrasing puts it right up front.)
 - A POS/EDC card machine and a bank e-statement are different concepts —
   "e-statement" only belongs with actual statement/document queries, never
   as a variant of "pos".`,
