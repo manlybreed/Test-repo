@@ -39,6 +39,10 @@ import {
 } from "@/lib/mail/ai/smart-labels";
 import { recordSpamFeedbackForThreads } from "@/lib/mail/ai/spam-feedback";
 import {
+  findRecentSpamCandidatePool,
+  SPAM_CANDIDATE_POOL_SIZE,
+} from "@/lib/mail/ai/spam-similarity";
+import {
   archiveMailThread,
   archiveMailThreads,
   markInboxMessagesSeen,
@@ -372,6 +376,73 @@ export async function markThreadNotSpamAction(threadId: string) {
   }).catch(() => undefined);
   revalidateMail();
   return result;
+}
+
+export type SpamCorrectionSuggestion = {
+  /** Every candidate Claude judged genuinely similar — reviewable/
+   * deselectable before applying, same shape as label corrections. */
+  matches: MatchingThreadPreview[];
+  matchesCapped: boolean;
+};
+
+/**
+ * After a manual "Report spam," checks whether other mail still sitting
+ * in the inbox looks like the same underlying campaign — even from a
+ * different sender, which pure sender/domain reputation (spam-feedback.ts)
+ * can't catch by itself (a well-documented spam tactic: rotating through
+ * different addresses for the same template). Unlike suggestLabelCorrectionAction,
+ * there's no sender/subject match-criteria step first — a rotating
+ * campaign has no such generalizable rule — so findRecentSpamCandidatePool
+ * casts a content-based net over recent inbox mail and classifySimilarThreads
+ * (already generic) judges genuine similarity directly. Returns null when
+ * nothing looks similar or classification is unavailable — never falls
+ * back to an unfiltered pool, same "degrade to fewer, safe matches"
+ * discipline as the label-correction flow.
+ */
+export async function suggestSpamCorrectionAction(input: {
+  threadId: string;
+}): Promise<SpamCorrectionSuggestion | null> {
+  const { account } = await requireAccountForThread(input.threadId);
+
+  const latest = await prisma.mailMessage.findFirst({
+    where: { threadId: input.threadId, accountId: account.id },
+    orderBy: { date: "desc" },
+    select: { fromAddress: true, subject: true, snippet: true, bodyText: true },
+  });
+  if (!latest) return null;
+
+  const sourceSnippet = latest.snippet || latest.bodyText?.slice(0, 400) || "";
+
+  const candidates = await findRecentSpamCandidatePool({
+    accountId: account.id,
+    excludeThreadId: input.threadId,
+  });
+  if (!candidates.length) return null;
+
+  const classified = await classifySimilarThreads({
+    targetLabel: "SPAM",
+    source: {
+      subject: latest.subject,
+      fromAddress: latest.fromAddress,
+      snippet: sourceSnippet,
+    },
+    candidates: candidates.map((c) => ({
+      id: c.id,
+      subject: c.subject,
+      fromAddress: c.fromAddress || "",
+      snippet: c.snippet || "",
+    })),
+  });
+  if (!classified || !classified.length) return null;
+
+  const keep = new Set(classified);
+  const matches = candidates.filter((c) => keep.has(c.id));
+  if (!matches.length) return null;
+
+  return {
+    matches,
+    matchesCapped: candidates.length >= SPAM_CANDIDATE_POOL_SIZE,
+  };
 }
 
 export async function markThreadsSpamAction(threadIds: string[]) {
