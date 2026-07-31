@@ -35,6 +35,29 @@ describe("run-tool-loop pauses on confirmation-required tools", () => {
   it("supports a caller-supplied system prompt preamble (used by /api/command for nav-intent)", () => {
     expect(src).toContain("systemPromptPreamble");
   });
+
+  it("grounds the model with a real current-date/time context computed fresh per call, not baked into the static SYSTEM_PROMPT", () => {
+    // Regression guard for the exact hallucination class this codebase has
+    // hit before (a meeting scheduled a year in the wrong direction) —
+    // list_calendar_events/update_calendar_event ask the model to supply
+    // its own ISO date range, so without an explicit "now" anchor here it
+    // has nothing but its own training-time sense of the date to go on.
+    expect(src).toContain("new Date()");
+    expect(src).toContain('Treat this as "today"/"now"');
+  });
+
+  it("hands the model a ready-made IST wall-clock date label, not a raw UTC timestamp to convert itself", () => {
+    // A first version passed now.toISOString() (UTC) with a "+5:30" note
+    // and trusted the model to do the arithmetic — live testing caught it
+    // reading the UTC instant's own calendar date as "today" instead
+    // (calling 2026-08-01T00:03 IST "July 31"). Fixed by computing the
+    // IST-local date/time strings directly via toLocaleDateString/
+    // toLocaleTimeString with timeZone: "Asia/Kolkata", so the model is
+    // handed the answer, not raw material to compute it from.
+    expect(src).toContain('timeZone: "Asia/Kolkata"');
+    expect(src).toContain("toLocaleDateString");
+    expect(src).not.toContain("now.toISOString()");
+  });
 });
 
 describe("run-tool-loop client_action (Phase 3)", () => {

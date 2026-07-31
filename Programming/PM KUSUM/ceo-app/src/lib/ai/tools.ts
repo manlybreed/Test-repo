@@ -30,9 +30,9 @@ You help the CEO with:
 - Tasks and Pomodoro / time tracking
 - Expense records — use list_expenses or get_expense_summary to answer expense questions
 - CEO Mail (akshay@) — use search_mail / ask_mail / digest_inbox / summarize_thread / draft_reply / propose_tasks_from_mail / recall_person to read and draft. archive_mail_thread / move_mail_thread_to_folder / set_mail_priority / mark_mail_important / mark_mail_read / mark_mail_spam / mark_mail_not_spam / snooze_mail_thread are reversible mail actions you can call directly once you have a threadId (get it from search_mail). trash_mail_thread / bulk_trash_mail_threads / send_mail are irreversible — calling them never executes anything by itself, the CEO sees a confirmation card with the exact details and must click Confirm; call them as soon as you have the required details, do not withhold the call to ask permission first. send_mail is for a brand-new email only, never a reply to an existing thread — resolve the recipient address via search_mail/list_clients/recall_person first, never guess one.
-- Calendar & meetings — use check_calendar_availability before proposing or discussing any time; it returns ready-made slots with an exact startIso/endIso already confirmed against real availability. When scheduling, copy that startIso/endIso verbatim into schedule_meeting — never recompute or retype a date/time yourself, even one that looks equivalent to a slot you saw. schedule_meeting creates a real Calendar event with a Meet link and sends real invites (or falls back to a downloadable .ics if Calendar isn't connected). It is irreversible, so calling it never executes it directly — the CEO always sees a confirmation card with the exact details and must click Confirm themselves before anything is actually created. Call schedule_meeting as soon as you have a specific time and attendee list; you do not need to ask "shall I confirm?" first — the card handles that.
+- Calendar & meetings — use check_calendar_availability before proposing or discussing any time; it returns ready-made slots with an exact startIso/endIso already confirmed against real availability. When scheduling, copy that startIso/endIso verbatim into schedule_meeting — never recompute or retype a date/time yourself, even one that looks equivalent to a slot you saw. schedule_meeting creates a real Calendar event with a Meet link and sends real invites (or falls back to a downloadable .ics if Calendar isn't connected). It is irreversible, so calling it never executes it directly — the CEO always sees a confirmation card with the exact details and must click Confirm themselves before anything is actually created. Call schedule_meeting as soon as you have a specific time and attendee list; you do not need to ask "shall I confirm?" first — the card handles that. Use list_calendar_events to answer "what's on my calendar" or to find an event's eventId (and its current title/attendee count) before changing it — it's read-only. update_calendar_event (reschedule/rename) and cancel_calendar_event are irreversible exactly like schedule_meeting: call them as soon as you have eventId + the details and let the confirmation card handle the CEO's approval. For the CEO's public booking link: get_booking_policy (read-only) returns the current settings, get_booking_link (read-only) returns the shareable URL, and update_booking_policy changes which days/hours are open, offered meeting lengths, or buffers — only send fields that are actually changing, since omitted ones keep their current value. It's irreversible too, since anyone holding the link could then book those hours; the link's slug/URL itself cannot be changed with this tool.
 
-Irreversible tools (schedule_meeting, and any mail send/delete tool) never execute on your tool call alone — a confirmation card with the exact details is shown to the CEO, and only a real click by them triggers the action. Call these tools freely once you have the required details; do not withhold the call to ask permission first, and do not claim an action is done until you see its actual tool result.
+Irreversible tools (schedule_meeting, update_calendar_event, cancel_calendar_event, update_booking_policy, and any mail send/delete tool) never execute on your tool call alone — a confirmation card with the exact details is shown to the CEO, and only a real click by them triggers the action. Call these tools freely once you have the required details; do not withhold the call to ask permission first, and do not claim an action is done until you see its actual tool result.
 
 Rules:
 - NEVER answer questions about counts, statuses, or amounts from memory — always call the relevant list/summary tool first.
@@ -517,9 +517,126 @@ export const ceoTools: Anthropic.Tool[] = [
       required: ["title", "startIso", "endIso", "attendeeEmails"],
     },
   },
+  {
+    name: "list_calendar_events",
+    description:
+      "List real Calendar events between two ISO datetimes — use to answer 'what's on my calendar' or to find an event's eventId (plus its current title and attendee count) before rescheduling or cancelling it. Read-only.",
+    input_schema: {
+      type: "object",
+      properties: {
+        startIso: { type: "string", description: "ISO 8601 start of the range" },
+        endIso: { type: "string", description: "ISO 8601 end of the range" },
+      },
+      required: ["startIso", "endIso"],
+    },
+  },
+  {
+    name: "update_calendar_event",
+    description:
+      "Reschedule and/or rename an existing real Calendar event. Get eventId from list_calendar_events first. newStartIso/newEndIso MUST be copied verbatim from a check_calendar_availability/list_calendar_events result — never computed or retyped. Irreversible — calling this never changes anything by itself; the CEO sees a confirmation card with the exact new time and must click Confirm before Google emails attendees the update.",
+    input_schema: {
+      type: "object",
+      properties: {
+        eventId: { type: "string" },
+        title: {
+          type: "string",
+          description:
+            "The event's title — its current title if unchanged, or a new title to rename it. Always required so the confirmation card can name the meeting.",
+        },
+        newStartIso: {
+          type: "string",
+          description: "ISO 8601 new start time. Omit if only renaming.",
+        },
+        newEndIso: {
+          type: "string",
+          description: "ISO 8601 new end time — required whenever newStartIso is given.",
+        },
+      },
+      required: ["eventId", "title"],
+    },
+  },
+  {
+    name: "cancel_calendar_event",
+    description:
+      "Cancel an existing real Calendar event. Get eventId from list_calendar_events first. Irreversible — calling this never cancels anything by itself; the CEO sees a confirmation card and must click Confirm before Google emails attendees a cancellation.",
+    input_schema: {
+      type: "object",
+      properties: {
+        eventId: { type: "string" },
+        title: {
+          type: "string",
+          description: "The event's current title, shown on the confirmation card.",
+        },
+        attendeeCount: {
+          type: "number",
+          description: "Number of attendees, shown on the confirmation card.",
+        },
+      },
+      required: ["eventId", "title"],
+    },
+  },
+  {
+    name: "get_booking_policy",
+    description:
+      "Read the CEO's current public booking policy — whether it's enabled, the slug, title/description, weekly available hours (IST), offered meeting durations, buffers, and notice/advance-window limits. Read-only.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "update_booking_policy",
+    description:
+      "Update which days/hours are open to public booking, the booking page's title/description, offered meeting durations, buffers, or notice/advance-window limits. Only include fields that are actually changing — call get_booking_policy first if you need to know the current values, since anything omitted here keeps its current value. The booking link's slug/URL cannot be changed with this tool. Irreversible — the CEO sees a confirmation card describing the real consequence (anyone with the link could then book those hours) and must click Confirm.",
+    input_schema: {
+      type: "object",
+      properties: {
+        enabled: { type: "boolean", description: "Turn public booking on or off." },
+        title: { type: "string" },
+        description: { type: "string" },
+        weeklyWindows: {
+          type: "object",
+          description:
+            'Map of weekday key (mon/tue/wed/thu/fri/sat/sun) to an array of open time windows, each {start,end} in 24-hour HH:MM IST — e.g. {"mon":[{"start":"10:00","end":"16:00"}]}. Days omitted from this object are closed to booking. Pass the FULL set of days you want open — this replaces the weekly schedule, it does not merge day-by-day.',
+          additionalProperties: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                start: { type: "string", description: "HH:MM, 24-hour, IST" },
+                end: { type: "string", description: "HH:MM, 24-hour, IST" },
+              },
+              required: ["start", "end"],
+            },
+          },
+        },
+        durationOptions: {
+          type: "array",
+          items: { type: "number" },
+          description: "Meeting lengths in minutes visitors can choose, e.g. [30, 60].",
+        },
+        bufferBeforeMins: { type: "number" },
+        bufferAfterMins: { type: "number" },
+        minNoticeHours: { type: "number" },
+        maxAdvanceDays: { type: "number" },
+      },
+    },
+  },
+  {
+    name: "get_booking_link",
+    description:
+      "Get the CEO's public booking link URL to share, and whether public booking is currently enabled. Read-only.",
+    input_schema: { type: "object", properties: {} },
+  },
 ];
 
 export { CONFIRMATION_REQUIRED_TOOLS, describePendingAction } from "./tool-confirmation";
+
+/** "HH:MM" (24-hour, IST) -> minutes-since-midnight, matching the shape
+ * BookingPolicy.weeklyWindowsJson stores — the AI tool schema uses
+ * human clock times so the model never has to compute a minutes-since-
+ * midnight value itself. */
+function hmToMinutes(hm: string): number {
+  const [h, m] = hm.split(":").map(Number);
+  return (Number.isFinite(h) ? h : 0) * 60 + (Number.isFinite(m) ? m : 0);
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function runCeoTool(name: string, input: any): Promise<string> {
@@ -906,6 +1023,89 @@ export async function runCeoTool(name: string, input: any): Promise<string> {
           confirmed: Boolean(input.confirmed),
         });
         return JSON.stringify(result);
+      }
+      case "list_calendar_events": {
+        const { listCalendarEventsAction } = await import("@/actions/calendar");
+        const { formatSlotForDisplay } = await import("@/lib/calendar/propose-times");
+        const res = await listCalendarEventsAction(input.startIso, input.endIso);
+        return JSON.stringify({
+          connected: res.connected,
+          events: res.events.map((e) => ({
+            eventId: e.eventId,
+            title: e.title,
+            when: e.isAllDay
+              ? "All day"
+              : formatSlotForDisplay({ startIso: e.start, endIso: e.end }),
+            attendeeEmails: e.attendeeEmails,
+            attendeeCount: e.attendeeEmails.length,
+            meetLink: e.meetLink,
+            htmlLink: e.htmlLink,
+          })),
+        });
+      }
+      case "update_calendar_event": {
+        const { updateMeetingAction } = await import("@/actions/calendar");
+        const result = await updateMeetingAction({
+          eventId: input.eventId,
+          patch: {
+            title: input.title,
+            startIso: input.newStartIso || undefined,
+            endIso: input.newEndIso || undefined,
+          },
+          confirmed: Boolean(input.confirmed),
+        });
+        return JSON.stringify(result);
+      }
+      case "cancel_calendar_event": {
+        const { cancelMeetingAction } = await import("@/actions/calendar");
+        const result = await cancelMeetingAction({
+          eventId: input.eventId,
+          confirmed: Boolean(input.confirmed),
+        });
+        return JSON.stringify(result);
+      }
+      case "get_booking_policy": {
+        const { getBookingPolicyAction } = await import("@/actions/booking-policy");
+        return JSON.stringify(await getBookingPolicyAction());
+      }
+      case "update_booking_policy": {
+        const { getBookingPolicyAction, saveBookingPolicyAction } = await import(
+          "@/actions/booking-policy"
+        );
+        const current = await getBookingPolicyAction();
+        const rawWindows = input.weeklyWindows as
+          | Record<string, { start: string; end: string }[]>
+          | undefined;
+        const weeklyWindows = rawWindows
+          ? Object.fromEntries(
+              Object.entries(rawWindows).map(([day, windows]) => [
+                day,
+                windows.map((w) => ({
+                  startMin: hmToMinutes(w.start),
+                  endMin: hmToMinutes(w.end),
+                })),
+              ]),
+            )
+          : current.weeklyWindows;
+        const result = await saveBookingPolicyAction({
+          enabled: input.enabled ?? current.enabled,
+          slug: current.slug,
+          title: input.title ?? current.title,
+          description: input.description ?? current.description,
+          weeklyWindows,
+          durationOptions: input.durationOptions ?? current.durationOptions,
+          bufferBeforeMins: input.bufferBeforeMins ?? current.bufferBeforeMins,
+          bufferAfterMins: input.bufferAfterMins ?? current.bufferAfterMins,
+          minNoticeHours: input.minNoticeHours ?? current.minNoticeHours,
+          maxAdvanceDays: input.maxAdvanceDays ?? current.maxAdvanceDays,
+        });
+        return JSON.stringify(result);
+      }
+      case "get_booking_link": {
+        const { getBookingPolicyAction } = await import("@/actions/booking-policy");
+        const policy = await getBookingPolicyAction();
+        const base = (process.env.AUTH_URL || "http://localhost:3000").replace(/\/$/, "");
+        return JSON.stringify({ enabled: policy.enabled, url: `${base}/book/${policy.slug}` });
       }
       default:
         return JSON.stringify({ ok: false, error: `Unknown tool ${name}` });
