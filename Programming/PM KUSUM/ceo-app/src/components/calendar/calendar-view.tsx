@@ -22,10 +22,26 @@ import {
 } from "date-fns";
 import { haptic } from "@/components/mail/haptics";
 import {
+  cancelMeetingAction,
   listCalendarEventsAction,
+  updateMeetingAction,
   type CalendarEventListResult,
 } from "@/actions/calendar";
 import type { CalendarEventSummary } from "@/lib/calendar/google";
+
+const DURATIONS = [15, 30, 45, 60, 90];
+
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+function toDateInputValue(d: Date) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function toTimeInputValue(d: Date) {
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
 
 const spring = { type: "spring" as const, stiffness: 420, damping: 32 };
 
@@ -83,6 +99,10 @@ export function CalendarView({ accountId }: { accountId?: string }) {
   const [data, setData] = useState<CalendarEventListResult | null>(null);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<CalendarEventSummary | null>(null);
+  // Bumped after a successful edit/cancel so the fetch effect below
+  // re-runs for the *same* visible range (startIso/endIso alone
+  // wouldn't change) and the grid reflects the mutation immediately.
+  const [refreshTick, setRefreshTick] = useState(0);
 
   const { start, end } = useMemo(() => rangeFor(viewMode, anchor), [viewMode, anchor]);
   const startIso = start.toISOString();
@@ -98,7 +118,7 @@ export function CalendarView({ accountId }: { accountId?: string }) {
         setError(e instanceof Error ? e.message : "Could not load calendar");
       }
     });
-  }, [startIso, endIso, accountId]);
+  }, [startIso, endIso, accountId, refreshTick]);
 
   const eventsByDay = useMemo(() => {
     const map = new Map<string, CalendarEventSummary[]>();
@@ -247,7 +267,12 @@ export function CalendarView({ accountId }: { accountId?: string }) {
         )}
       </div>
 
-      <EventDetailCard event={selected} onClose={() => setSelected(null)} />
+      <EventDetailCard
+        event={selected}
+        accountId={accountId}
+        onClose={() => setSelected(null)}
+        onMutated={() => setRefreshTick((t) => t + 1)}
+      />
     </div>
   );
 }
@@ -441,11 +466,100 @@ function DayList({
 
 function EventDetailCard({
   event,
+  accountId,
   onClose,
+  onMutated,
 }: {
   event: CalendarEventSummary | null;
+  accountId?: string;
   onClose: () => void;
+  onMutated: () => void;
 }) {
+  const [pending, startTransition] = useTransition();
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState("");
+  const [date, setDate] = useState("");
+  const [time, setTime] = useState("");
+  const [duration, setDuration] = useState(30);
+  const [error, setError] = useState("");
+
+  // Reset local edit state whenever a genuinely different event opens
+  // (or the card closes) — never carry stale field values across events.
+  useEffect(() => {
+    setEditing(false);
+    setError("");
+    if (event) {
+      const start = new Date(event.start);
+      const end = new Date(event.end);
+      setTitle(event.title);
+      setDate(toDateInputValue(start));
+      setTime(toTimeInputValue(start));
+      setDuration(Math.max(5, Math.round((end.getTime() - start.getTime()) / 60000)));
+    }
+  }, [event]);
+
+  function startEdit() {
+    haptic("tap");
+    setEditing(true);
+  }
+
+  function saveEdit() {
+    if (!event) return;
+    setError("");
+    const start = new Date(`${date}T${time}:00`);
+    if (Number.isNaN(start.getTime())) {
+      setError("Pick a valid date and time");
+      return;
+    }
+    const end = new Date(start.getTime() + duration * 60 * 1000);
+
+    startTransition(async () => {
+      try {
+        await updateMeetingAction({
+          eventId: event.eventId,
+          patch: {
+            title: title.trim() || event.title,
+            startIso: start.toISOString(),
+            endIso: end.toISOString(),
+          },
+          confirmed: true,
+          accountId,
+        });
+        haptic("success");
+        onMutated();
+        onClose();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Could not update meeting");
+        haptic("warn");
+      }
+    });
+  }
+
+  function cancelMeeting() {
+    if (!event) return;
+    const n = event.attendeeEmails.length;
+    if (
+      !window.confirm(
+        `Cancel "${event.title}"? ${n > 0 ? `This sends a cancellation email to ${n} attendee${n === 1 ? "" : "s"}.` : "This cannot be undone."}`,
+      )
+    ) {
+      haptic("warn");
+      return;
+    }
+    setError("");
+    startTransition(async () => {
+      try {
+        await cancelMeetingAction({ eventId: event.eventId, confirmed: true, accountId });
+        haptic("success");
+        onMutated();
+        onClose();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Could not cancel meeting");
+        haptic("warn");
+      }
+    });
+  }
+
   return (
     <AnimatePresence>
       {event && (
@@ -474,56 +588,170 @@ function EventDetailCard({
               boxShadow: "0 24px 80px rgba(0,0,0,0.5)",
             }}
           >
-            <h3 className="text-lg font-semibold" style={{ color: "var(--text)" }}>
-              {event.title}
-            </h3>
-            <p className="mt-1 text-sm" style={{ color: "var(--text-dim)" }}>
-              {format(new Date(event.start), "EEEE, MMMM d · h:mm a")} –{" "}
-              {format(new Date(event.end), "h:mm a")}
-            </p>
-            {event.attendeeEmails.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {event.attendeeEmails.map((a) => (
-                  <span
-                    key={a}
-                    className="rounded-md px-2 py-0.5 text-xs"
-                    style={{ background: "var(--bg-hover)", border: "1px solid var(--border-strong)", color: "var(--text)" }}
+            {!editing ? (
+              <>
+                <h3 className="text-lg font-semibold" style={{ color: "var(--text)" }}>
+                  {event.title}
+                </h3>
+                <p className="mt-1 text-sm" style={{ color: "var(--text-dim)" }}>
+                  {format(new Date(event.start), "EEEE, MMMM d · h:mm a")} –{" "}
+                  {format(new Date(event.end), "h:mm a")}
+                </p>
+                {event.attendeeEmails.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {event.attendeeEmails.map((a) => (
+                      <span
+                        key={a}
+                        className="rounded-md px-2 py-0.5 text-xs"
+                        style={{ background: "var(--bg-hover)", border: "1px solid var(--border-strong)", color: "var(--text)" }}
+                      >
+                        {a}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {error && (
+                  <p className="mt-3 text-xs" style={{ color: "#f87171" }}>
+                    {error}
+                  </p>
+                )}
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {event.meetLink && (
+                    <a
+                      href={event.meetLink}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded-lg px-3 py-1.5 text-xs font-medium"
+                      style={{ background: "var(--accent-dim)", color: "var(--accent-bright)" }}
+                    >
+                      Join Meet
+                    </a>
+                  )}
+                  <a
+                    href={event.htmlLink}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-lg px-3 py-1.5 text-xs"
+                    style={{ background: "var(--bg-hover)", color: "var(--text-muted)", border: "1px solid var(--border)" }}
                   >
-                    {a}
-                  </span>
-                ))}
-              </div>
+                    Open in Google Calendar
+                  </a>
+                  <button
+                    type="button"
+                    disabled={pending}
+                    className="cursor-pointer rounded-lg px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-40"
+                    style={{ background: "var(--bg-hover)", color: "var(--text-muted)", border: "1px solid var(--border)" }}
+                    onClick={startEdit}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    disabled={pending}
+                    className="cursor-pointer rounded-lg px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-40"
+                    style={{ background: "rgba(239,68,68,0.12)", color: "#f87171", border: "1px solid rgba(239,68,68,0.3)" }}
+                    onClick={cancelMeeting}
+                  >
+                    {pending ? "Cancelling…" : "Cancel meeting"}
+                  </button>
+                  <button
+                    type="button"
+                    className="cursor-pointer rounded-lg px-3 py-1.5 text-xs"
+                    style={{ background: "transparent", color: "var(--text-dim)", border: "1px solid var(--border)" }}
+                    onClick={onClose}
+                  >
+                    Close
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h3 className="text-lg font-semibold" style={{ color: "var(--text)" }}>
+                  Edit meeting
+                </h3>
+                <div className="mt-3 space-y-3">
+                  <label className="block text-xs" style={{ color: "var(--text-dim)" }}>
+                    Title
+                    <input
+                      className="mt-1 w-full cursor-text rounded-lg px-3 py-2.5 text-sm outline-none"
+                      style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-strong)", color: "var(--text)" }}
+                      value={title}
+                      onChange={(e) => setTitle(e.target.value)}
+                    />
+                  </label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="block text-xs" style={{ color: "var(--text-dim)" }}>
+                      Date
+                      <input
+                        type="date"
+                        className="mt-1 w-full cursor-text rounded-lg px-3 py-2.5 text-sm outline-none"
+                        style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-strong)", color: "var(--text)" }}
+                        value={date}
+                        onChange={(e) => setDate(e.target.value)}
+                      />
+                    </label>
+                    <label className="block text-xs" style={{ color: "var(--text-dim)" }}>
+                      Time
+                      <input
+                        type="time"
+                        className="mt-1 w-full cursor-text rounded-lg px-3 py-2.5 text-sm outline-none"
+                        style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-strong)", color: "var(--text)" }}
+                        value={time}
+                        onChange={(e) => setTime(e.target.value)}
+                      />
+                    </label>
+                  </div>
+                  <label className="block text-xs" style={{ color: "var(--text-dim)" }}>
+                    Duration
+                    <select
+                      className="mt-1 w-full cursor-pointer rounded-lg px-3 py-2.5 text-sm outline-none"
+                      style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-strong)", color: "var(--text)" }}
+                      value={duration}
+                      onChange={(e) => setDuration(Number(e.target.value))}
+                    >
+                      {DURATIONS.map((m) => (
+                        <option key={m} value={m}>
+                          {m} min
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+
+                {error && (
+                  <p className="mt-3 text-xs" style={{ color: "#f87171" }}>
+                    {error}
+                  </p>
+                )}
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={pending || !title.trim()}
+                    className="cursor-pointer rounded-lg px-4 py-2 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-40"
+                    style={{
+                      background: "linear-gradient(135deg, var(--accent), var(--navy-bright))",
+                      color: "#fff",
+                      border: "1px solid rgba(129,140,248,0.45)",
+                    }}
+                    onClick={saveEdit}
+                  >
+                    {pending ? "Saving…" : "Save changes"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={pending}
+                    className="cursor-pointer rounded-lg px-4 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-40"
+                    style={{ background: "transparent", color: "var(--text-dim)", border: "1px solid var(--border)" }}
+                    onClick={() => setEditing(false)}
+                  >
+                    Back
+                  </button>
+                </div>
+              </>
             )}
-            <div className="mt-4 flex flex-wrap gap-2">
-              {event.meetLink && (
-                <a
-                  href={event.meetLink}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="rounded-lg px-3 py-1.5 text-xs font-medium"
-                  style={{ background: "var(--accent-dim)", color: "var(--accent-bright)" }}
-                >
-                  Join Meet
-                </a>
-              )}
-              <a
-                href={event.htmlLink}
-                target="_blank"
-                rel="noreferrer"
-                className="rounded-lg px-3 py-1.5 text-xs"
-                style={{ background: "var(--bg-hover)", color: "var(--text-muted)", border: "1px solid var(--border)" }}
-              >
-                Open in Google Calendar
-              </a>
-              <button
-                type="button"
-                className="cursor-pointer rounded-lg px-3 py-1.5 text-xs"
-                style={{ background: "transparent", color: "var(--text-dim)", border: "1px solid var(--border)" }}
-                onClick={onClose}
-              >
-                Close
-              </button>
-            </div>
           </motion.div>
         </motion.div>
       )}
