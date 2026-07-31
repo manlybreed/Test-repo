@@ -3262,3 +3262,43 @@ and this "pick, don't type" UX layer.
 [assistant-chat.tsx](src/components/assistant-chat.tsx),
 [command-bar.tsx](src/components/command-bar.tsx) —
 `feature/ai-quick-options`, merged to main.
+
+## 2026-08-01 — Calendar plan: final full-suite verification
+
+Closing sign-off for the whole plan (`.claude/plans/witty-finding-tiger.md`,
+Phases 0-6) — each phase already shipped with its own live verification
+against the real, already-connected Google Calendar (documented in its
+own entry above); this pass re-confirms the finished whole still holds
+together, not any one piece in isolation.
+
+`npx tsc --noEmit`: clean, zero errors, entire project. `npx eslint src`:
+zero errors — the 8 warnings present are all pre-existing and unrelated
+to this plan (unused-var/`<img>` warnings in payroll, employee-extract,
+expenses, invoice-importer, message-reader, and docgen files never
+touched by this work). `npx vitest run`: 302 passed | 1 skipped across
+43 test files, including every calendar/booking/AI-tool test added by
+Phases 0-6. Reloaded `/ceo/calendar` fresh and confirmed the real grid
+still renders correctly with no leftover test-event clutter (all test
+meetings created during Phase 4/5 verification were cancelled as part
+of those passes); reloaded `/book/akshay-consult` fresh and confirmed
+the public booking page still serves the real, currently-configured
+policy (duration choice between 30/60 min, per the buffer/duration
+change made live during Phase 5's `update_booking_policy` test).
+
+One thing worth flagging for anyone reading `read_console_messages`
+output later: the browser tool accumulates console history for the
+whole tab session, not just the current page load — a stale error from
+an earlier, already-fixed bug (the pre-fix `parseDurationOptions`/`"use
+server"` crash from Phase 4) still appeared when checking console
+errors during this final pass, purely as leftover history. Confirmed
+it wasn't a live regression via the actual network response (`200 OK`)
+and the page rendering correctly — worth remembering that a browser
+console dump can look alarming without actually reflecting current
+state.
+
+All six phases are shipped and merged to `main`: visual calendar
+(month/week/day), edit/cancel from the grid, configurable public
+booking policy, the public booking page itself, full AI tool control
+of all of it from both the Assistant chat and ⌘K/voice, and the
+"pick, don't type" quick-options layer on top. Nothing from the
+approved plan remains open.
