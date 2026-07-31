@@ -153,6 +153,8 @@ export async function retrieveMail(opts: {
   limit?: number;
   personEmail?: string;
   threadId?: string;
+  /** Restrict to messages in this folder (e.g. an explicit in:drafts scope). */
+  folderId?: string;
   /**
    * Expand mode for the FTS query:
    * - `ai` (default): Haiku expand when available (Ask / NL search)
@@ -231,6 +233,7 @@ export async function retrieveMail(opts: {
           ) AS rank
         FROM "MailMessage" m
         WHERE m."accountId" = ${opts.accountId}
+          ${opts.folderId ? Prisma.sql`AND m."folderId" = ${opts.folderId}` : Prisma.empty}
           ${
             opts.personEmail
               ? Prisma.sql`AND m."fromAddress" ILIKE ${"%" + opts.personEmail.toLowerCase() + "%"}`
@@ -266,6 +269,7 @@ export async function retrieveMail(opts: {
     const messages = await prisma.mailMessage.findMany({
       where: {
         accountId: opts.accountId,
+        ...(opts.folderId ? { folderId: opts.folderId } : {}),
         ...(opts.personEmail
           ? {
               fromAddress: {

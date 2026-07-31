@@ -334,4 +334,40 @@ describe("search operators", () => {
     expect(freeText).toBe("SBI POS machine");
     expect(whereFragments).toEqual([]);
   });
+
+  it("parses in:drafts/in:sent/in:trash/in:archive to a canonical folder role", () => {
+    expect(parseSearchOperators("in:drafts test mail").folderScope).toEqual({
+      role: "DRAFTS",
+    });
+    expect(parseSearchOperators("in:sent test mail").folderScope).toEqual({
+      role: "SENT",
+    });
+    expect(parseSearchOperators("in:trash test mail").folderScope).toEqual({
+      role: "TRASH",
+    });
+    expect(parseSearchOperators("in:archive test mail").folderScope).toEqual({
+      role: "ARCHIVE",
+    });
+  });
+
+  it("strips in:/folder: from freeText the same as any other operator", () => {
+    const { freeText, folderScope } = parseSearchOperators(
+      "in:drafts anthropic invoice",
+    );
+    expect(freeText).toBe("anthropic invoice");
+    expect(folderScope).toEqual({ role: "DRAFTS" });
+  });
+
+  it("folder: accepts the same role aliases as in:, and a custom name falls through as-is", () => {
+    expect(parseSearchOperators("folder:sent invoice").folderScope).toEqual({
+      role: "SENT",
+    });
+    expect(
+      parseSearchOperators('folder:"Client Invoices" test').folderScope,
+    ).toEqual({ name: "Client Invoices" });
+  });
+
+  it("has no folder scope when no in:/folder: operator is present", () => {
+    expect(parseSearchOperators("SBI POS machine").folderScope).toBeNull();
+  });
 });

@@ -642,20 +642,89 @@ export type SearchThreadsResult = {
   mode: SearchThreadsMode;
 };
 
+type ResolvedFolderScope = { folderId: string; folderRole: string };
+
+/**
+ * Resolve an in:/folder: operator (from parseSearchOperators) — or, absent
+ * one, the folder the user is currently browsing — to a real folderId.
+ * A role (drafts/sent/trash/...) goes through resolveSystemFolder, the same
+ * canonical-folder tie-break used everywhere else a role needs one real
+ * folder (there can be duplicates, e.g. a nested "Trash.Drafts"). Returns
+ * `"not-found"` when an EXPLICIT scope was requested but doesn't exist on
+ * this account, so the caller can return empty results rather than silently
+ * searching everywhere — the same "say so, don't guess" behavior Gmail's
+ * own in:/label: operators have.
+ */
+async function resolveSearchFolderScope(
+  accountId: string,
+  folderScope: { role: string } | { name: string } | null,
+  activeFolderId?: string | null,
+): Promise<ResolvedFolderScope | "not-found" | null> {
+  if (folderScope && "role" in folderScope) {
+    const folder = await resolveSystemFolder(accountId, folderScope.role);
+    return folder ? { folderId: folder.id, folderRole: folder.role } : "not-found";
+  }
+  if (folderScope && "name" in folderScope) {
+    const folder = await prisma.mailFolder.findFirst({
+      where: {
+        accountId,
+        OR: [
+          { name: { equals: folderScope.name, mode: "insensitive" } },
+          { path: { equals: folderScope.name, mode: "insensitive" } },
+          { path: { endsWith: `.${folderScope.name}`, mode: "insensitive" } },
+        ],
+      },
+    });
+    return folder ? { folderId: folder.id, folderRole: folder.role } : "not-found";
+  }
+  if (activeFolderId) {
+    const folder = await prisma.mailFolder.findFirst({
+      where: { id: activeFolderId, accountId },
+    });
+    if (folder) return { folderId: folder.id, folderRole: folder.role };
+  }
+  return null;
+}
+
 export async function searchThreadsAction(
   query: string,
   accountId?: string,
+  opts?: {
+    /**
+     * The folder currently being browsed in the UI (a real folderId, not a
+     * pseudo-view like Smart Inbox/All Inboxes/Outbox) — used as an implicit
+     * scope so searching while inside Drafts/Sent/Trash/a custom folder
+     * searches that folder's own content, the same way browsing it already
+     * does. An explicit in:/folder: operator in the query always overrides
+     * this.
+     */
+    folderId?: string;
+  },
 ): Promise<SearchThreadsResult> {
   const { account } = await requireAccount(accountId);
   const q = query.trim();
   if (q.length < 2) return { rows: [], mode: "fts" };
 
-  const { freeText, whereFragments } = parseSearchOperators(q);
+  const { freeText, whereFragments, folderScope } = parseSearchOperators(q);
+
+  const resolvedScope = await resolveSearchFolderScope(
+    account.id,
+    folderScope,
+    opts?.folderId,
+  );
+  if (resolvedScope === "not-found") {
+    // An explicit in:/folder: scope named something that doesn't exist on
+    // this account — say so via empty results rather than silently
+    // searching everywhere, matching Gmail's own in:/label: behavior.
+    return { rows: [], mode: "operators" };
+  }
+  const scopeFolderId = resolvedScope?.folderId;
 
   if (!freeText) {
     const { rows } = await queryThreadsForView({
       accountId: account.id,
       extraWhere: whereFragments,
+      folderId: scopeFolderId,
       take: 80,
     });
     return { rows, mode: "operators" };
@@ -676,6 +745,7 @@ export async function searchThreadsAction(
             freeText,
           ),
         ],
+        folderId: scopeFolderId,
         take: 80,
       });
       if (rows.length) return { rows, mode: "contacts" };
@@ -697,11 +767,13 @@ export async function searchThreadsAction(
       query: freeText,
       limit: 80,
       expand: "none",
+      folderId: scopeFolderId,
     });
     let rows = await orderThreadsFromMessageHits(
       account.id,
       chunks.map((c) => c.threadId),
       whereFragments,
+      scopeFolderId,
     );
     if (rows.length) return { rows, mode: "fts" };
 
@@ -712,11 +784,13 @@ export async function searchThreadsAction(
       query: freeText,
       limit: 80,
       expand: "lexical",
+      folderId: scopeFolderId,
     });
     rows = await orderThreadsFromMessageHits(
       account.id,
       chunks.map((c) => c.threadId),
       whereFragments,
+      scopeFolderId,
     );
     if (rows.length) return { rows, mode: "fts-expanded" };
 
@@ -728,6 +802,7 @@ export async function searchThreadsAction(
       query: freeText,
       searchPlan: literalSearchPlan(freeText),
       extraWhere: whereFragments,
+      folderId: scopeFolderId,
       take: 80,
     }));
     if (rows.length) return { rows, mode: "ilike" };
@@ -738,6 +813,7 @@ export async function searchThreadsAction(
       query: freeText,
       searchPlan: lexicalSearchPlan(freeText),
       extraWhere: whereFragments,
+      folderId: scopeFolderId,
       take: 80,
     }));
     return { rows, mode: "ilike-expanded" };
@@ -749,12 +825,14 @@ export async function searchThreadsAction(
     query: freeText,
     limit: 80,
     expand: "ai",
+    folderId: scopeFolderId,
   });
 
   let rows = await orderThreadsFromMessageHits(
     account.id,
     chunks.map((c) => c.threadId),
     whereFragments,
+    scopeFolderId,
   );
 
   if (!rows.length) {
@@ -764,6 +842,7 @@ export async function searchThreadsAction(
       query: freeText,
       searchPlan: plan,
       extraWhere: whereFragments,
+      folderId: scopeFolderId,
       take: 80,
     }));
     if (!rows.length && plan.mustGroups.length > 1) {
@@ -772,6 +851,7 @@ export async function searchThreadsAction(
         query: freeText,
         searchPlan: lexicalSearchPlan(freeText),
         extraWhere: whereFragments,
+        folderId: scopeFolderId,
         take: 80,
       }));
     }
@@ -806,17 +886,26 @@ export async function searchThreadsAction(
   return { rows: ranked, mode: "ai" };
 }
 
-/** Preserve FTS hit order when loading thread list rows. */
+/**
+ * Preserve FTS hit order when loading thread list rows. `folderId`, when
+ * given, must be re-applied here even though retrieveMail already filtered
+ * messages to that folder — queryThreadsForView's own requireRealMessage
+ * clause otherwise excludes a Drafts-/Trash-only thread from the hydrated
+ * rows regardless of which folder the matching message came from (see
+ * threads-query.ts's inDrafts/inTrash bypass).
+ */
 async function orderThreadsFromMessageHits(
   accountId: string,
   threadIds: string[],
   extraWhere: object[],
+  folderId?: string,
 ) {
   const orderedIds = [...new Set(threadIds.filter(Boolean))];
   if (!orderedIds.length) return [];
   const { rows } = await queryThreadsForView({
     accountId,
     extraWhere: [{ id: { in: orderedIds } }, ...extraWhere],
+    folderId,
     take: Math.min(orderedIds.length, 80),
   });
   const byId = new Map(rows.map((r) => [r.id, r]));
