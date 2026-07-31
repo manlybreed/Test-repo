@@ -2047,3 +2047,97 @@ wanted.
 [tools.ts](src/lib/ai/tools.ts),
 [mail-client.tsx](src/components/mail/mail-client.tsx) —
 `feature/mail-spam-detection`, merged to main.
+
+## 2026-07-31 — Self-learning spam triage, Phase 1: sender-feedback loop
+
+Follow-up to the spam-detection feature above: the user asked for spam
+triaging to get "smarter with time, self learning," grounded in
+"industry standard and state of the art." Direct inspection found the
+spam classifier had **zero feedback loop** — clicking Report-spam/Not
+-spam had no effect whatsoever on future classification of that sender,
+unlike smart labels, which already close this exact loop via
+`MailLabelRule` + [label-correction.ts](src/lib/mail/ai/label-correction.ts)
+(a correction generalizes into a standing rule Claude authors, consulted
+on every future triage pass). Research (Springer LLM-header-features
+paper; KnowBe4 Phishing Threat Trends; sender-reputation-scoring
+literature) confirmed fine-tuned/prompted LLMs now outperform classical
+Naive Bayes/SVM spam classifiers outright, so a parallel classical-ML
+layer was explicitly rejected — the role that historically played (a
+cheap deterministic pre-filter) is filled here by **personalized sender
+reputation** instead: cheaper than an LLM call and specific to this
+account's own history rather than a generic training corpus.
+
+**New model `MailSenderFeedback`** (prisma/schema.prisma) — per-account
+counters keyed by lowercased exact address *and* bare domain separately,
+tracking `manualSpamCount` (Report-spam clicks), `autoSpamCount`
+(triageThread's own unattended auto-filings), and `notSpamCount`
+(always manual — there's no automated "un-spam" event). Domain-scope
+rows are never written or read for a `SHARED_DOMAIN_DENYLIST` of common
+free-mail providers (gmail/outlook/yahoo/icloud/etc.), so one bad actor
+on a shared domain can never poison every other sender on it.
+
+**New `src/lib/mail/ai/spam-feedback.ts`** —
+`resolveSpamFeedbackTier(counts)` is the pure decision core (fully unit
+-tested in isolation): `never_spam` when accumulated not-spam
+corrections outweigh *manual* spam reports (auto-filings are deliberately
+excluded from that comparison, so a single human correction always beats
+any number of the model's own past unattended guesses); `hard_spam`
+only from **address-scope** counts once manual+auto reports cross a
+small threshold (domain-scope may only ever push toward the safe
+`never_spam` direction, never force a spam verdict, since a shared/
+rotated domain seeing one bad actor shouldn't condemn every other
+sender on it).
+
+**`triageThread`** ([triage.ts](src/lib/mail/ai/triage.ts)) now looks
+this up in parallel with the existing known-client query, folds a
+`senderHistory` summary into the Claude prompt, and extends the
+existing safety guardrail rather than replacing it:
+
+```ts
+const guardedFalse = Boolean(clientHit) || refined.includes("PM_KUSUM") || spamTier === "never_spam";
+const isSpam = !guardedFalse && (Boolean(parsed.data.isSpam) || spamTier === "hard_spam");
+```
+
+Deliberately **always calls Claude regardless of tier** rather than
+skipping it for a conclusively-decided sender — priority/labels still
+need to be generated normally every pass, Haiku is cheap at this
+account's sync volume, and one code path is simpler than a second,
+divergent one. All four spam server actions
+([actions/mail.ts](src/actions/mail.ts):
+`markThreadSpamAction`/`markThreadNotSpamAction`/`markThreadsSpamAction`/
+`markThreadsNotSpamAction`) now record feedback right after the real
+IMAP move succeeds; the AI tools (`mark_mail_spam`/`mark_mail_not_spam`)
+get this for free since they call straight into the same two actions.
+
+**Verified live, not just unit tests**: seeded two manual spam reports
+against a synthetic sender via `recordSpamFeedback` directly, confirmed
+`resolveSpamFeedbackTier` resolved `hard_spam`, then ran a real
+`triageThread` pass (real Claude Haiku call, not mocked) against a
+fresh, deliberately bland/inoffensive message from that same sender —
+confirmed `isSpam:true` came back, with the model's own `spamReason`
+citing the prior manual reports rather than anything in the message
+body, which had none. All synthetic data (thread, message, feedback
+rows) cleaned up afterward — confirmed zero residue in the real
+account. 194 tests passing (16 new in
+[spam-feedback.test.ts](src/lib/mail/ai/spam-feedback.test.ts), plus 3
+extended in [triage.test.ts](src/lib/mail/ai/triage.test.ts)), no
+regressions.
+
+**Not built** (deliberately out of scope, stated explicitly rather than
+silently skipped): no seeding `MailSenderFeedback` from mail already
+sitting in Junk — that mail was filed by the *upstream provider's own*
+spam filter, not a human report in this app, so seeding from it would
+misattribute a weak, third-party signal as strong personal reputation.
+No changes to smart-label classification — its self-learning loop
+already exists and already closes the analogous gap.
+
+Next in this plan: AI content-similarity spam-campaign clustering (find
+other inbox threads that look like the same campaign from a *different*
+sender, mirroring the label-correction suggestion-toast flow) and an
+authentication-header (SPF/DKIM/DMARC) signal — both still pending.
+
+[prisma/schema.prisma](prisma/schema.prisma),
+[spam-feedback.ts](src/lib/mail/ai/spam-feedback.ts),
+[triage.ts](src/lib/mail/ai/triage.ts),
+[actions/mail.ts](src/actions/mail.ts) —
+`feature/mail-spam-sender-feedback`, merged to main.
