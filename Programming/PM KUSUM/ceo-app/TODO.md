@@ -2685,3 +2685,40 @@ regression.
 
 [threads-query.ts](src/lib/mail/threads-query.ts) —
 `fix/orphaned-drafts-only-threads`, merged to main.
+
+## 2026-07-31 — Fix: docking a reply/draft hid the thread list with no way back
+
+Reported: opening a draft from the Drafts folder opens it fullscreen;
+toggling out of fullscreen back to the docked view left no second
+column of threads visible at all — no escape hatch short of closing
+compose entirely.
+
+**Root cause, confirmed via direct read**: `composingDocked = showCompose
+&& !composeFullscreen` gated two things at once — expanding the reader
+column to fill the freed space, *and* fully unmounting the thread-list
+`<motion.section>` (a pre-existing "focus mode" behavior, by design, for
+when a reply is docked open). There was no independent control for the
+second effect — pinning the list back was structurally impossible.
+
+**Fix**: added a `threadsPinnedWhileComposing` toggle state and a
+derived `hideThreadsForFocus = composingDocked &&
+!threadsPinnedWhileComposing`, used at the two actual gating sites
+(thread-list mount, reader column width) instead of raw
+`composingDocked`. A "Show/Hide thread list" icon button appears in the
+reader toolbar whenever `composingDocked` is true (not just when the
+list is currently hidden — an earlier version of this fix gated the
+button on `hideThreadsForFocus` itself, which meant the button
+vanished the instant you pinned the list back, with no way to unpin).
+Default behavior (list auto-hides, reader gets the room) is unchanged
+when the user hasn't pinned.
+
+**Verified live**: reproduced the bug (Drafts → open local draft →
+fullscreen → Exit → no thread-list column), then confirmed the new
+toggle button reveals the list (`lg:col-span-[6]`, reader shrinks to
+`lg:col-span-[14]`) and toggling again correctly restores the
+expanded reader (`lg:col-span-[20]`, list unmounted) — both directions
+checked via live DOM/layout inspection, not just a screenshot.
+`npx vitest run`: 245 passed | 1 skipped, unchanged.
+
+[mail-client.tsx](src/components/mail/mail-client.tsx) —
+`fix/focus-mode-thread-list-toggle`, merged to main.
