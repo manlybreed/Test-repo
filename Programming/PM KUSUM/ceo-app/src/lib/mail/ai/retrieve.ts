@@ -108,6 +108,41 @@ export function searchPlanToFtsQuery(
 }
 
 /**
+ * Build a REAL Postgres tsquery — using tsquery's own `&&`/`||` operators —
+ * that enforces AND across concept groups and OR within each group's
+ * variants. `websearch_to_tsquery` (used by `searchPlanToFtsQuery` above for
+ * chunk-excerpt selection, and formerly here) has NO grouping/parenthesization
+ * support at all: confirmed directly against Postgres, literal `(`/`)`
+ * characters in its input are silently dropped. Because tsquery's `&`
+ * binds tighter than `|`, a "(a OR b) (c OR d)" string fed through
+ * websearch_to_tsquery collapses to `a | b & c | d` — a mostly-OR query
+ * where matching just "a" alone satisfies the whole thing. That silently
+ * defeated the entire mustGroups "every group must match" contract for any
+ * query with 2+ groups where at least one group had 2+ variants — exactly
+ * the AI/NL search path (Haiku always emits multi-variant groups) and the
+ * lexical-FTS fallback step, reproducing the "SBI POS Machine" false
+ * -positive class through a different mechanism than the SYNONYMS-table bug
+ * already fixed. `phraseto_tsquery` per variant (handles both single words
+ * and multi-word phrases, matching stopword-skipping proximity semantics)
+ * combined via explicit `&&`/`||` gives the actually-correct query.
+ */
+function mustGroupsTsQuery(mustGroups: string[][]): Prisma.Sql | null {
+  const groupExprs = mustGroups
+    .map((g) => g.map((v) => v.trim()).filter(Boolean))
+    .filter((g) => g.length)
+    .map((variants) => {
+      const parts = variants.map(
+        (v) => Prisma.sql`phraseto_tsquery('english', f_unaccent(${v}))`,
+      );
+      return parts.length === 1 ? parts[0]! : Prisma.sql`(${Prisma.join(parts, " || ")})`;
+    });
+  if (!groupExprs.length) return null;
+  return groupExprs.length === 1
+    ? groupExprs[0]!
+    : Prisma.sql`(${Prisma.join(groupExprs, " && ")})`;
+}
+
+/**
  * Postgres FTS retrieve (weighted tsvector, websearch_to_tsquery). Falls back
  * to ILIKE token AND. Optionally expands the query with AI concept groups
  * (AI-05) and reranks the shortlist with Haiku before returning (Phase R1).
@@ -179,11 +214,20 @@ export async function retrieveMail(opts: {
     try {
       await ensureMailFtsIndex();
       const expr = Prisma.raw(tsvExpr("m."));
+      // Prefer the real AND-of-OR-groups tsquery built from the plan; only
+      // fall back to websearch_to_tsquery on the raw string when no plan
+      // groups exist at all (e.g. an all-stopword query, or a <4-char "ai"
+      // -mode query that skipped expandSearchQuery entirely) — a single
+      // word/short phrase has no group boundary to lose, so the fallback is
+      // safe there.
+      const tsq =
+        mustGroupsTsQuery(plan?.mustGroups ?? []) ??
+        Prisma.sql`websearch_to_tsquery('english', f_unaccent(${ftsQuery}))`;
       const rows = await prisma.$queryRaw<FtsRow[]>`
         SELECT m.id,
           ts_rank_cd(
             ${expr},
-            websearch_to_tsquery('english', f_unaccent(${ftsQuery}))
+            ${tsq}
           ) AS rank
         FROM "MailMessage" m
         WHERE m."accountId" = ${opts.accountId}
@@ -192,7 +236,7 @@ export async function retrieveMail(opts: {
               ? Prisma.sql`AND m."fromAddress" ILIKE ${"%" + opts.personEmail.toLowerCase() + "%"}`
               : Prisma.empty
           }
-          AND ${expr} @@ websearch_to_tsquery('english', f_unaccent(${ftsQuery}))
+          AND ${expr} @@ ${tsq}
         ORDER BY rank DESC, m.date DESC
         LIMIT ${Math.min(limit * 4, 48)}
       `;
