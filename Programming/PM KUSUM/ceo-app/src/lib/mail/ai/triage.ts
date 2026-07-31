@@ -140,6 +140,7 @@ export async function triageThread(
           snippet: true,
           bodyText: true,
           listUnsubscribe: true,
+          authSummary: true,
           folder: { select: { role: true } },
         },
       },
@@ -162,6 +163,7 @@ export async function triageThread(
             snippet: true,
             bodyText: true,
             listUnsubscribe: true,
+            authSummary: true,
           },
         });
 
@@ -216,7 +218,8 @@ Spam/phishing — isSpam is a SEPARATE, much stricter judgment than "low value."
 - Scams: lottery/prize/inheritance windfalls, romance/advance-fee scams, fake job offers demanding payment, impossible investment returns.
 - Unsolicited bulk abuse: mass-blasted adult/pharma/counterfeit-goods spam with no plausible prior relationship and no real business behind it.
 Do NOT set isSpam for: newsletters/marketing the recipient plausibly subscribed to or a real business sending cold outreach (use NEWSLETTER instead — that is legitimate, just low-value); automated transactional mail (receipts, bank alerts, shipping); anything you are not confident about. When unsure, leave isSpam false — a false positive hides real mail from the CEO, which is worse than a missed spam message. Give a one-sentence spamReason only when isSpam is true.
-senderHistory, when present, is this account's own accumulated feedback on this sender/domain from past manual corrections — weigh it as strong evidence: prior manual spam reports with no not-spam corrections support isSpam:true, any prior manual not-spam correction supports isSpam:false regardless of other signals.`,
+senderHistory, when present, is this account's own accumulated feedback on this sender/domain from past manual corrections — weigh it as strong evidence: prior manual spam reports with no not-spam corrections support isSpam:true, any prior manual not-spam correction supports isSpam:false regardless of other signals.
+authResult, when present, is this message's SPF/DKIM/DMARC authentication outcome — spf=fail, dkim=fail, or dmarc=fail is phishing-supportive evidence (especially combined with a sender impersonating a bank/service/company), most of all for a message claiming to be from a well-known company. A missing authResult is neutral, never suspicious on its own — most legitimate small-business and personal mail has no authentication headers at all.`,
     user: fenceMailData({
       subject: thread.subject,
       myAddress: thread.account.address,
@@ -234,6 +237,7 @@ senderHistory, when present, is this account's own accumulated feedback on this 
         subject: m.subject,
         snippet: m.snippet || m.bodyText?.slice(0, 400),
         hasUnsubscribe: Boolean(m.listUnsubscribe),
+        authResult: m.authSummary || null,
       })),
     }),
   });

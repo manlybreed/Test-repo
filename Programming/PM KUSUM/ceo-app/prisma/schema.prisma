@@ -920,6 +920,12 @@ model MailMessage {
   snippet       String?
   hasAttachments Boolean @default(false)
   listUnsubscribe String?
+  /// Compact "spf=... dkim=... dmarc=..." summary parsed from
+  /// Authentication-Results/Received-SPF at sync time (auth-headers.ts).
+  /// Null means no signal — mail synced before this field existed, or a
+  /// provider that doesn't stamp these headers. Never treat null as
+  /// suspicious; it's the common, unremarkable case.
+  authSummary   String?
   clientId      String?
   rawPath       String?
   /// Denormalized for FTS helper queries
