@@ -13,11 +13,17 @@ import {
   smartLabelPromptBlock,
   type SmartLabel,
 } from "@/lib/mail/ai/smart-labels";
+import { markMailThreadAsSpam } from "@/lib/mail/imap-mailbox";
 
 const TriageSchema = z.object({
   priority: z.enum(["P1", "P2", "P3", "P4", "NONE"]),
   labels: z.array(z.string()),
   reason: z.string().optional(),
+  /** Genuine spam/phishing/scam — distinct from NEWSLETTER (legitimate bulk
+   * mail the recipient plausibly opted into, which stays in the inbox at
+   * P4). isSpam moves the thread out of the inbox entirely. */
+  isSpam: z.boolean().optional(),
+  spamReason: z.string().optional(),
 });
 
 export type TriageResult = z.infer<typeof TriageSchema>;
@@ -165,7 +171,7 @@ export async function triageThread(
   const raw = await claudeJson<TriageResult>({
     model: "haiku",
     system: `You triage CEO email for Akshay (BluRidge). Return JSON only:
-{priority: P1|P2|P3|P4|NONE, labels: string[], reason?: string}
+{priority: P1|P2|P3|P4|NONE, labels: string[], reason?: string, isSpam?: boolean, spamReason?: string}
 
 Priority:
 - P1 = urgent client/deadline/blocker today
@@ -184,7 +190,13 @@ Hard rules:
 - NEWSLETTER for any promo/marketing/digest/unsubscribe/noreply campaign. Priority P4.
 - NEVER use NEEDS_REPLY on promotional, newsletter, banking, or automated marketing mail.
 - Test subjects/bodies ("test email", "it worked") → priority P4 and label FYI.
-- Do not invent labels. Prefer BANKING over RECEIPT for banks; PM_KUSUM for scheme mail; NEWSLETTER over NEEDS_REPLY for bulk mail.`,
+- Do not invent labels. Prefer BANKING over RECEIPT for banks; PM_KUSUM for scheme mail; NEWSLETTER over NEEDS_REPLY for bulk mail.
+
+Spam/phishing — isSpam is a SEPARATE, much stricter judgment than "low value." Set isSpam:true ONLY for mail that is actually malicious or abusive, not merely unwanted:
+- Phishing: impersonates a bank/service/colleague, urges urgent login/payment/credential entry via a suspicious or mismatched link, fake security alerts, fake invoice/wire-fraud attempts.
+- Scams: lottery/prize/inheritance windfalls, romance/advance-fee scams, fake job offers demanding payment, impossible investment returns.
+- Unsolicited bulk abuse: mass-blasted adult/pharma/counterfeit-goods spam with no plausible prior relationship and no real business behind it.
+Do NOT set isSpam for: newsletters/marketing the recipient plausibly subscribed to or a real business sending cold outreach (use NEWSLETTER instead — that is legitimate, just low-value); automated transactional mail (receipts, bank alerts, shipping); anything you are not confident about. When unsure, leave isSpam false — a false positive hides real mail from the CEO, which is worse than a missed spam message. Give a one-sentence spamReason only when isSpam is true.`,
     user: fenceMailData({
       subject: thread.subject,
       myAddress: thread.account.address,
@@ -225,10 +237,19 @@ Hard rules:
     priority = "P4";
   }
 
+  // Defense in depth against a spam false positive, the same discipline
+  // this project applies to any consequential AI-driven action: never
+  // trust a single model call alone when the result moves real mail out
+  // of the inbox. A known client contact or clear PM_KUSUM business
+  // signal always overrides the model's own isSpam call back to false.
+  const isSpam = Boolean(parsed.data.isSpam) && !clientHit && !refined.includes("PM_KUSUM");
+
   const result: TriageResult = {
     priority,
     labels: refined as string[],
     reason: parsed.data.reason,
+    isSpam,
+    spamReason: isSpam ? parsed.data.spamReason : undefined,
   };
 
   if (opts?.autoApply !== false) {
@@ -254,6 +275,15 @@ Hard rules:
             : {}),
         },
       });
+    }
+
+    // Reversible, same class as archive/move — no confirmation needed
+    // (mirrors Gmail: spam is auto-filed, "Not spam" undoes it).
+    if (isSpam && checkAutonomy("move").allowed) {
+      await markMailThreadAsSpam({
+        accountId: thread.accountId,
+        threadId,
+      }).catch(() => undefined);
     }
 
     await prisma.mailAiCache.create({

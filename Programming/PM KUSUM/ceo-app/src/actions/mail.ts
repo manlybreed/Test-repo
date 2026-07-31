@@ -41,6 +41,10 @@ import {
   archiveMailThread,
   archiveMailThreads,
   markInboxMessagesSeen,
+  markMailThreadAsSpam,
+  markMailThreadNotSpam,
+  markMailThreadsAsSpam,
+  markMailThreadsNotSpam,
   moveMailThreadToFolder,
   moveMailThreadsToFolder,
   trashMailThread,
@@ -320,6 +324,64 @@ export async function moveThreadsToFolderAction(threadIds: string[], folderId: s
     threadIds: ids,
     folderId,
   });
+  void syncCeoMail({ userId, maxPerFolder: 40, maxTriageNew: 0 }).catch(() => undefined);
+  revalidateMail();
+  return result;
+}
+
+/** Reversible — same tier as archive/move, mirrors Gmail's own auto-file-to-spam UX. */
+export async function markThreadSpamAction(threadId: string) {
+  const { account } = await requireAccountForThread(threadId);
+  assertAutonomy("move");
+  if (threadId.startsWith("outbox:") || threadId.startsWith("outbox-item:")) {
+    throw new Error("Use Drafts/Outbox controls for local items");
+  }
+  const result = await markMailThreadAsSpam({ accountId: account.id, threadId });
+  void syncCeoMail({
+    userId: account.userId,
+    maxPerFolder: 40,
+    maxTriageNew: 0,
+  }).catch(() => undefined);
+  revalidateMail();
+  return result;
+}
+
+/** "Not spam" — moves a thread back to the inbox, correcting a false positive. */
+export async function markThreadNotSpamAction(threadId: string) {
+  const { account } = await requireAccountForThread(threadId);
+  assertAutonomy("move");
+  if (threadId.startsWith("outbox:") || threadId.startsWith("outbox-item:")) {
+    throw new Error("Use Drafts/Outbox controls for local items");
+  }
+  const result = await markMailThreadNotSpam({ accountId: account.id, threadId });
+  void syncCeoMail({
+    userId: account.userId,
+    maxPerFolder: 40,
+    maxTriageNew: 0,
+  }).catch(() => undefined);
+  revalidateMail();
+  return result;
+}
+
+export async function markThreadsSpamAction(threadIds: string[]) {
+  await requireCeo();
+  assertAutonomy("move");
+  const ids = realThreadIds(threadIds);
+  if (!ids.length) return { ok: true as const, junkPath: null };
+  const { account, userId } = await requireAccountForThread(ids[0]!);
+  const result = await markMailThreadsAsSpam({ accountId: account.id, threadIds: ids });
+  void syncCeoMail({ userId, maxPerFolder: 40, maxTriageNew: 0 }).catch(() => undefined);
+  revalidateMail();
+  return result;
+}
+
+export async function markThreadsNotSpamAction(threadIds: string[]) {
+  await requireCeo();
+  assertAutonomy("move");
+  const ids = realThreadIds(threadIds);
+  if (!ids.length) return { ok: true as const, path: null };
+  const { account, userId } = await requireAccountForThread(ids[0]!);
+  const result = await markMailThreadsNotSpam({ accountId: account.id, threadIds: ids });
   void syncCeoMail({ userId, maxPerFolder: 40, maxTriageNew: 0 }).catch(() => undefined);
   revalidateMail();
   return result;

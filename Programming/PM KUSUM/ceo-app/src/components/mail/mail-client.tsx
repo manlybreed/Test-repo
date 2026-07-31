@@ -39,6 +39,7 @@ import {
   Send,
   Settings,
   ShieldAlert,
+  ShieldOff,
   SlidersHorizontal,
   Sparkles,
   Star,
@@ -128,6 +129,10 @@ import {
   setThreadImportant,
   listTasksForThreadAction,
   blockSenderAction,
+  markThreadSpamAction,
+  markThreadNotSpamAction,
+  markThreadsSpamAction,
+  markThreadsNotSpamAction,
   correctSmartLabelAction,
   suggestLabelCorrectionAction,
   applyLabelCorrectionAction,
@@ -1482,6 +1487,8 @@ export function MailClient({
   const selectedThread =
     threads.find((t) => t.id === selectedId) ||
     (selectedThreadFallback?.id === selectedId ? selectedThreadFallback : null);
+  const viewingJunk =
+    folderList.find((f) => f.id === activeFolder)?.role === "JUNK";
 
   // Ask: map for resolving inline [[messageId]] citations, and whether the
   // answer actually carries any (so the fallback source list can be hidden).
@@ -2749,6 +2756,34 @@ export function MailClient({
     });
   }
 
+  function markSpamSelected() {
+    if (!selectedId || selectedId.startsWith("outbox")) return;
+    const id = selectedId;
+    startTransition(async () => {
+      await markThreadSpamAction(id);
+      setThreads((prev) => prev.filter((x) => x.id !== id));
+      setSelectedId(null);
+      setMessages([]);
+      setShowCompose(false);
+      setStatus("Reported as spam");
+      haptic("success");
+    });
+  }
+
+  function markNotSpamSelected() {
+    if (!selectedId || selectedId.startsWith("outbox")) return;
+    const id = selectedId;
+    startTransition(async () => {
+      await markThreadNotSpamAction(id);
+      setThreads((prev) => prev.filter((x) => x.id !== id));
+      setSelectedId(null);
+      setMessages([]);
+      setShowCompose(false);
+      setStatus("Not spam — moved to Inbox");
+      haptic("success");
+    });
+  }
+
   function trashSelected() {
     if (!selectedId || selectedId.startsWith("outbox")) return;
     const ok = window.confirm("Move this thread to Trash?");
@@ -2830,6 +2865,30 @@ export function MailClient({
         haptic("warn");
         await reloadActiveView();
       }
+    });
+  }
+
+  function bulkMarkSpam() {
+    const ids = Array.from(selectedThreadIds);
+    if (!ids.length) return;
+    startTransition(async () => {
+      await markThreadsSpamAction(ids);
+      setThreads((prev) => prev.filter((t) => !selectedThreadIds.has(t.id)));
+      setSelectedThreadIds(new Set());
+      setStatus(`Reported ${ids.length} thread${ids.length === 1 ? "" : "s"} as spam`);
+      haptic("success");
+    });
+  }
+
+  function bulkMarkNotSpam() {
+    const ids = Array.from(selectedThreadIds);
+    if (!ids.length) return;
+    startTransition(async () => {
+      await markThreadsNotSpamAction(ids);
+      setThreads((prev) => prev.filter((t) => !selectedThreadIds.has(t.id)));
+      setSelectedThreadIds(new Set());
+      setStatus(`Moved ${ids.length} to Inbox`);
+      haptic("success");
     });
   }
 
@@ -3524,6 +3583,34 @@ export function MailClient({
           return;
         }
         trashSelected();
+      },
+    },
+    {
+      id: "mail.mark-spam",
+      label: "Report spam",
+      description: "Move the currently open mail thread to Junk/Spam",
+      phrases: ["report spam", "mark as spam", "this is spam", "move to spam", "move to junk"],
+      handler: () => {
+        if (!selectedId || selectedId.startsWith("outbox")) {
+          setStatus("Open a thread first to report spam");
+          haptic("warn");
+          return;
+        }
+        markSpamSelected();
+      },
+    },
+    {
+      id: "mail.mark-not-spam",
+      label: "Not spam",
+      description: "Move the currently open mail thread out of Junk/Spam back to Inbox",
+      phrases: ["not spam", "this isn't spam", "unspam", "remove from spam"],
+      handler: () => {
+        if (!selectedId || selectedId.startsWith("outbox")) {
+          setStatus("Open a thread first to mark it not spam");
+          haptic("warn");
+          return;
+        }
+        markNotSpamSelected();
       },
     },
     {
@@ -5180,6 +5267,17 @@ export function MailClient({
                       icon={<Trash2 size={14} />}
                       onClick={bulkTrash}
                     />
+                    <IconBtn
+                      title={viewingJunk ? "Not spam" : "Report spam"}
+                      icon={
+                        viewingJunk ? (
+                          <ShieldOff size={14} />
+                        ) : (
+                          <ShieldAlert size={14} />
+                        )
+                      }
+                      onClick={viewingJunk ? bulkMarkNotSpam : bulkMarkSpam}
+                    />
                     <div className="relative" data-menu>
                       <IconBtn
                         title="Move selected to…"
@@ -5783,6 +5881,20 @@ export function MailClient({
                           icon={<Trash2 size={15} />}
                           disabled={pending || !selectedId}
                           onClick={trashSelected}
+                        />
+                        <IconBtn
+                          title={viewingJunk ? "Not spam" : "Report spam"}
+                          icon={
+                            viewingJunk ? (
+                              <ShieldOff size={15} />
+                            ) : (
+                              <ShieldAlert size={15} />
+                            )
+                          }
+                          disabled={pending || !selectedId}
+                          onClick={
+                            viewingJunk ? markNotSpamSelected : markSpamSelected
+                          }
                         />
                         <div className="relative" data-menu>
                           <IconBtn
