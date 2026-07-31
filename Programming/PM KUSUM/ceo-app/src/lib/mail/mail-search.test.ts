@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   buildThreadSearchAnd,
+  classifySearchTier,
+  needsWordBoundary,
   parseSearchOperators,
   scoreSearchHit,
   synonymVariants,
+  textHasToken,
   tokenizeSearchQuery,
 } from "@/lib/mail/mail-search";
 
@@ -18,6 +21,57 @@ describe("mail search", () => {
       "sbi",
       "pos",
     ]);
+  });
+
+  it("does not treat pos as a substring of proposal", () => {
+    expect(textHasToken("proposal for financing", "pos")).toBe(false);
+    expect(textHasToken("daily pos e-statement", "pos")).toBe(true);
+    expect(textHasToken("DAILY POS E-Statement", "pos")).toBe(true);
+    expect(needsWordBoundary("pos")).toBe(true);
+    expect(needsWordBoundary("proposal")).toBe(false);
+  });
+
+  it("ranks real POS e-statement above SBI financing proposal (no false pos)", () => {
+    const plan = {
+      mustGroups: [
+        ["sbi", "state bank"],
+        ["pos", "e-statement", "estatement"],
+      ],
+    };
+    const real = scoreSearchHit({
+      query: "SBI POS machine",
+      subject: "DAILY POS E-Statement : BLURIDGE CONSULTING",
+      fromAddress: "alerts@sbi.co.in",
+      plan,
+    });
+    const falsePos = scoreSearchHit({
+      query: "SBI POS machine",
+      subject: "BluRidge <> SBI | Proposal for Financing",
+      fromAddress: "akshay@thebluridge.com",
+      snippet: "Dear Mr. Ranjit Kumar, This is with...",
+      plan,
+    });
+    expect(real).toBeGreaterThan(falsePos);
+    // Financing proposal must not satisfy the POS concept group via "proposal".
+    expect(falsePos).toBeLessThan(40);
+  });
+
+  it("classifies bare names as person tier (no AI)", () => {
+    expect(classifySearchTier("prachi")).toBe("person");
+    expect(classifySearchTier("John Smith")).toBe("person");
+  });
+
+  it("classifies bank/product jargon as keyword, not person", () => {
+    expect(classifySearchTier("SBI POS")).toBe("keyword");
+    expect(classifySearchTier("SBI POS machine")).toBe("keyword");
+    expect(classifySearchTier("invoice")).toBe("keyword");
+    expect(classifySearchTier("kusum")).toBe("keyword");
+  });
+
+  it("classifies questions and paraphrase as NL", () => {
+    expect(classifySearchTier("who sent the transformer quote?")).toBe("nl");
+    expect(classifySearchTier("emails about the loan status")).toBe("nl");
+    expect(classifySearchTier("find me the mail regarding POS")).toBe("nl");
   });
 
   it("expands POS / SBI synonyms", () => {

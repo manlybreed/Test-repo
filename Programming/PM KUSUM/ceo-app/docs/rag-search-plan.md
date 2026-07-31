@@ -6,80 +6,110 @@ Companion to `ai-email-client-plan.md`. Scope: how retrieval-augmented generatio
 
 Every AI feature is the same pipeline with a different prompt. The model never sees the whole mailbox — it sees only the top-N retrieved excerpts, fenced and cited.
 
+**Ask / draft / recall** (healthy path):
+
 ```
-User intent (search / ask / draft / recall / digest)
+User intent
    │
    ▼
 expandSearchQuery (Haiku) ──► SearchPlan {mustGroups, should, fromHints}
    │                            (10-min cache; lexical fallback if AI down)
    ▼
-retrieveMail — Postgres FTS (websearch_to_tsquery + ts_rank)
-   │            ILIKE token-AND fallback; person/thread filters
+retrieveMail — Postgres FTS (websearch_to_tsquery + ts_rank_cd)
+   │            MailContact person filters; ILIKE token-AND fallback
    ▼
-scoreSearchHit re-rank ──► top-N RetrievedChunk
-   │                        (subject, from, date, 1200-char body,
-   │                         800-char attachment excerpt)
-   ▼
-packChunks (12k-char budget) ──► fenceMailData (injection-safe fence)
+scoreSearchHit / optional rerank ──► top-N chunks (MailChunk when available)
    │
    ▼
-Claude — Haiku (triage/labels/autocomplete/rerank)
-         Sonnet (ask/summarize/draft/people/attachments)
+packChunks → fenceMailData → Claude → citations
+```
+
+**Threads search box** (tiered — see §3.2):
+
+```
+classifySearchTier(freeText)
    │
-   ▼
-JSON answer + citations: messageId[] ──► clickable citationRefs in UI
-   │
-   ▼
-Autonomy policy (AI-21): reversible → auto; irreversible → confirm
+   ├─ person  → findContacts → participant filter (no Claude)
+   ├─ keyword → retrieveMail(skipExpand) FTS → thread list
+   └─ nl      → retrieveMail(expand) → optional rerank
 ```
 
 Feature → RAG mapping:
 
 | Feature | Retrieval scope | Model | Grounding contract |
 |---|---|---|---|
-| NL search (AI-05) | FTS + expand + rerank | Haiku | ranked thread list, no generation |
-| Ask / Q&A (AI-06) | top-15 mailbox-wide | Sonnet | answer only from `mail_data`, else `notFound` |
+| **Threads search box** | Tiered: contacts → FTS → AI-NL (`classifySearchTier`) | Haiku only on NL tier | ranked thread list |
+| Ask / Q&A (AI-06) | FTS + expand + rerank via `retrieveMail` | Sonnet | answer only from `mail_data`, else `notFound` |
 | Reply draft (AI-07/09) | thread + style from SENT | Sonnet | quote facts only from retrieved thread |
 | Summarize / digest (AI-03/04) | threadId-scoped (up to 40 msgs) | Sonnet | summary cites messageIds |
-| People recall (AI-16) | `personEmail` filter + query | Sonnet | recent-thread summary with citations |
+| People recall (AI-16) | `MailContact` resolve + retrieve | Sonnet | recent-thread summary with citations |
 | Commitments / follow-ups (AI-10/11) | thread-scoped | Sonnet | extracted task must quote source msg |
-| Attachment Q&A (AI-13) | `extractedText` in searchText + excerpts | Sonnet | cites carrying message |
+| Attachment Q&A (AI-13) | chunk / extractedText in FTS | Sonnet | cites carrying message |
 
 Grounding invariants (already enforced, keep them):
 
 1. **Fenced context** — mail content enters prompts only via `fenceMailData`; instructions inside emails are data, not commands.
 2. **Citation whitelist** — model citations are filtered against the packed-chunk id list (`ask.ts`), so it cannot cite what it wasn't shown.
 3. **Honest misses** — empty retrieval short-circuits to "I don't find that in your mail" without calling the model.
-4. **AI-optional** — every path degrades to plain FTS results when `getAnthropic()` is null.
+4. **AI-optional** — every path degrades to plain FTS / lexical results when `getAnthropic()` is null.
+5. **Tiered search** — name/contact lookups must not call Claude; AI is reserved for natural-language / paraphrase queries (see §3.2).
 
-## 2. Current status (v1 — done)
+## 2. Current status (R1–R4 infrastructure — done for Ask; search box still lagging)
 
-- `ensureMailFtsIndex()` — expression GIN index over searchText + subject + from/to (`retrieve.ts`)
-- `retrieveMail` — FTS with AI mustGroups → OR-group websearch query; ILIKE AND fallback; `scoreSearchHit` final ordering
-- `expandSearchQuery` — Haiku query rewrite tuned for India business mail (bank codes, POS/EDC, e-statement), merged with lexical synonyms, cached 10 min
-- `rerankSearchHits` — Haiku listwise rerank of thread candidates
-- `packChunks` → `fenceMailData` → Claude JSON with citation filtering
-- Attachment text extracted post-sync feeds `searchText` and per-chunk excerpts
-- No pgvector in v1 (deliberate)
+**Shipped and used by Ask / recall / draft retrieval:**
+
+- R1: weighted `unaccent` expression GIN (`mail_message_tsv_idx`); `retrieveMail` + recency + Ask rerank
+- R2: `MailContact` + sync upsert; `findContacts` / `resolvePersonAddress`; wired to recall + compose autocomplete
+- R3: `MailChunk` + FTS on chunks; Ask packs best chunk
+- R4: `scripts/rag-golden.json` + `npm run eval:rag` (scaffolded; weekly automation pending)
+- No pgvector yet (R5 gated; paraphrase slice currently clears with AI-expand)
+
+**Threads search box** (`searchThreadsAction`) — **fixed (R6 / §3.2):**
+
+- Tier router: person → `MailContact`; keyword → FTS (`retrieveMail` skipExpand); NL → expand + FTS + rerank
+- Status line shows mode: `(contacts)` / `(fts)` / `(ai)` / `(operators)`
+- Bare names like `prachi` no longer call Claude or scan bodies via ILIKE first
 
 ## 3. Known gaps
 
-| # | Gap | Effect |
-|---|---|---|
-| G1 | `'english'` tsvector config only; no `unaccent` | Hindi / Hinglish / transliterated names get poor FTS recall — only ILIKE fallback catches them |
-| G2 | No real chunking: body truncated at 1200 chars, attachments at 800 | Answers buried deep in long threads/PDFs are invisible to the model |
-| G3 | Expression index recomputed in every query's WHERE/rank | Works, but a stored generated `tsv` column is faster and lets us add weights (`setweight`: subject A, body C) |
-| G4 | `rerankSearchHits` not wired into `retrieveMail` | Ask/draft consume FTS-rank order; rerank only helps thread search |
-| G5 | No recency prior in ranking | ts_rank ties break on date, but a 2-year-old strong lexical match can beat last week's relevant mail |
-| G6 | No retrieval eval harness | Recall regressions (e.g. after prompt or synonym edits) are invisible until the CEO notices |
-| G7 | No semantic recall | "the vendor who kept delaying the transformer delivery" fails unless words overlap — status: conditional, see §4.7 |
-| G8 | No person/contact index | `expandSearchQuery`'s `fromHints` is a static heuristic list, not a real aggregate of who's actually in this mailbox — "who sent…" on an unlisted sender falls through to plain ILIKE |
+| # | Gap | Status |
+|---|-----|--------|
+| G1–G5 | FTS unaccent / weights / recency / Ask rerank | **Done** for `retrieveMail` (R1); history only |
+| G6 | Retrieval eval harness | **Scaffolded** (R4); weekly cron still open |
+| G7 | Semantic / paraphrase | **Conditional** — R4 paraphrase clears with expand; R5 pgvector deferred |
+| G8 | People index missing | **Done** as `MailContact` (R2); also wired to Threads search (R6) |
+| **G9** | **UI search ≠ Ask retrieval (split brain)** | **Fixed** — tiered Threads search (§3.2 / R6 P0) |
+
+### 3.1 Issue: Threads search box was slow (observed Jul 2026) — fixed
+
+**Symptom (before fix):** Simple name query `prachi` → `Search · 3 results · ~6500ms`.
+
+**Root cause:** `searchThreadsAction` always ran Haiku expand + unindexed body ILIKE + Haiku rerank, bypassing `MailContact` and FTS.
+
+**Fix:** §3.2 tiered router (shipped).
+
+### 3.2 Solution: tiered Threads search (R6 / P0) ✅
+
+| Tier | Detect | Path | AI? | Target latency |
+|------|--------|------|-----|----------------|
+| **Person** | 1–3 tokens, looks like a name (`classifySearchTier`) | `findContacts` → participant filter | **No** | **&lt;200ms** |
+| **Keyword / operators** | short tokens, `from:` / `is:` etc. | `lexicalSearchPlan` synonym groups (no Claude) + thread match; optional FTS via `expand: "lexical"` | No | **&lt;500ms–1s** |
+| **NL / paraphrase** | questions, “about…”, “who sent…”, long free text | expand + FTS (+ rerank) | **Yes** | keep under ~5s |
+
+Also:
+
+- Skip `rerankSearchHits` outside NL tier (or when &lt;2 hits)
+- Status line shows mode: `Search · 3 · 42ms (contacts)` vs `(fts)` vs `(ai)`
+- Keep ILIKE only as last-resort fallback if FTS returns empty
+- Contact typeahead while typing remains available via compose/`findContactsAction` (Outlook-style people suggestions in the search box still optional polish)
+
+**Success:** `prachi` no longer multi-second; no Anthropic call on bare name queries.
 
 ## 4. Roadmap
 
-**Implementation status (branch `feature/rag-search-improvements`):** R1 ✅ · R2 ✅ · R3 ✅ · R4 ✅ scaffolded · R5 ⛔ gated (paraphrase slice currently clears the bar with AI-expand → not built) · R6 ⏳ pending. First `npm run eval:rag` result: overall recall@10 **1.00** with AI expand, **0.92** FTS-only; paraphrase slice **1.00** vs **0.67** — empirically confirming LLM-expand bridges the paraphrase gap that pure FTS misses, so pgvector is not yet justified.
+**Implementation status:** R1 ✅ · R2 ✅ · R3 ✅ · R4 ✅ scaffolded · R5 ⛔ gated · **R6 P0 (tiered Threads search) ✅** · remaining R6 polish ⏳
 
-Locked order (see §4.7 Decision log for why): **R1 FTS harden → R2 people index → R3 chunking → R4 golden-set eval → R5 hybrid pgvector (conditional) → R6 support polish + regression watch.**
+Locked order: **R1 → R2 → R3 → R4 → R5 (conditional) → R6 (polish + Threads search fix).**
 
 ```
 R1 FTS harden ──► R2 People index ──► R3 Chunking ──► R4 Golden-set eval
@@ -91,6 +121,9 @@ R1 FTS harden ──► R2 People index ──► R3 Chunking ──► R4 Golde
                                                      ▼              ▼
                                          R5 Hybrid pgvector    skip R5, re-run
                                           + remeasure           R4 weekly
+                                                             │
+                                                             ▼
+                              R6 polish + tiered Threads search (contacts → FTS → AI)
 ```
 
 ### Phase R1 — FTS hardening (no new infra) ✅
@@ -107,7 +140,7 @@ R1 FTS harden ──► R2 People index ──► R3 Chunking ──► R4 Golde
 
 1. `MailContact` model + `upsertContactsFromMessage` (called per new message in sync): address, display-name variants, `messageCount` (sender-only), `lastMessageAt`, recent subjects. Idempotent SQL `backfillContacts` seeds history (130 contacts from 740 messages, verified).
 2. `findContacts` / `resolvePersonAddress`: fuzzy name/domain lookup with pure `rankContacts` scoring (token hits → frequency → recency), unit-tested. Lazy-backfills on first empty lookup.
-3. Wired into `recallPerson` — resolves a bare name to the best address before retrieval. (Full `expandSearchQuery` integration for arbitrary "who sent" NL queries left for R6.)
+3. Wired into `recallPerson`, compose autocomplete, **and** Threads search person tier (R6).
 
 ### Phase R3 — chunking & packing ✅
 
@@ -132,11 +165,13 @@ Ship only if the paraphrase bucket in R4 still misses after R1–R3 are in. If i
 3. Embedding model via same env-gated pattern as `getAnthropic()` (e.g. Voyage); zero embeddings ⇒ pure-FTS behavior unchanged.
 4. **Remeasure against the same R4 golden set** immediately after shipping — the eval isn't just a gate, it's the acceptance test.
 
-### Phase R6 — support-side polish
+### Phase R6 — support-side polish + Threads search fix
 
-1. Ask dock: show "searched for: …" (the SearchPlan intent + groups) so misses are debuggable by the user.
-2. Multi-turn Ask: carry prior citations as pinned context for follow-up questions ("what did he say about the price?" keeps the thread).
-3. Keep the R4 golden set running weekly indefinitely — cheapest regression detector for prompt/index changes in R1–R5.
+1. **P0 — Tiered Threads search** ✅ — `classifySearchTier` + contacts / FTS / AI paths in `searchThreadsAction`; status shows `(contacts)` / `(fts)` / `(ai)`.
+2. Ask dock: show "searched for: …" (SearchPlan intent + groups) so misses are debuggable.
+3. Multi-turn Ask: carry prior citations as pinned context for follow-ups.
+4. Contact typeahead in the search box (people suggestions while typing) — optional UX polish.
+5. Keep the R4 golden set running weekly — cheapest regression detector. Extend eval coverage to `searchThreadsAction` tiers (name queries must not invoke Anthropic).
 
 ### 4.7 Decision log — why gated, not skipped
 
@@ -151,23 +186,35 @@ Net: R4's paraphrase-labeled slice is the actual test of the disputed claim, not
 
 Sources: [Building Hybrid Search for RAG (pgvector + FTS + RRF)](https://dev.to/lpossamai/building-hybrid-search-for-rag-combining-pgvector-and-full-text-search-with-reciprocal-rank-fusion-6nk) · [Hybrid search with PostgreSQL and pgvector — Jonathan Katz](https://jkatz05.com/post/postgres/hybrid-search-postgres-pgvector/) · [A Reproducibility Study of LLM-Based Query Reformulation](https://arxiv.org/pdf/2604.27421) · [Vector Database Recall Evaluation (2026)](https://futureagi.com/blog/evaluating-vector-database-recall-quality-2026/)
 
-## 4.8 Target latency budget (Ask path)
+## 4.8 Target latency budgets
+
+### Ask path
 
 | Step | Typical cost |
 |---|---|
 | `expandSearchQuery` (Haiku, 10-min cache) | 0–1.5s (0 if cache hit) |
 | FTS query + `packChunks` | 50–300ms |
-| `rerankSearchHits` (Haiku, R1) | ~0.5–1s |
+| `rerankSearchHits` (Haiku) | ~0.5–1s |
 | Final answer (Sonnet) | 1–3s |
-| **Total (cache miss, no hybrid)** | **typically < 5s** |
-| + hybrid (R5, if shipped) | + query embedding (~100–300ms) + ANN search (tens of ms) — stays under budget since it replaces, not adds to, the FTS step |
+| **Total (cache miss, no hybrid)** | **typically &lt; 5s** |
+
+### Threads search box (target after R6 / §3.2)
+
+| Tier | Target |
+|---|---|
+| Person / name (`prachi`) via `MailContact` | **&lt; 200ms**, **zero** Claude calls |
+| Keyword / operators via FTS | **&lt; 500ms**, expand skipped unless needed |
+| NL / paraphrase | AI allowed; prefer FTS over ILIKE; keep under ~5s |
+
+**Anti-goal:** bare name queries must never take multi-second expand + ILIKE + rerank (the Jul 2026 `6535ms` failure mode).
 
 ## 4.9 Success criteria
 
-- "There's a mail about X — who sent it?" resolves to correct sender + subject + an openable citation, in < 5s on a warm server.
-- R4 recall@10 clears the target on the overall set **and** the paraphrase-tagged bucket specifically (a passing aggregate with a failing paraphrase bucket does not count as done).
+- "There's a mail about X — who sent it?" (Ask) resolves to correct sender + subject + citation in &lt; 5s on a warm server.
+- Threads search for a known sender name (e.g. `prachi`) returns in **&lt; 200ms** via contacts, with no Anthropic round-trip.
+- R4 recall@10 clears the target on the overall set **and** the paraphrase-tagged bucket specifically.
 - Empty retrieval still returns an honest "not found," never an invented answer.
-- Weekly golden-set re-run stays flat or improves — a regression here blocks unrelated prompt/index changes from shipping silently.
+- Weekly golden-set re-run stays flat or improves.
 
 ## 5. Non-goals
 
@@ -177,7 +224,8 @@ Sources: [Building Hybrid Search for RAG (pgvector + FTS + RRF)](https://dev.to/
 
 ## 6. Tests
 
-- Extend `retrieve.test.ts` for tsv-column path, unaccent matches, recency decay (R1).
-- New `contacts.test.ts` (R2), `chunking.test.ts` (R3), and `eval/rag-golden.test.ts` (R4, includes the paraphrase bucket).
-- If R5 ships: `hybrid-retrieve.test.ts` asserting FTS-only fallback when embeddings are unset, plus a rerun of `eval/rag-golden.test.ts` against the same set.
-- All mocked-Anthropic; live check stays behind `CEO_MAIL_LIVE_TEST=1`.
+- `retrieve.test.ts` — FTS / unaccent / recency (R1).
+- `contacts.test.ts` (R2), `chunking.test.ts` (R3), `eval/rag-golden` via `npm run eval:rag` (R4).
+- **R6 / search box:** unit tests that person-tier queries call `findContacts` and **do not** call `expandSearchQuery` / `rerankSearchHits`; keyword tier uses FTS path; NL tier may expand.
+- If R5 ships: `hybrid-retrieve.test.ts` + rerun golden set.
+- Mocked Anthropic in CI; live behind `CEO_MAIL_LIVE_TEST=1`.

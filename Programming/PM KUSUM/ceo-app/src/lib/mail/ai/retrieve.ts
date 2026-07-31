@@ -7,7 +7,7 @@ import {
   synonymVariants,
   tokenizeSearchQuery,
 } from "@/lib/mail/mail-search";
-import { expandSearchQuery, rerankSearchHits } from "@/lib/mail/ai/search-expand";
+import { expandSearchQuery, lexicalSearchPlan, rerankSearchHits } from "@/lib/mail/ai/search-expand";
 import { getAnthropic } from "@/lib/mail/ai/claude";
 import { bestChunkByMessage } from "@/lib/mail/chunking";
 
@@ -84,6 +84,24 @@ export async function ensureMailFtsIndex(): Promise<void> {
 
 type FtsRow = { id: string; rank: number };
 
+/** Turn mustGroups into a websearch query: (a OR b) (c OR d) → AND of OR-groups. */
+export function searchPlanToFtsQuery(
+  mustGroups: string[][] | undefined | null,
+): string {
+  if (!mustGroups?.length) return "";
+  return mustGroups
+    .map((g) => {
+      const parts = g
+        .map((t) => t.replace(/[()|&!:*]/g, " ").trim())
+        .filter(Boolean);
+      if (!parts.length) return "";
+      if (parts.length === 1) return parts[0]!;
+      return `(${parts.join(" OR ")})`;
+    })
+    .filter(Boolean)
+    .join(" ");
+}
+
 /**
  * Postgres FTS retrieve (weighted tsvector, websearch_to_tsquery). Falls back
  * to ILIKE token AND. Optionally expands the query with AI concept groups
@@ -95,7 +113,17 @@ export async function retrieveMail(opts: {
   limit?: number;
   personEmail?: string;
   threadId?: string;
-  /** Skip AI expand (faster path for autocomplete / tight loops). */
+  /**
+   * Expand mode for the FTS query:
+   * - `ai` (default): Haiku expand when available (Ask / NL search)
+   * - `lexical`: synonym groups only — no Claude (keyword Threads search)
+   * - `none`: raw query string (tests / tight loops)
+   *
+   * `skipExpand: true` is treated as `lexical` so keyword search still gets
+   * SBI→state bank / POS→e-statement coverage without an LLM round-trip.
+   */
+  expand?: "ai" | "lexical" | "none";
+  /** @deprecated Prefer `expand`. `true` ⇒ lexical (not none). */
   skipExpand?: boolean;
   /** Run a Haiku listwise rerank over the shortlist before returning. */
   rerank?: boolean;
@@ -115,23 +143,20 @@ export async function retrieveMail(opts: {
 
   if (!q && !opts.personEmail) return [];
 
-  // AI-05: rewrite NL query into richer FTS terms when useful
+  const expandMode: "ai" | "lexical" | "none" =
+    opts.expand ?? (opts.skipExpand ? "lexical" : "ai");
+
+  // AI-05 / lexical: rewrite into richer FTS terms when useful
   let ftsQuery = q;
   let plan = null as Awaited<ReturnType<typeof expandSearchQuery>> | null;
-  if (q && !opts.skipExpand && q.length >= 4) {
+  if (q && expandMode === "ai" && q.length >= 4) {
     plan = await expandSearchQuery(q).catch(() => null);
-    if (plan?.mustGroups?.length) {
-      // websearch: (a OR b) (c OR d)  → AND of OR-groups
-      ftsQuery = plan.mustGroups
-        .map((g) => {
-          const parts = g.map((t) => t.replace(/[()|&!:*]/g, " ").trim()).filter(Boolean);
-          if (!parts.length) return "";
-          if (parts.length === 1) return parts[0]!;
-          return `(${parts.join(" OR ")})`;
-        })
-        .filter(Boolean)
-        .join(" ");
-    }
+    const fromPlan = searchPlanToFtsQuery(plan?.mustGroups);
+    if (fromPlan) ftsQuery = fromPlan;
+  } else if (q && expandMode === "lexical") {
+    plan = lexicalSearchPlan(q);
+    const fromPlan = searchPlanToFtsQuery(plan.mustGroups);
+    if (fromPlan) ftsQuery = fromPlan;
   }
 
   let ids: string[] = [];

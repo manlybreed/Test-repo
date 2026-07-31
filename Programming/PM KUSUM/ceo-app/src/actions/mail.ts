@@ -60,7 +60,14 @@ import {
   recomputeThreadDenorm,
   resolveSystemFolder,
 } from "@/lib/mail/threads-query";
-import { parseSearchOperators } from "@/lib/mail/mail-search";
+import { parseSearchOperators, classifySearchTier, personParticipantWhere } from "@/lib/mail/mail-search";
+import { findContacts } from "@/lib/mail/contacts";
+import { retrieveMail } from "@/lib/mail/ai/retrieve";
+import {
+  expandSearchQuery,
+  lexicalSearchPlan,
+  rerankSearchHits,
+} from "@/lib/mail/ai/search-expand";
 import { summarizeThread } from "@/lib/mail/ai/summarize";
 import { askMailbox, recallPerson, searchMail, type AskTurn } from "@/lib/mail/ai/ask";
 import { buildInboxDigest } from "@/lib/mail/ai/digest";
@@ -98,7 +105,6 @@ import {
   listLocalDrafts,
   saveMailDraft,
 } from "@/lib/mail/drafts";
-import { findContacts } from "@/lib/mail/contacts";
 
 function revalidateMail() {
   revalidatePath("/ceo/mail");
@@ -614,58 +620,116 @@ export async function listAllInboxesThreadsAction(opts?: {
 }
 
 /**
- * Full-mailbox smart search:
- * 1) AI expands the query into concept groups (SBI POS → State Bank + e-statement…)
- * 2) Lexical match across subject / body / sender user@domain / attachments
- * 3) AI re-ranks the shortlist by intent
+ * Full-mailbox search with tiered routing (R6 / rag-search-plan §3.2):
+ * - person  → MailContact, no Claude
+ * - keyword → Postgres FTS (skipExpand), ILIKE only if FTS empty
+ * - nl      → expand + FTS + optional Haiku rerank
  */
-export async function searchThreadsAction(query: string, accountId?: string) {
+export type SearchThreadsMode = "contacts" | "fts" | "ai" | "operators";
+
+export type SearchThreadsResult = {
+  rows: Awaited<ReturnType<typeof queryThreadsForView>>["rows"];
+  mode: SearchThreadsMode;
+};
+
+export async function searchThreadsAction(
+  query: string,
+  accountId?: string,
+): Promise<SearchThreadsResult> {
   const { account } = await requireAccount(accountId);
   const q = query.trim();
-  if (q.length < 2) return [];
+  if (q.length < 2) return { rows: [], mode: "fts" };
 
   const { freeText, whereFragments } = parseSearchOperators(q);
 
   if (!freeText) {
-    // Operators only (e.g. "is:unread has:attachment") — nothing to rank,
-    // so just filter + sort by date instead of running AI-expand on "".
     const { rows } = await queryThreadsForView({
       accountId: account.id,
       extraWhere: whereFragments,
       take: 80,
     });
-    return rows;
+    return { rows, mode: "operators" };
   }
 
-  const { expandSearchQuery, lexicalSearchPlan, rerankSearchHits } =
-    await import("@/lib/mail/ai/search-expand");
+  const tier = classifySearchTier(freeText);
 
-  const plan = await expandSearchQuery(freeText);
+  // --- Person tier: contacts index, zero Claude ---
+  if (tier === "person") {
+    const contacts = await findContacts(account.id, freeText, 5);
+    if (contacts.length) {
+      const { rows } = await queryThreadsForView({
+        accountId: account.id,
+        extraWhere: [
+          ...whereFragments,
+          personParticipantWhere(
+            contacts.map((c) => c.address),
+            freeText,
+          ),
+        ],
+        take: 80,
+      });
+      if (rows.length) return { rows, mode: "contacts" };
+    }
+    // No contact hit / no threads — fall through to keyword (still no AI).
+  }
 
-  let { rows } = await queryThreadsForView({
+  // --- Keyword (and person fallthrough): synonym groups, no Claude ---
+  // Primary path is lexicalSearchPlan + thread ILIKE (same concept-AND that made
+  // "SBI POS machine" match e-statement / State Bank before tiering). Optional
+  // "machine" is not required. FTS alone was matching raw tokens and ranking poorly.
+  if (tier !== "nl") {
+    const plan = lexicalSearchPlan(freeText);
+    const { rows } = await queryThreadsForView({
+      accountId: account.id,
+      query: freeText,
+      searchPlan: plan,
+      extraWhere: whereFragments,
+      take: 80,
+    });
+    return { rows, mode: "fts" };
+  }
+
+  // --- NL tier: AI expand + FTS + optional rerank ---
+  const chunks = await retrieveMail({
     accountId: account.id,
     query: freeText,
-    searchPlan: plan,
-    extraWhere: whereFragments,
-    take: 80,
+    limit: 80,
+    expand: "ai",
   });
 
-  // If AI concepts were too strict, relax to lexical-only
-  if (!rows.length && plan.mustGroups.length > 1) {
+  let rows = await orderThreadsFromMessageHits(
+    account.id,
+    chunks.map((c) => c.threadId),
+    whereFragments,
+  );
+
+  if (!rows.length) {
+    const plan = await expandSearchQuery(freeText);
     ({ rows } = await queryThreadsForView({
       accountId: account.id,
       query: freeText,
-      searchPlan: lexicalSearchPlan(freeText),
+      searchPlan: plan,
       extraWhere: whereFragments,
       take: 80,
     }));
+    if (!rows.length && plan.mustGroups.length > 1) {
+      ({ rows } = await queryThreadsForView({
+        accountId: account.id,
+        query: freeText,
+        searchPlan: lexicalSearchPlan(freeText),
+        extraWhere: whereFragments,
+        take: 80,
+      }));
+    }
   }
 
-  if (rows.length < 2) return rows;
+  if (rows.length < 2) {
+    return { rows, mode: "ai" };
+  }
 
   const ordered = await rerankSearchHits({
     query: freeText,
-    intent: plan.intent,
+    intent: freeText,
     candidates: rows.map((r) => ({
       id: r.id,
       subject: r.subject,
@@ -675,7 +739,7 @@ export async function searchThreadsAction(query: string, accountId?: string) {
     })),
   });
 
-  if (!ordered?.length) return rows;
+  if (!ordered?.length) return { rows, mode: "ai" };
 
   const byId = new Map(rows.map((r) => [r.id, r]));
   const ranked = ordered
@@ -685,7 +749,27 @@ export async function searchThreadsAction(query: string, accountId?: string) {
   for (const r of rows) {
     if (!seen.has(r.id)) ranked.push(r);
   }
-  return ranked;
+  return { rows: ranked, mode: "ai" };
+}
+
+/** Preserve FTS hit order when loading thread list rows. */
+async function orderThreadsFromMessageHits(
+  accountId: string,
+  threadIds: string[],
+  extraWhere: object[],
+) {
+  const orderedIds = [...new Set(threadIds.filter(Boolean))];
+  if (!orderedIds.length) return [];
+  const { rows } = await queryThreadsForView({
+    accountId,
+    extraWhere: [{ id: { in: orderedIds } }, ...extraWhere],
+    take: Math.min(orderedIds.length, 80),
+  });
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return orderedIds
+    .map((id) => byId.get(id))
+    .filter((r): r is NonNullable<typeof r> => Boolean(r))
+    .slice(0, 80);
 }
 
 /** Pending / failed / recent sends (app outbox, not IMAP). */
