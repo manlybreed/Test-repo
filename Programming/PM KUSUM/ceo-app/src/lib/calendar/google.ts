@@ -229,6 +229,132 @@ export async function getFreeBusy(
   };
 }
 
+export type CalendarEventSummary = {
+  eventId: string;
+  title: string;
+  start: string;
+  end: string;
+  htmlLink: string;
+  meetLink: string | null;
+  attendeeEmails: string[];
+  isAllDay: boolean;
+  /** Set when this instance came from expanding a recurring event
+   * (singleEvents below) — this app only ever displays these, it never
+   * creates new recurring series itself. */
+  recurringEventId: string | null;
+};
+
+/** Real events for a connected mailbox's calendar over a time range — the
+ * data source for the Calendar view page. `singleEvents: true` expands
+ * recurring events into individual instances server-side, so a
+ * recurring meeting displays correctly on the grid without this app
+ * needing to understand RRULEs itself. Returns null if this account has
+ * no Google Calendar connection. */
+export async function listEvents(
+  accountId: string,
+  timeMinIso: string,
+  timeMaxIso: string,
+): Promise<CalendarEventSummary[] | null> {
+  const calendar = await getCalendarClientForAccount(accountId);
+  if (!calendar) return null;
+
+  const { data } = await calendar.events.list({
+    calendarId: "primary",
+    timeMin: timeMinIso,
+    timeMax: timeMaxIso,
+    singleEvents: true,
+    orderBy: "startTime",
+    maxResults: 250,
+  });
+
+  return (data.items || []).map((e) => ({
+    eventId: e.id || "",
+    title: e.summary || "(no title)",
+    start: e.start?.dateTime || e.start?.date || "",
+    end: e.end?.dateTime || e.end?.date || "",
+    htmlLink: e.htmlLink || "",
+    meetLink: e.hangoutLink || null,
+    attendeeEmails: (e.attendees || [])
+      .map((a) => a.email || "")
+      .filter(Boolean),
+    isAllDay: Boolean(e.start?.date && !e.start?.dateTime),
+    recurringEventId: e.recurringEventId || null,
+  }));
+}
+
+export type MeetingEventPatch = {
+  title?: string;
+  description?: string;
+  startIso?: string;
+  endIso?: string;
+  attendeeEmails?: string[];
+};
+
+/** Pure — the exact partial request body sent to calendar.events.patch.
+ * Only includes fields actually present on the patch (a Calendar PATCH,
+ * unlike PUT, only touches what you send) — extracted from
+ * updateMeetingEvent so this shape is unit-testable without a network
+ * call, same reasoning as buildMeetingEventPayload above. */
+export function buildUpdateEventPayload(
+  patch: MeetingEventPatch,
+): Record<string, unknown> {
+  const requestBody: Record<string, unknown> = {};
+  if (patch.title !== undefined) requestBody.summary = patch.title;
+  if (patch.description !== undefined) requestBody.description = patch.description;
+  if (patch.startIso !== undefined) requestBody.start = { dateTime: patch.startIso };
+  if (patch.endIso !== undefined) requestBody.end = { dateTime: patch.endIso };
+  if (patch.attendeeEmails !== undefined) {
+    requestBody.attendees = patch.attendeeEmails.map((email) => ({ email }));
+  }
+  return requestBody;
+}
+
+/** Updates a real Calendar event (reschedule/rename/attendee changes) —
+ * Google emails the update to attendees itself (sendUpdates: "all"), same
+ * as createMeetingEvent. Returns null if this account has no Google
+ * Calendar connection. */
+export async function updateMeetingEvent(
+  accountId: string,
+  eventId: string,
+  patch: MeetingEventPatch,
+): Promise<CreatedMeeting | null> {
+  const calendar = await getCalendarClientForAccount(accountId);
+  if (!calendar) return null;
+
+  const { data } = await calendar.events.patch({
+    calendarId: "primary",
+    eventId,
+    sendUpdates: "all",
+    requestBody: buildUpdateEventPayload(patch),
+  });
+
+  return {
+    eventId: data.id || eventId,
+    htmlLink: data.htmlLink || "",
+    meetLink: data.hangoutLink || null,
+    start: data.start?.dateTime || patch.startIso || "",
+    end: data.end?.dateTime || patch.endIso || "",
+  };
+}
+
+/** Cancels a real Calendar event — Google emails attendees a
+ * cancellation itself (sendUpdates: "all"). Returns false if this
+ * account has no Google Calendar connection, true on success. */
+export async function deleteMeetingEvent(
+  accountId: string,
+  eventId: string,
+): Promise<boolean> {
+  const calendar = await getCalendarClientForAccount(accountId);
+  if (!calendar) return false;
+
+  await calendar.events.delete({
+    calendarId: "primary",
+    eventId,
+    sendUpdates: "all",
+  });
+  return true;
+}
+
 /** Best-effort revoke on Google's side, then always drops the local row —
  * a failed remote revoke shouldn't leave a "connected" mailbox the user
  * can no longer see or manage from settings. */

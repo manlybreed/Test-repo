@@ -13,6 +13,16 @@ describe("AI-21 autonomy policy", () => {
     expect(isIrreversible("label")).toBe(false);
   });
 
+  it("marks calendar edit/cancel/booking-policy actions irreversible — each sends a real email or changes what a stranger can book", () => {
+    expect(isIrreversible("calendar_update")).toBe(true);
+    expect(isIrreversible("calendar_cancel")).toBe(true);
+    expect(isIrreversible("calendar_policy_update")).toBe(true);
+    expect(checkAutonomy("calendar_update").allowed).toBe(false);
+    expect(checkAutonomy("calendar_cancel", { confirmed: true }).allowed).toBe(
+      true,
+    );
+  });
+
   it("blocks irreversible without confirm", () => {
     expect(checkAutonomy("send").allowed).toBe(false);
     expect(checkAutonomy("send", { confirmed: true }).allowed).toBe(true);

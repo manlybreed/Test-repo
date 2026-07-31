@@ -776,6 +776,7 @@ model MailAccount {
   vacationResponder MailVacationResponder?
   credential    MailAccountCredential?
   googleCalendar GoogleCalendarConnection?
+  bookingPolicy BookingPolicy?
 }
 
 /// Encrypted IMAP/SMTP connection details for a mailbox added via the
@@ -821,6 +822,53 @@ model GoogleCalendarConnection {
   scope                 String
   connectedAt           DateTime @default(now())
   updatedAt             DateTime @updatedAt
+}
+
+/// The CEO's configuration for the public Calendly-style booking link — a
+/// shareable /book/[slug] page where an external contact can self-book a
+/// real meeting. 1:1 with MailAccount, same shape/cascade as
+/// GoogleCalendarConnection. `enabled: false` by default — the page must
+/// be deliberately turned on, never live from creation. weeklyWindowsJson
+/// uses day-name keys ({"mon":[{"startMin":540,"endMin":1080}], ...}) —
+/// human-readable for the settings UI's weekday editor; converted to
+/// numeric-day-indexed WeeklyWindows by parseWeeklyWindowsJson
+/// (src/lib/calendar/propose-times.ts) before being handed to
+/// generateCandidateSlots, the same conflict-avoidance function the
+/// AI/manual scheduling path already uses.
+model BookingPolicy {
+  id                  String   @id @default(cuid())
+  accountId           String   @unique
+  account             MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  enabled             Boolean  @default(false)
+  slug                String   @unique
+  title               String   @default("Meeting with Akshay")
+  description         String?
+  weeklyWindowsJson   String   @default("{}")
+  durationOptionsJson String   @default("[30]")
+  bufferBeforeMins    Int      @default(0)
+  bufferAfterMins     Int      @default(0)
+  minNoticeHours      Int      @default(24)
+  maxAdvanceDays      Int      @default(30)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+/// A lightweight, Postgres-backed abuse guard for the unauthenticated
+/// public booking endpoint — no rate-limiting mechanism existed anywhere
+/// in this codebase before this feature, since every other mutating
+/// action requires a logged-in CEO session. Deliberately simple (a daily
+/// per-IP counter, not an anti-bot system) — see createPublicBookingAction
+/// in src/actions/public-booking.ts for how it's enforced.
+model PublicBookingAttempt {
+  id        String   @id @default(cuid())
+  ip        String
+  /// "YYYY-MM-DD" in UTC — the unique-together key with `ip` is what
+  /// makes the increment atomic via a single upsert.
+  day       String
+  count     Int      @default(1)
+  updatedAt DateTime @updatedAt
+
+  @@unique([ip, day])
 }
 
 /// Out-of-office / vacation responder — a Sieve script pushed via ManageSieve.

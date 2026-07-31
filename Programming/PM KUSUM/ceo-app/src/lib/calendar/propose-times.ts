@@ -24,13 +24,20 @@ function roundUpToStep(ms: number, stepMs: number): number {
 
 export type CandidateSlot = { startIso: string; endIso: string };
 
+/** One open IST time-window on a given weekday, in minutes-since-midnight
+ * wall-clock time (e.g. 9am = 540, 6pm = 1080). */
+export type WeeklyWindow = { startMin: number; endMin: number };
+/** 0=Sun..6=Sat (matches JS Date#getDay()/getUTCDay()) — only the days
+ * present have any open window at all. */
+export type WeeklyWindows = Partial<Record<0 | 1 | 2 | 3 | 4 | 5 | 6, WeeklyWindow[]>>;
+
 /**
  * Pure: walks the [timeMinIso, timeMaxIso) range in stepMins increments,
- * keeps only slots inside IST work hours on weekdays that don't overlap
- * any busy block. This is the actual "never invent a time" guarantee —
- * candidate generation is code, not model output; an AI layer may only
- * ever pick from (and phrase) what this function already confirmed is
- * really open.
+ * keeps only slots inside allowed hours that don't overlap any busy
+ * block (padded by an optional buffer). This is the actual "never invent
+ * a time" guarantee — candidate generation is code, not model output; an
+ * AI layer may only ever pick from (and phrase) what this function
+ * already confirmed is really open.
  */
 export function generateCandidateSlots(
   busy: BusyBlock[],
@@ -41,6 +48,17 @@ export function generateCandidateSlots(
     stepMins?: number;
     workStartHour?: number;
     workEndHour?: number;
+    /** When present, replaces the default weekday/9am-6pm window
+     * entirely (weekends are allowed if a window exists for that day) —
+     * used by public booking, where the CEO configures their own
+     * schedule. Omitted for the existing AI/manual scheduling path,
+     * which keeps today's hardcoded default unchanged. */
+    weeklyWindows?: WeeklyWindows;
+    /** Pads the busy-overlap check on either side of a candidate slot —
+     * e.g. a 15-min buffer excludes a slot that would end right as a
+     * meeting starts, not just ones that literally overlap it. */
+    bufferBeforeMins?: number;
+    bufferAfterMins?: number;
     maxCandidates?: number;
   },
 ): CandidateSlot[] {
@@ -49,6 +67,8 @@ export function generateCandidateSlots(
   const workEnd = opts.workEndHour ?? 18;
   const maxCandidates = opts.maxCandidates ?? 10;
   const durationMs = opts.durationMins * 60 * 1000;
+  const bufferBeforeMs = (opts.bufferBeforeMins ?? 0) * 60 * 1000;
+  const bufferAfterMs = (opts.bufferAfterMins ?? 0) * 60 * 1000;
 
   const busyRanges = busy
     .map((b) => ({ start: new Date(b.start).getTime(), end: new Date(b.end).getTime() }))
@@ -63,12 +83,26 @@ export function generateCandidateSlots(
     t + durationMs <= rangeEnd;
     t += stepMs
   ) {
-    const { hour, day } = toIstParts(new Date(t).toISOString());
-    if (day === 0 || day === 6) continue; // weekend
-    if (hour < workStart || hour >= workEnd) continue;
+    const { hour, minute, day } = toIstParts(new Date(t).toISOString());
+
+    if (opts.weeklyWindows) {
+      const windows = opts.weeklyWindows[day as 0 | 1 | 2 | 3 | 4 | 5 | 6];
+      if (!windows?.length) continue;
+      const minuteOfDay = hour * 60 + minute;
+      const slotEndMinuteOfDay = minuteOfDay + opts.durationMins;
+      const fitsAWindow = windows.some(
+        (w) => minuteOfDay >= w.startMin && slotEndMinuteOfDay <= w.endMin,
+      );
+      if (!fitsAWindow) continue;
+    } else {
+      if (day === 0 || day === 6) continue; // weekend
+      if (hour < workStart || hour >= workEnd) continue;
+    }
 
     const slotEnd = t + durationMs;
-    const overlaps = busyRanges.some((b) => t < b.end && slotEnd > b.start);
+    const overlaps = busyRanges.some(
+      (b) => t - bufferBeforeMs < b.end && slotEnd + bufferAfterMs > b.start,
+    );
     if (overlaps) continue;
 
     candidates.push({
@@ -123,6 +157,80 @@ export async function getCandidateMeetingSlots(
     timeMaxIso: timeMax.toISOString(),
     durationMins,
     maxCandidates: opts?.maxCandidates ?? 3,
+  });
+
+  return candidates.map((c) => ({ ...c, label: formatSlotForDisplay(c) }));
+}
+
+const DAY_NAME_TO_INDEX: Record<string, 0 | 1 | 2 | 3 | 4 | 5 | 6> = {
+  sun: 0,
+  mon: 1,
+  tue: 2,
+  wed: 3,
+  thu: 4,
+  fri: 5,
+  sat: 6,
+};
+
+/** `BookingPolicy.weeklyWindowsJson` is stored with day-name keys
+ * (`{"mon":[...], "tue":[...]}`) — human-readable for the settings UI's
+ * 7-row weekday editor. Converts to the numeric-day-indexed shape
+ * `generateCandidateSlots` needs (matching JS Date#getDay()). Malformed
+ * JSON or an unrecognized day name is silently dropped, not thrown —
+ * this only ever narrows availability, never widens it past what's
+ * genuinely configured. */
+export function parseWeeklyWindowsJson(json: string): WeeklyWindows {
+  let raw: Record<string, WeeklyWindow[]>;
+  try {
+    raw = JSON.parse(json || "{}");
+  } catch {
+    return {};
+  }
+  const out: WeeklyWindows = {};
+  for (const [name, windows] of Object.entries(raw)) {
+    const idx = DAY_NAME_TO_INDEX[name.trim().toLowerCase()];
+    if (idx === undefined || !Array.isArray(windows)) continue;
+    out[idx] = windows;
+  }
+  return out;
+}
+
+/**
+ * Real, connected-calendar-grounded candidate slots for a public booking
+ * policy — the exact same conflict-avoidance implementation as
+ * getCandidateMeetingSlots above, parameterized by the CEO's configured
+ * weekly windows/buffers instead of the AI/manual path's hardcoded
+ * weekday-9am-6pm default. Returns [] (not an error) when this account
+ * has no Google Calendar connection.
+ */
+export async function getPublicBookingSlots(
+  accountId: string,
+  policy: {
+    weeklyWindowsJson: string;
+    bufferBeforeMins: number;
+    bufferAfterMins: number;
+    minNoticeHours: number;
+    maxAdvanceDays: number;
+  },
+  opts: { durationMins: number; maxCandidates?: number },
+): Promise<MeetingSlotOption[]> {
+  const weeklyWindows = parseWeeklyWindowsJson(policy.weeklyWindowsJson);
+  const now = new Date();
+  const timeMin = new Date(now.getTime() + policy.minNoticeHours * 60 * 60 * 1000);
+  const timeMax = new Date(now.getTime() + policy.maxAdvanceDays * 24 * 60 * 60 * 1000);
+  if (timeMax <= timeMin) return [];
+
+  const result = await getFreeBusy(accountId, timeMin.toISOString(), timeMax.toISOString());
+  if (!result) return [];
+
+  const candidates = generateCandidateSlots(result.busy, {
+    timeMinIso: timeMin.toISOString(),
+    timeMaxIso: timeMax.toISOString(),
+    durationMins: opts.durationMins,
+    weeklyWindows,
+    bufferBeforeMins: policy.bufferBeforeMins,
+    bufferAfterMins: policy.bufferAfterMins,
+    maxCandidates: opts.maxCandidates ?? 20,
   });
 
   return candidates.map((c) => ({ ...c, label: formatSlotForDisplay(c) }));
